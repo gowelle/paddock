@@ -1,0 +1,4 @@
+caddy	https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_mac_amd64.tar.gz	22af256a2cc45606f6bfa8786cd89130529331319665926f4e972234a658fb30
+php-8.5-cli	https://dl.static-php.dev/static-php-cli/bulk/php-8.5.8-cli-macos-x86_64.tar.gz	d5a9a505ebce66c7f6b4f4e16629c36f385f2d360df915875722d67fe8bb2161
+php-8.5-fpm	https://dl.static-php.dev/static-php-cli/bulk/php-8.5.8-fpm-macos-x86_64.tar.gz	57cdce953a8392e655a800908eb5e8fa61e2b7d795b8e7d3f354b3d81939563d
+composer	https://getcomposer.org/download/2.11.2/composer.phar	dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028
