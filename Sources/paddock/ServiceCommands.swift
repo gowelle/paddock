@@ -113,6 +113,10 @@ struct Status: ParsableCommand {
         print(status.sites.isEmpty
               ? "No sites yet. Park a folder with: paddock park"
               : Messages.siteTable(status.sites))
+        if !status.services.isEmpty {
+            print("")
+            print(Messages.serviceTable(status.services))
+        }
     }
 }
 
@@ -133,7 +137,8 @@ struct Logs: ParsableCommand {
         }
     }
 
-    private static func lastLines(of url: URL) -> [String] {
+    /// The last `lineCount` lines of a log file (read from its last 256 KB).
+    static func lastLines(of url: URL) -> [String] {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0

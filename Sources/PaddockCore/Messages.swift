@@ -368,11 +368,11 @@ public enum Messages {
               + services.map { [$0.name, serviceState($0.state), servicePorts($0)] })
     }
 
-    /// Columns: kind, name, versions, licence, download size.
+    /// Columns: kind, name, versions, licence, download size (`none` for a service that downloads nothing).
     public static func catalogTable(_ entries: [CatalogEntry]) -> String {
         table([["KIND", "SERVICE", "VERSIONS", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
             [entry.kind, entry.displayName, entry.versions.joined(separator: ", "), entry.licence,
-             entry.downloadBytes.map { "\(max(1, Int((Double($0) / 1_000_000).rounded()))) MB" } ?? "?"]
+             entry.downloadBytes.map { $0 == 0 ? "none" : "\(max(1, Int((Double($0) / 1_000_000).rounded()))) MB" } ?? "?"]
         })
     }
 

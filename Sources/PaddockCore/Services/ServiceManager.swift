@@ -291,7 +291,9 @@ public final class ServiceManager: @unchecked Sendable {
         let fm = FileManager.default
         try? fm.removeItem(at: paths.serviceConfig(instance.id))
         try? fm.removeItem(at: paths.serviceRun(instance.id))
-        if deleteData { try fm.removeItem(at: paths.serviceHome(instance.id)) }
+        if deleteData, fm.fileExists(atPath: paths.serviceHome(instance.id).path) {
+            try fm.removeItem(at: paths.serviceHome(instance.id))
+        }
         runtimeLock.lock()
         runtime[instance.id] = nil
         notices[instance.id] = nil

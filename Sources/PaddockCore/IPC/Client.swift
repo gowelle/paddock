@@ -15,7 +15,7 @@ public enum ClientError: Error, Equatable {
 public struct PaddockClient: Sendable {
     private let socketPath: String
     /// Only read-only requests leave this client: a development build talking to the real home's daemon.
-    let readOnly: Bool
+    public let readOnly: Bool
 
     /// `readOnly` defaults to: this process is a development build (`SystemIntegration`) and `paths` is the
     /// owner's real home.
