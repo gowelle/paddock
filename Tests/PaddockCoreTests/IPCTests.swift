@@ -49,7 +49,7 @@ final class IPCTests: XCTestCase {
             .serviceCreateDatabase(name: "postgres-18", database: "shop"),
             .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
             .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
-            .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"),
+            .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail"),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -57,6 +57,7 @@ final class IPCTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 7, "serviceCreateDatabase is new: the build number moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 8, "ServiceStatus.notes is new: the build number moves on")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 15, "serviceEnv is new and status leaves secrets out")
     }
 
     // MARK: - What a development build may send
@@ -73,7 +74,7 @@ final class IPCTests: XCTestCase {
          .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop"),
          .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
          .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
-         .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop")]
+         .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail")]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -111,11 +112,12 @@ final class IPCTests: XCTestCase {
         case .tasksInit: return "tasksInit"
         case .taskForceRestart: return "taskForceRestart"
         case .tasksStatus: return "tasksStatus"
+        case .serviceEnv: return "serviceEnv"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 33, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 34, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }
@@ -138,6 +140,8 @@ final class IPCTests: XCTestCase {
         XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status", "serviceCatalog", "tasksStatus"],
                        "listing the catalog only reads; every other service request, and every site task request, "
                            + "changes something")
+        XCTAssertFalse(Request.serviceEnv(id: "meilisearch-1-57").isReadOnly,
+                       "a service's .env lines hold its secrets: a development build may not fetch them from a real home")
 
         // A client of any other home, or of an installed build, sends everything.
         XCTAssertFalse(PaddockClient(paths: paths).readOnly, "not the real home")
@@ -152,6 +156,7 @@ final class IPCTests: XCTestCase {
                                    downloadBytes: 11_224_715)]),
             .removed(dataPath: "/h/services/mail/data", status: sampleStatus()),
             .databaseCreated(database: "shop", alreadyExisted: true, status: sampleStatus()),
+            .envLines(["MEILISEARCH_HOST=http://127.0.0.1:7700", "MEILISEARCH_KEY=s3cr3t"]),
         ]
         for response in responses {
             let data = try JSONEncoder().encode(response)

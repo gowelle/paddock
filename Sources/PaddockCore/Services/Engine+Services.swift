@@ -41,7 +41,8 @@ extension Engine {
         }
     }
 
-    /// Answers a service request. Called from the serialized request path.
+    /// Answers a service request. Called from the serialized request path (`serviceEnv`, which only reads, from
+    /// outside it).
     func performService(_ request: Request) async -> Response {
         let services = self.services
         do {
@@ -62,6 +63,8 @@ extension Engine {
                 try await ServiceManager.offPool { try services.restart(name) }
             case .serviceCatalog:
                 return .catalog(services.catalogEntries())
+            case .serviceEnv(let id):
+                return .envLines(try await ServiceManager.offPool { try services.env(id) })
             case .serviceCreateDatabase(let name, let database):
                 let result = try await ServiceManager.offPool { try services.createDatabase(name, database: database) }
                 return .databaseCreated(database: database, alreadyExisted: result == .alreadyDone, status: status())

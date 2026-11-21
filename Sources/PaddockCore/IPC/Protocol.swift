@@ -39,6 +39,9 @@ public enum Request: Codable, Equatable, Sendable {
     case taskForceRestart(site: String, task: String)
     /// The status, after reading the site's `paddock.json` again (nothing else changes).
     case tasksStatus(site: String)
+    /// A service's full `.env` lines, its secrets' values included (answered with `.envLines`); changes nothing.
+    /// `status` leaves those lines out, so a secret is sent only to a client that asks for it.
+    case serviceEnv(id: String)
 }
 
 extension Request {
@@ -52,7 +55,9 @@ extension Request {
              .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
              .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate,
              .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit,
-             .taskForceRestart:
+             .taskForceRestart,
+             // Only reads, but answers secrets: a development build may not fetch them from the real home.
+             .serviceEnv:
             return false
         }
     }
@@ -79,6 +84,8 @@ public enum Response: Codable, Equatable, Sendable {
     case removed(dataPath: String, status: EngineStatus)
     /// `serviceCreateDatabase` worked: `database` was created, or was there already.
     case databaseCreated(database: String, alreadyExisted: Bool, status: EngineStatus)
+    /// A service's full `.env` lines, secrets included (`serviceEnv`).
+    case envLines([String])
 }
 
 /// The `code` values of `Response.error`.

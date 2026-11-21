@@ -116,6 +116,30 @@ final class ServiceCLITests: XCTestCase {
                        "No services yet. See what you can add with: paddock service available\n")
     }
 
+    /// A secret is never printed by `service add` (a comment says how to get it, safe to paste into `.env`);
+    /// `service env` fetches and prints it.
+    func testAddLeavesSecretsOutAndEnvPrintsThem() throws {
+        let catalog = home.root.appendingPathComponent("catalog.json")
+        try JSONEncoder().encode(ServiceCatalog(recipes: [FakeService.keyedRecipe()])).write(to: catalog)
+        try launchDaemon()
+        let port = home.fakePort
+        let socket = home.paths.serviceRun("fake").appendingPathComponent("fake.sock").path
+        let plain = "FAKE_HOST=127.0.0.1\nFAKE_PORT=\(port)\nFAKE_SOCKET=\(socket)\n"
+
+        let added = try run(["service", "add", "fake"])
+        XCTAssertEqual(added.status, 0, added.err)
+        let key = try XCTUnwrap(try ServiceSecrets.load(from: home.paths.serviceConfig("fake"))["master_key"])
+        XCTAssertEqual(added.out, "Starting Fake…\nFake is running on port \(port).\n\n" + plain
+                       + "# FAKE_SECRET: run \"paddock service env fake\"\n")
+        XCTAssertFalse(added.out.contains(key))
+        XCTAssertFalse(try run(["service", "list"]).out.contains(key))
+        XCTAssertFalse(try run(["status"]).out.contains(key))
+
+        let env = try run(["service", "env", "Fake"])
+        XCTAssertEqual(env.status, 0, env.err)
+        XCTAssertEqual(env.out, plain + "FAKE_SECRET=\(key)\n")
+    }
+
     /// A daemon whose services take a while to stop (here one that ignores SIGTERM, with five seconds'
     /// grace): `paddock stop` says what it is waiting for.
     func testStopSaysWhenItIsWaitingForServices() throws {

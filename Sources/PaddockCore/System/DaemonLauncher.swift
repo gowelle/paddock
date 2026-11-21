@@ -154,6 +154,7 @@ public struct DaemonLauncher: Sendable {
         case .ok(let status), .removed(_, let status), .databaseCreated(_, _, let status): return status
         case .error(_, let message): throw DaemonLaunchError.failed(message)
         case .catalog: throw DaemonLaunchError.failed(Messages.unexpectedAnswer(ClientError.badResponse("a catalog")))
+        case .envLines: throw DaemonLaunchError.failed(Messages.unexpectedAnswer(ClientError.badResponse(".env lines")))
         }
     }
 

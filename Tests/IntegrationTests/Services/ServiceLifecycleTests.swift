@@ -345,25 +345,12 @@ final class ServiceLifecycleTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: conf, encoding: .utf8), "port = \(home.fakePort)\n", "rewritten on start")
     }
 
-    /// The fake with a secret in its environment and its .env lines.
-    private func keyedRecipe() -> ServiceRecipe {
-        let base = FakeService.recipe()
-        return ServiceRecipe(
-            kind: base.kind, displayName: base.displayName, version: base.version, series: base.series,
-            seriesInID: base.seriesInID, licence: base.licence, assets: base.assets, initialise: base.initialise,
-            start: RecipeCommand(executable: base.start.executable, arguments: base.start.arguments,
-                                 environment: ["FAKE_KEY": "{secret.master_key}"]),
-            ready: base.ready, stopGraceSeconds: base.stopGraceSeconds, ports: base.ports, socket: base.socket,
-            env: base.env + ["FAKE_SECRET={secret.master_key}"], openURL: base.openURL,
-            secrets: [RecipeSecret(name: "master_key", bytes: 32)])
-    }
-
     /// A secret is made once, owner-only, reaches the program only through its environment and the .env
     /// lines, never its arguments or any log; it is the same after a restart and after a remove that keeps
     /// the data, and a new one after the data is deleted.
     func testSecretsAreMadeOnceKeptWithTheDataAndOnlyInTheEnvironment() async throws {
         let lines = LockedBox<[String]>([])
-        let manager = makeManager([keyedRecipe()], log: { line in lines.value.append(line) })
+        let manager = makeManager([FakeService.keyedRecipe()], log: { line in lines.value.append(line) })
         _ = try await manager.add(kind: "fake", version: nil)
         let config = home.paths.serviceConfig("fake")
         let secretsFile = ServiceSecrets.file(in: config)
@@ -374,7 +361,8 @@ final class ServiceLifecycleTests: XCTestCase {
         XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake").contains("FAKE_KEY=\(key)"))
         XCTAssertFalse(FakeService.arguments(paths: home.paths, id: "fake").contains { $0.contains(key) }, "never in ps")
         let running = try XCTUnwrap(status(manager))
-        XCTAssertTrue(running.env.contains("FAKE_SECRET=\(key)"), "\(running.env)")
+        XCTAssertFalse(running.env.joined(separator: "\n").contains(key), "never in the status: \(running.env)")
+        XCTAssertFalse(running.env.contains { $0.hasPrefix("FAKE_SECRET") }, "its line is left out of the status")
         XCTAssertEqual(running.secretEnvNames, ["FAKE_SECRET"])
         XCTAssertEqual(try manager.env("fake").last, "FAKE_SECRET=\(key)")
         XCTAssertFalse(Messages.addedEnvLines(running).joined().contains(key))
@@ -410,7 +398,7 @@ final class ServiceLifecycleTests: XCTestCase {
         before.stopAll()
         let config = home.paths.serviceConfig("fake")
         XCTAssertFalse(FileManager.default.fileExists(atPath: ServiceSecrets.file(in: config).path))
-        let after = makeManager([keyedRecipe()])
+        let after = makeManager([FakeService.keyedRecipe()])
         try after.start("fake")
         let key = try XCTUnwrap(try ServiceSecrets.load(from: config)["master_key"])
         XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake").contains("FAKE_KEY=\(key)"))
@@ -419,7 +407,7 @@ final class ServiceLifecycleTests: XCTestCase {
 
     /// A secrets file Paddock can't use is left alone and the service doesn't start.
     func testADamagedSecretsFileIsLeftAlone() async throws {
-        let manager = makeManager([keyedRecipe()])
+        let manager = makeManager([FakeService.keyedRecipe()])
         _ = try await manager.add(kind: "fake", version: nil)
         manager.stop("fake")
         let file = ServiceSecrets.file(in: home.paths.serviceConfig("fake"))

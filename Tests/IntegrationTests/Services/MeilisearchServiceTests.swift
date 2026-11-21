@@ -74,8 +74,10 @@ final class MeilisearchServiceTests: XCTestCase {
         let status = try XCTUnwrap(manager.statuses().first)
         XCTAssertEqual(status.state, .running)
         XCTAssertEqual(status.mainPort, port)
-        XCTAssertEqual(status.env, ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:\(port)",
-                                    "MEILISEARCH_KEY=\(key)"])
+        XCTAssertEqual(status.env, ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:\(port)"],
+                       "the key's line is never in the status")
+        XCTAssertEqual(try manager.env(id), ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:\(port)",
+                                             "MEILISEARCH_KEY=\(key)"])
         XCTAssertEqual(status.secretEnvNames, ["MEILISEARCH_KEY"])
         XCTAssertFalse(Messages.serviceTable(manager.statuses()).contains(key), "not in paddock service list")
         XCTAssertEqual(status.openURL, "http://127.0.0.1:\(port)")

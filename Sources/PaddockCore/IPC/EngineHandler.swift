@@ -59,6 +59,8 @@ extension Engine {
             return await performTasks(request)
         }
         if case .serviceCatalog = request { return .catalog(services.catalogEntries()) }
+        // Only reads: answered at once, never queued behind a long add.
+        if case .serviceEnv = request { return await performService(request) }
         if case .shutdown = request { markShuttingDown() }
         return await mutations.withLock {
             if self.isShuttingDown && request != .shutdown { return self.shuttingDownError }
@@ -164,7 +166,7 @@ extension Engine {
             return .ok(status())
 
         case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog, .serviceUpdate,
-             .serviceCreateDatabase:
+             .serviceCreateDatabase, .serviceEnv:
             return await performService(request)
         case .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit, .taskForceRestart,
              .tasksStatus:

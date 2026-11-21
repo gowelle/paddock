@@ -313,16 +313,15 @@ public enum Messages {
     /// Replaces the `.env` lines that name a service's Unix socket when its path would be too long.
     public static let unixSocketDisabled = "# Unix socket disabled: Paddock's folder path is too long"
 
-    /// The `.env` lines `paddock service add` prints: a secret's value (a master key) is left out and the
-    /// line says where to get it, so it isn't left in a terminal's scrollback by every add.
+    /// The `.env` lines `paddock service add` prints: the status's (which never hold a secret), then for each
+    /// secret a comment saying how to get it, safe to paste into `.env` as it is.
     public static func addedEnvLines(_ status: ServiceStatus) -> [String] {
-        let secret = Set(status.secretEnvNames ?? [])
-        return status.env.map { line in
-            guard let name = line.split(separator: "=", maxSplits: 1).first.map(String.init), secret.contains(name) else {
-                return line
-            }
-            return "\(name)=…   (secret; see: paddock service env \(status.id))"
-        }
+        status.env + (status.secretEnvNames ?? []).map { secretEnvComment($0, id: status.id) }
+    }
+
+    /// `# MEILISEARCH_KEY: run "paddock service env meilisearch-1-57"`
+    public static func secretEnvComment(_ name: String, id: String) -> String {
+        "# \(name): run \"paddock service env \(id)\""
     }
 
     /// What `paddock service create-db` prints.

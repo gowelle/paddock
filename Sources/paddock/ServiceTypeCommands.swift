@@ -23,7 +23,7 @@ extension CLI {
         switch try sendRaw(.serviceCatalog, timeout: 30) {
         case .catalog(let entries): return entries
         case .error(_, let message): throw failure(message)
-        case .ok, .removed, .databaseCreated: throw unexpectedAnswer()
+        case .ok, .removed, .databaseCreated, .envLines: throw unexpectedAnswer()
         }
     }
 
@@ -99,9 +99,10 @@ struct ServiceAdd: ParsableCommand {
         }
         if let notice = added.notice { print(notice) }
         print(CLI.runningLine(added))
-        if !added.env.isEmpty {
+        let envLines = Messages.addedEnvLines(added)
+        if !envLines.isEmpty {
             print("")
-            print(Messages.addedEnvLines(added).joined(separator: "\n"))
+            print(envLines.joined(separator: "\n"))
         }
     }
 }
@@ -155,7 +156,7 @@ struct ServiceRemove: ParsableCommand {
                              : "Removed \(service.name). Its data is still at \(path).")
         case .error(_, let message):
             throw CLI.failure(message)
-        case .ok, .catalog, .databaseCreated:
+        case .ok, .catalog, .databaseCreated, .envLines:
             throw CLI.unexpectedAnswer()
         }
     }
@@ -193,7 +194,7 @@ struct ServiceCreateDatabase: ParsableCommand {
             print(Messages.databaseCreated(database, in: service.name, alreadyExisted: existed))
         case .error(_, let message):
             throw CLI.failure(message)
-        case .ok, .catalog, .removed:
+        case .ok, .catalog, .removed, .envLines:
             throw CLI.unexpectedAnswer()
         }
     }
@@ -205,8 +206,17 @@ struct ServiceEnv: ParsableCommand {
     @Argument(help: "The service's name, such as mail.") var name: String
 
     func run() throws {
+        // The lines hold the service's secrets, which a development build may not read from the real home.
+        try CLI.refuseChangesFromDevelopmentBuild()
         let service = try CLI.service(named: name, in: try CLI.send(.status, timeout: 30))
-        print(service.env.joined(separator: "\n"))
+        switch try CLI.sendRaw(.serviceEnv(id: service.id), timeout: 30) {
+        case .envLines(let lines):
+            print(lines.joined(separator: "\n"))
+        case .error(_, let message):
+            throw CLI.failure(message)
+        case .ok, .catalog, .removed, .databaseCreated:
+            throw CLI.unexpectedAnswer()
+        }
     }
 }
 

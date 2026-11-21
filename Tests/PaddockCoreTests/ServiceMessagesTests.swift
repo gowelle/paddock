@@ -45,18 +45,17 @@ final class ServiceMessagesTests: XCTestCase {
                       Messages.serviceTable([noted]))
     }
 
-    /// `paddock service add` leaves a secret's value out of the .env lines it prints and says where it is.
+    /// `paddock service add` prints the .env lines the status has (never a secret's) and, for each secret, a
+    /// comment that is safe to paste and says how to get it.
     func testAddedEnvLinesLeaveSecretsOut() {
         let status = ServiceStatus(id: "meilisearch-1-57", name: "Meilisearch 1.57", kind: "meilisearch", version: "1.57.0",
                                    displayName: "Meilisearch", state: .running, ports: ["main": 7700],
-                                   env: ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700",
-                                         "MEILISEARCH_KEY=s3cr3t-value"],
+                                   env: ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700"],
                                    openURL: nil, dataPath: "/d", autostart: true, mainPort: 7700,
                                    secretEnvNames: ["MEILISEARCH_KEY"])
         XCTAssertEqual(Messages.addedEnvLines(status),
                        ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700",
-                        "MEILISEARCH_KEY=…   (secret; see: paddock service env meilisearch-1-57)"])
-        XCTAssertFalse(Messages.serviceTable([status]).contains("s3cr3t"))
+                        "# MEILISEARCH_KEY: run \"paddock service env meilisearch-1-57\""])
         let plain = ServiceStatus(id: "mail", name: "Mail", kind: "mail", version: "1", displayName: "Mail", state: .running,
                                   ports: [:], env: ["MAIL_PORT=1025"], openURL: nil, dataPath: "/d", autostart: true,
                                   mainPort: nil)

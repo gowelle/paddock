@@ -1335,7 +1335,7 @@ public final class ServiceManager: @unchecked Sendable {
         guard let recipe = describingRecipe(instance) else {
             throw ServiceError.unavailable(name: instance.name, reason: "Paddock no longer knows how to run it")
         }
-        return envLines(recipe, context: try context(instance, recipe: recipe))
+        return envLines(recipe, context: try context(instance, recipe: recipe), includingSecrets: true)
     }
 
     /// Each service process the supervisor runs -> its status, as in `EngineStatus.processes`.
@@ -1349,7 +1349,9 @@ public final class ServiceManager: @unchecked Sendable {
         let recipe = describingRecipe(instance)
         let latest = latest(instance)
         let context = recipe.flatMap { try? self.context(instance, recipe: $0) }
-        let env = recipe.flatMap { recipe in context.map { envLines(recipe, context: $0) } } ?? []
+        // Every client gets the status on every poll: a secret's line is left out (`secretEnvNames` names it);
+        // `serviceEnv` answers it to a client that asks.
+        let env = recipe.flatMap { recipe in context.map { envLines(recipe, context: $0, includingSecrets: false) } } ?? []
         let openURL = recipe?.openURL.flatMap { template in context.flatMap { try? ServiceTemplate.render(template, context: $0) } }
         runtimeLock.lock()
         let known = runtime[instance.id]
@@ -1443,11 +1445,15 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// The `.env` variables whose values are secrets (`MEILISEARCH_KEY`): `paddock service add` doesn't print
-    /// them; `paddock service env` does.
+    /// The `.env` variables whose values are secrets (`MEILISEARCH_KEY`): the status leaves their lines out;
+    /// `paddock service env` prints them.
     static func secretEnvNames(_ recipe: ServiceRecipe) -> [String] {
-        recipe.env.filter { line in ServiceTemplate.placeholders(in: line).contains { $0.hasPrefix("secret.") } }
-            .compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) }
+        recipe.env.filter(isSecretLine).compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) }
+    }
+
+    /// An `.env` line template that names a secret.
+    private static func isSecretLine(_ template: String) -> Bool {
+        ServiceTemplate.placeholders(in: template).contains { $0.hasPrefix("secret.") }
     }
 
     /// No `"`, `'`, `\\` or control character (a path config files can quote as it is).
@@ -1457,10 +1463,12 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// The recipe's `.env` lines; without a usable socket, those naming it give way to one comment line.
-    private func envLines(_ recipe: ServiceRecipe, context: ServiceTemplateContext) -> [String] {
+    /// The recipe's `.env` lines (those naming a secret only `includingSecrets`); without a usable socket, those
+    /// naming it give way to one comment line.
+    private func envLines(_ recipe: ServiceRecipe, context: ServiceTemplateContext, includingSecrets: Bool) -> [String] {
         let socketDisabled = recipe.socket != nil && context.socket == nil
         var lines = recipe.env.filter { !(socketDisabled && ServiceTemplate.mentionsSocket($0)) }
+            .filter { includingSecrets || !Self.isSecretLine($0) }
             .compactMap { try? ServiceTemplate.render($0, context: context) }
         if socketDisabled { lines.append(Messages.unixSocketDisabled) }
         return lines

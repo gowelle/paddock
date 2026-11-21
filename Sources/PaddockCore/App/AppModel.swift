@@ -230,7 +230,7 @@ public final class AppModel: ObservableObject {
             if errorCameFromRefresh { lastError = nil }
         case .success(.error(_, let message)):
             showRefreshError(message)
-        case .success(.catalog):
+        case .success(.catalog), .success(.envLines):
             break
         case .failure(ClientError.daemonNotRunning):
             status = nil
@@ -279,7 +279,7 @@ public final class AppModel: ObservableObject {
             status = fresh
             lastError = nil
             if Self.isTrustRequest(r) { trustNotice = nil }
-        case .success(.catalog):
+        case .success(.catalog), .success(.envLines):
             lastError = nil
         case .success(.error(let code, let message)):
             if code == ErrorCode.needsTrust || code == ErrorCode.trustDisabled {
