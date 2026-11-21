@@ -7,9 +7,16 @@ public final class DNSResponder: @unchecked Sendable {
 
     public let port: Int
     private let tld: String
+    private final class Run: @unchecked Sendable {
+        let lock = NSLock()
+        private var stopped = false
+        let done = DispatchSemaphore(value: 0)
+        var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+        func stop() { lock.lock(); stopped = true; lock.unlock() }
+    }
+
     private let lock = NSLock()
-    private var fd: Int32 = -1
-    private var thread: Thread?
+    private var run: Run?
 
     public init(port: Int, tld: String) {
         self.port = port
@@ -18,7 +25,7 @@ public final class DNSResponder: @unchecked Sendable {
 
     public func start() throws {
         lock.lock(); defer { lock.unlock() }
-        guard fd < 0 else { return }
+        guard run == nil else { return }
         let s = socket(AF_INET, SOCK_DGRAM, 0)
         guard s >= 0 else { throw Failure.socket(errno) }
         var addr = sockaddr_in()
@@ -35,31 +42,32 @@ public final class DNSResponder: @unchecked Sendable {
         // Wake periodically so the loop notices stop() even if close doesn't unblock recvfrom.
         var tv = timeval(tv_sec: 0, tv_usec: 100_000)
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        fd = s
+        let r = Run()
+        run = r
         let tld = self.tld
-        let t = Thread { [weak self] in self?.loop(socket: s, tld: tld) }
+        let t = Thread { [self] in
+            loop(socket: s, tld: tld, run: r)
+            close(s)               // only the loop thread closes its own socket
+            r.done.signal()
+        }
         t.name = "app.paddock.dns"
-        thread = t
         t.start()
     }
 
+    /// Signals the loop to exit and waits (at most ~one receive timeout) so the port is free on return.
     public func stop() {
         lock.lock()
-        let s = fd
-        fd = -1
-        thread = nil
+        let r = run
+        run = nil
         lock.unlock()
-        if s >= 0 { shutdown(s, SHUT_RDWR); close(s) }
+        guard let r else { return }
+        r.stop()
+        _ = r.done.wait(timeout: .now() + 1)
     }
 
-    private func isRunning(_ s: Int32) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return fd == s
-    }
-
-    private func loop(socket s: Int32, tld: String) {
+    private func loop(socket s: Int32, tld: String, run: Run) {
         var buf = [UInt8](repeating: 0, count: 1500)
-        while isRunning(s) {
+        while !run.isStopped {
             var from = sockaddr_storage()
             var fromLen = socklen_t(MemoryLayout<sockaddr_storage>.size)
             let n = withUnsafeMutablePointer(to: &from) {
