@@ -1005,9 +1005,8 @@ public final class ServiceManager: @unchecked Sendable {
                 })
             spec.workingDirectory = paths.serviceHome(id)
             // Starting from before the process exists, so status never says running before readiness was checked.
-            let previous = runtimeState(id)
             setRuntime(.starting, for: id)
-            do { try supervisor.start(spec) } catch { setRuntime(previous, for: id); throw error }
+            try supervisor.start(spec)
             processStartedForTesting?(id)
             guard waitUntilReady(Self.processName(id), probe, timeout: readyTimeout ?? recipe.readyTimeout,
                                  isCancelled: { [weak self] in self?.isCancelled ?? true }) else {
@@ -1514,12 +1513,6 @@ public final class ServiceManager: @unchecked Sendable {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         try ensureRunFolder(id)
-    }
-
-    private func runtimeState(_ id: String) -> ServiceState? {
-        runtimeLock.lock()
-        defer { runtimeLock.unlock() }
-        return runtime[id]
     }
 
     private func setRuntime(_ state: ServiceState?, for id: String) {
