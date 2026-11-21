@@ -681,7 +681,10 @@ public enum Messages {
             }
             switch tasks.approval {
             case .none: break
-            case .needsApproval: lines.append(tasksWaitingForApproval(site: site.name))
+            case .needsApproval:
+                lines.append(tasksWaitingForApproval(site: site.name))
+                // Why (a replaced folder), when the site says.
+                if let notice = tasks.notice { lines.append("\(site.name): \(notice)") }
             case .invalid(let reason): lines.append(tasksFileInvalid(site: site.name, reason: reason))
             case .approved, .changed:
                 for task in tasks.tasks { lines.append("\(site.name)/\(task.name): \(taskState(task.state, task: task.name))") }

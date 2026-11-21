@@ -96,7 +96,9 @@ struct TasksList: ParsableCommand {
             return print(Messages.taskError(.noTasksFile(site: target.name)))
         }
         switch tasks.approval {
-        case .needsApproval: print(Messages.tasksWaitingForApproval(site: target.name))
+        case .needsApproval:
+            print(Messages.tasksWaitingForApproval(site: target.name))
+            if let notice = tasks.notice { print(notice) }
         case .invalid(let reason): print(Messages.tasksFileInvalid(site: target.name, reason: reason))
         case .approved, .changed, .none:
             print(Messages.taskTable(tasks, routes: Messages.routeLines(tasks, site: target)))

@@ -173,4 +173,15 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.taskState(.stopping), "stopping")
         XCTAssertTrue(Messages.tasksUseBasicEnvironment(.timedOut).hasSuffix("paddock tasks on"))
     }
+
+    /// A site whose approved folder was replaced says so under `paddock status` and `paddock tasks`, after the
+    /// line asking for approval.
+    func testAReplacedFolderIsSaidWithTheApprovalLine() {
+        let tasks = SiteTasksStatus(approval: .needsApproval, tasks: [], pending: [], pendingHash: "v1:x",
+                                    notice: Messages.tasksFolderReplaced)
+        let site = Site(name: "blog", path: "/p/blog", kind: .parked, secured: false, php: PHPVersion("8.4")!,
+                        pinned: false, tasks: tasks)
+        XCTAssertEqual(Messages.siteTasksLines([site]),
+                       [Messages.tasksWaitingForApproval(site: "blog"), "blog: \(Messages.tasksFolderReplaced)"])
+    }
 }
