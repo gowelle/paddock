@@ -47,6 +47,7 @@ extension Engine {
     /// arriving later) can start the web stack again just before the daemon exits.
     public func handle(_ request: Request) async -> Response {
         if case .status = request { return .ok(status()) }
+        if case .serviceCatalog = request { return .catalog(services.catalog.kinds()) }
         if case .shutdown = request { markShuttingDown() }
         return await mutations.withLock {
             if self.isShuttingDown && request != .shutdown { return self.shuttingDownError }
@@ -150,6 +151,9 @@ extension Engine {
                 return self.error(ErrorCode.internal, "Could not remove PHP \(version): \(error.localizedDescription)")
             }
             return .ok(status())
+
+        case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog:
+            return await performService(request)
         }
     }
 

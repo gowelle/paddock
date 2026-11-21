@@ -130,4 +130,34 @@ final class SupervisorTests: XCTestCase {
         }
         XCTAssertEqual(group.wait(timeout: .now() + 5), .success, "a concurrent stop hung")
     }
+
+    /// A service that stops cleanly only on SIGINT gets SIGINT, not SIGTERM then SIGKILL.
+    func testStopSendsTheSpecsSignal() throws {
+        supervisor = Supervisor(stopGracePeriod: 5)
+        let marker = dir.appendingPathComponent("int").path
+        var spec = shell("int", "trap '' TERM; trap 'echo int > \"\(marker)\"; exit 0' INT; while :; do sleep 0.05; done")
+        spec.stopSignal = SIGINT
+        try supervisor.start(spec)
+        Thread.sleep(forTimeInterval: 0.3) // Let the shell set its traps.
+        let started = Date()
+        supervisor.stop("int")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "stopped by SIGINT, not by the SIGKILL fallback")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker), "the INT handler ran")
+        XCTAssertEqual(supervisor.status("int"), .stopped)
+    }
+
+    /// A spec's own grace period replaces the supervisor's before SIGKILL.
+    func testStopUsesTheSpecsGracePeriod() throws {
+        supervisor = Supervisor(stopGracePeriod: 30)
+        var spec = shell("stubborn", "trap '' TERM; while :; do sleep 0.05; done")
+        spec.stopGrace = 0.5
+        try supervisor.start(spec)
+        Thread.sleep(forTimeInterval: 0.3)
+        let started = Date()
+        supervisor.stop("stubborn")
+        let took = Date().timeIntervalSince(started)
+        XCTAssertGreaterThanOrEqual(took, 0.4)
+        XCTAssertLessThan(took, 5, "SIGKILL after the spec's 0.5 seconds, not the supervisor's 30")
+        XCTAssertEqual(supervisor.status("stubborn"), .stopped)
+    }
 }

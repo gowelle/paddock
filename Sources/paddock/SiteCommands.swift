@@ -91,6 +91,8 @@ struct Secure: ParsableCommand {
         case .error(_, let message):
             // For needs_trust the daemon says why: not trusted yet, or the certificate isn't ready.
             throw CLI.failure(message)
+        case .catalog, .removed:
+            throw CLI.unexpectedAnswer()
         }
     }
 }
@@ -138,6 +140,8 @@ struct Trust: ParsableCommand {
             print(Messages.trusted)
         case .error(_, let message):
             throw CLI.failure(message)
+        case .catalog, .removed:
+            throw CLI.unexpectedAnswer()
         }
     }
 }

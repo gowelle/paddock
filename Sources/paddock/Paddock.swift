@@ -67,9 +67,15 @@ enum CLI {
     @discardableResult
     static func send(_ request: Request, timeout: TimeInterval = 600) throws -> EngineStatus {
         switch try sendRaw(request, timeout: timeout) {
-        case .ok(let status): return status
+        case .ok(let status), .removed(_, let status): return status
         case .error(_, let message): throw failure(message)
+        case .catalog: throw unexpectedAnswer()
         }
+    }
+
+    /// For an answer that doesn't fit the request (a catalog where a status was expected).
+    static func unexpectedAnswer() -> ExitCode {
+        failure(Messages.unexpectedAnswer(ClientError.badResponse("an answer for another request")))
     }
 
     /// The absolute form of a path typed on the command line, relative to the current directory.

@@ -28,6 +28,9 @@ let package = Package(
         // C, because Swift cannot see launch_activate_socket from <launch.h>.
         .executableTarget(name: "paddock-ports"),
         .target(name: "PaddockTestSupport", dependencies: ["PaddockCore"], path: "Tests/PaddockTestSupport"),
+        // A stand-in service for the service framework's tests; never shipped (Scripts/bundle.sh names
+        // the binaries it ships).
+        .executableTarget(name: "paddock-fake-service", path: "Tests/FakeService"),
         .testTarget(name: "PaddockCoreTests", dependencies: ["PaddockCore", "PaddockTestSupport"]),
         .testTarget(name: "IntegrationTests", dependencies: ["PaddockCore", "PaddockTestSupport"]),
     ],

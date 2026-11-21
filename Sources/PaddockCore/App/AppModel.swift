@@ -223,13 +223,15 @@ public final class AppModel: ObservableObject {
             shellConfigured = extras.shellConfigured
         }
         switch result {
-        case .success(.ok(let fresh)):
+        case .success(.ok(let fresh)), .success(.removed(_, let fresh)):
             status = fresh
             // Setup finished meanwhile (say, from the command line): the held ports are old news.
             if fresh.running && fresh.portHelperInstalled { setupBlockedBy = [] }
             if errorCameFromRefresh { lastError = nil }
         case .success(.error(_, let message)):
             showRefreshError(message)
+        case .success(.catalog):
+            break
         case .failure(ClientError.daemonNotRunning):
             status = nil
             if errorCameFromRefresh { lastError = nil }
@@ -273,10 +275,12 @@ public final class AppModel: ObservableObject {
         let client = client
         let result = await Task.detached { Result { try client.send(r) } }.value
         switch result {
-        case .success(.ok(let fresh)):
+        case .success(.ok(let fresh)), .success(.removed(_, let fresh)):
             status = fresh
             lastError = nil
             if Self.isTrustRequest(r) { trustNotice = nil }
+        case .success(.catalog):
+            lastError = nil
         case .success(.error(let code, let message)):
             if code == ErrorCode.needsTrust || code == ErrorCode.trustDisabled {
                 trustNotice = message

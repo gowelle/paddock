@@ -11,6 +11,14 @@ public enum Request: Codable, Equatable, Sendable {
     case installPHP(version: PHPVersion), removePHP(version: PHPVersion)
     case trust
     case shutdown
+    /// Adds a service from the catalog (newest version when `version` is nil), starts it and waits until
+    /// it is ready. May download first, so it can take minutes.
+    case serviceAdd(kind: String, version: String?)
+    /// Answered with `.removed`. Keeps the service's data unless `deleteData`.
+    case serviceRemove(name: String, deleteData: Bool)
+    case serviceStart(name: String), serviceStop(name: String), serviceRestart(name: String)
+    /// Answered with `.catalog`.
+    case serviceCatalog
 }
 
 extension Request {
@@ -18,10 +26,11 @@ extension Request {
     /// home's daemon). Every case must be classified here: no `default`.
     public var isReadOnly: Bool {
         switch self {
-        case .status:
+        case .status, .serviceCatalog:
             return true
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
-             .isolate, .unisolate, .use, .installPHP, .removePHP, .trust:
+             .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
+             .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart:
             return false
         }
     }
@@ -30,6 +39,18 @@ extension Request {
 public enum Response: Codable, Equatable, Sendable {
     case ok(EngineStatus)
     case error(code: String, message: String)
+    /// The services Paddock can add (`serviceCatalog`).
+    case catalog([CatalogEntry])
+    /// A service was removed (`serviceRemove`); its data is (or was, if deleted) at `dataPath`.
+    case removed(dataPath: String, status: EngineStatus)
+
+    /// The status this response carries, if any.
+    public var status: EngineStatus? {
+        switch self {
+        case .ok(let status), .removed(_, let status): return status
+        case .error, .catalog: return nil
+        }
+    }
 }
 
 /// The `code` values of `Response.error`.
@@ -43,6 +64,16 @@ public enum ErrorCode {
     /// A site is served over HTTPS but macOS does not trust Paddock's certificate authority.
     public static let needsTrust = "needs_trust"
     public static let trustDisabled = "trust_disabled"
+    /// No added service has that name.
+    public static let unknownService = "unknown_service"
+    /// The catalog has no such kind (or version) of service.
+    public static let unknownServiceKind = "unknown_service_kind"
+    /// A service's port is held by another program.
+    public static let servicePortInUse = "service_port_in_use"
+    /// A service could not be downloaded, initialised or started.
+    public static let serviceFailed = "service_failed"
+    /// Paddock can't run that service here.
+    public static let serviceUnavailable = "service_unavailable"
     public static let `internal` = "internal"
 }
 

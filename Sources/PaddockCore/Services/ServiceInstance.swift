@@ -89,10 +89,12 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
     public let autostart: Bool
     /// The recipe's first port (`paddock service add` says "running on port …").
     public let mainPort: Int?
+    /// A sentence about its last add (say, that existing data was reused), until it is next stopped.
+    public let notice: String?
 
     public init(id: String, name: String, kind: String, version: String, displayName: String, state: ServiceState,
                 ports: [String: Int], env: [String], openURL: String?, dataPath: String, autostart: Bool,
-                mainPort: Int?) {
+                mainPort: Int?, notice: String? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -105,5 +107,6 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
         self.dataPath = dataPath
         self.autostart = autostart
         self.mainPort = mainPort
+        self.notice = notice
     }
 }

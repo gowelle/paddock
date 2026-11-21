@@ -136,6 +136,9 @@ public final class Engine: @unchecked Sendable {
 
     private let supervisor: Supervisor
     private let dns: DNSResponder
+    /// Added services (databases, mail…). They have their own supervisor: stopping the web side leaves
+    /// them running; only `shutdown` stops them.
+    public let services: ServiceManager
     /// Held for the whole of `start`, `stop` and `reload`, including slow waits. Never taken by `status`.
     private let operationLock = NSLock()
     /// Guards only the fields `status` reads; held for an instant, never across slow work.
@@ -144,7 +147,7 @@ public final class Engine: @unchecked Sendable {
     private var blockedBy: [PortHolder] = []
     private var dnsUp = false
     private var shuttingDown = false
-    /// The PHP install in progress, if any; shutting down cancels it. Guarded by `flagsLock`.
+    /// The PHP install or service add in progress, if any; shutting down cancels it. Guarded by `flagsLock`.
     private var installInProgress: Task<Void, Error>?
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
@@ -181,6 +184,7 @@ public final class Engine: @unchecked Sendable {
          portHelperInstalled: @escaping @Sendable () -> Bool = { false },
          portHolders: @escaping @Sendable ([Int]) -> [PortHolder] = { PortCheck.holders(of: $0) },
          phpEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+         serviceSetup: ServiceSetup = .from(environment: ProcessInfo.processInfo.environment),
          log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
         self.managesPortHelper = managesPortHelper
@@ -200,6 +204,12 @@ public final class Engine: @unchecked Sendable {
         installer = PHPInstaller(paths: paths, manifest: (try? PHPManifest.bundled()) ?? PHPManifest(builds: []),
                                  environment: phpEnvironment)
         dns = DNSResponder(port: settings.dnsPort, tld: settings.tld)
+        services = ServiceManager(
+            paths: paths, catalog: serviceSetup.catalog, store: store, supervisor: Supervisor(backoffScale: backoffScale),
+            downloader: ArtifactDownloader(session: serviceSetup.session, environment: phpEnvironment),
+            portCheck: serviceSetup.portCheck,
+            phpBinary: { [store, installer] in store.load().defaultPHP.map(installer.phpBinary) },
+            portBase: serviceSetup.portBase, readyTimeout: serviceSetup.readyTimeout, log: log)
     }
 
     deinit { shutdown() }
@@ -332,13 +342,14 @@ public final class Engine: @unchecked Sendable {
         setFlags(blockedBy: [])
     }
 
-    /// Stops the web stack and the DNS responder; for the daemon's exit.
+    /// Stops the web stack, the DNS responder and every service; for the daemon's exit.
     public func shutdown() {
         operationLock.lock()
         defer { operationLock.unlock() }
         stopLocked()
         dns.stop()
         setFlags(blockedBy: [], dnsRunning: false)
+        services.stopAll()
     }
 
     /// Regenerates configs; when running, also starts/stops FPM pools to match the versions in use
@@ -373,7 +384,7 @@ public final class Engine: @unchecked Sendable {
         let sites = state.defaultPHP.map {
             SiteRegistry(state: state, defaultPHP: $0, settings: settings).sites()
         } ?? []
-        var processes: [String: String] = [:]
+        var processes = services.processes
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
         return EngineStatus(running: current.running && !caddyCrashed && !helperCrashed,
                             blockedBy: current.blockedBy,
@@ -385,7 +396,8 @@ public final class Engine: @unchecked Sendable {
                             trustEnabled: trust != nil, dnsRunning: current.dnsRunning,
                             portHelperInstalled: managesPortHelper || portHelperInstalled(),
                             needsTrust: needsTrust(sites: sites),
-                            hasReplacedRootsToClean: hasReplacedRootsToClean)
+                            hasReplacedRootsToClean: hasReplacedRootsToClean,
+                            services: services.statuses())
     }
 
     /// A replaced root on disk that macOS (as last checked) still trusts. Never waits.
@@ -619,6 +631,7 @@ public final class Engine: @unchecked Sendable {
         let install = installInProgress
         flagsLock.unlock()
         install?.cancel()
+        services.cancelPendingWork()
     }
 
     /// Records the PHP install in progress (nil when it is over). One registered after shutting down

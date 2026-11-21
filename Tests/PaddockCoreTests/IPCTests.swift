@@ -43,6 +43,9 @@ final class IPCTests: XCTestCase {
             .isolate(site: "blog", version: v84), .unisolate(site: "blog"),
             .use(version: v84), .installPHP(version: v84), .removePHP(version: v84),
             .shutdown,
+            .serviceAdd(kind: "postgres", version: "18"), .serviceAdd(kind: "mail", version: nil),
+            .serviceRemove(name: "mail", deleteData: true), .serviceStart(name: "mail"), .serviceStop(name: "mail"),
+            .serviceRestart(name: "mail"), .serviceCatalog,
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -59,7 +62,8 @@ final class IPCTests: XCTestCase {
          .park(path: "/p"), .forget(path: "/p"), .link(name: "blog", path: "/p"), .unlink(name: "blog"),
          .secure(site: "blog"), .unsecure(site: "blog"), .isolate(site: "blog", version: v84),
          .unisolate(site: "blog"), .use(version: v84), .installPHP(version: v84), .removePHP(version: v84),
-         .trust]
+         .trust, .serviceAdd(kind: "mail", version: nil), .serviceRemove(name: "mail", deleteData: false),
+         .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -81,11 +85,17 @@ final class IPCTests: XCTestCase {
         case .installPHP: return "installPHP"
         case .removePHP: return "removePHP"
         case .trust: return "trust"
+        case .serviceAdd: return "serviceAdd"
+        case .serviceRemove: return "serviceRemove"
+        case .serviceStart: return "serviceStart"
+        case .serviceStop: return "serviceStop"
+        case .serviceRestart: return "serviceRestart"
+        case .serviceCatalog: return "serviceCatalog"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 17, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 23, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }
@@ -103,8 +113,10 @@ final class IPCTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(seen.value.map(caseName), ["status"], "exactly the read-only requests were sent")
-        XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status"])
+        XCTAssertEqual(seen.value.map(caseName), ["status", "serviceCatalog"],
+                       "exactly the read-only requests were sent")
+        XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status", "serviceCatalog"],
+                       "listing the catalog only reads; every other service request changes something")
 
         // A client of any other home, or of an installed build, sends everything.
         XCTAssertFalse(PaddockClient(paths: paths).readOnly, "not the real home")
@@ -115,6 +127,9 @@ final class IPCTests: XCTestCase {
         let responses: [Response] = [
             .ok(sampleStatus()),
             .error(code: "unknown_site", message: "No site named nope"),
+            .catalog([CatalogEntry(kind: "mail", displayName: "Mail", licence: "MIT", versions: ["1.34.0"],
+                                   downloadBytes: 11_224_715)]),
+            .removed(dataPath: "/h/services/mail/data", status: sampleStatus()),
         ]
         for response in responses {
             let data = try JSONEncoder().encode(response)

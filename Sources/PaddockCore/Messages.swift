@@ -291,6 +291,101 @@ public enum Messages {
         return name
     }
 
+    // MARK: - Services
+
+    /// Replaces the `.env` lines that name a service's Unix socket when its path would be too long.
+    public static let unixSocketDisabled = "# Unix socket disabled: Paddock's folder path is too long"
+
+    /// Re-adding a service whose data folder is still there (it was removed without deleting its data).
+    public static func existingServiceData(_ name: String) -> String {
+        "Found existing data for \(name); using it."
+    }
+
+    /// Who holds a port, as one short name: `Herd`, `nc (pid 412)`, `another program`. Names from other
+    /// programs are shown only as `displayName`/`printable` makes them.
+    public static func portHolder(_ holders: [PortHolder]) -> String {
+        guard let owner = owners(holders).first else { return "another program" }
+        return owner.who + (owner.onlyPid.map { " (pid \($0))" } ?? "")
+    }
+
+    public static func serviceError(_ error: ServiceError) -> String {
+        switch error {
+        case .unknownKind(let kind, let available):
+            return "Paddock has no service called \"\(printable(kind) ?? "?")\". "
+                + (available.isEmpty ? "None are available." : "Available: \(available.joined(separator: ", ")).")
+        case .unknownVersion(let kind, let version, let available):
+            return "\(kind) \(printable(version) ?? "?") isn't available. Available versions: "
+                + "\(available.joined(separator: ", "))."
+        case .unknownService(let name):
+            return "No service named \"\(printable(name) ?? "?")\". See: paddock service list"
+        case .portInUse(let name, let port, let holder):
+            return "\(name) can't start: port \(port) is in use by \(holder)."
+        case .noFreePort(let name, let preferred):
+            return "\(name) can't be added: no port from \(preferred) to \(preferred + ServicePorts.searchLimit) is free."
+        case .initialiseFailed(let name, let output):
+            return "Couldn't set up \(name):\n\(output)"
+        case .installFailed(let name, let reason):
+            switch reason {
+            case .checksumMismatch(let file):
+                return "Couldn't install \(name): the download \(file) isn't the file Paddock expects (checksum mismatch)."
+            case .downloadFailed(let why): return "Couldn't download \(name): \(why)"
+            case .notAvailable(let file): return "Couldn't install \(name): \(file) isn't on this Mac."
+            case .unpackFailed(let why): return "Couldn't unpack \(name): \(why)"
+            }
+        case .notReady(let name, let log):
+            return "\(name) didn't start." + (log.isEmpty ? "" : " The end of its log:\n\(log)")
+        case .unavailable(let name, let reason):
+            return "\(name) isn't available: \(reason)"
+        case .cancelled(let name):
+            return "Adding \(name) was cancelled because Paddock is shutting down."
+        }
+    }
+
+    /// `running`, `port 1025 in use by Herd`…
+    public static func serviceState(_ state: ServiceState) -> String {
+        switch state {
+        case .running: return "running"
+        case .starting: return "starting"
+        case .stopped: return "stopped"
+        case .crashed: return "crashed"
+        case .portInUse(let holder): return "port in use by \(holder)"
+        case .unavailable(let reason): return "unavailable: \(reason)"
+        }
+    }
+
+    /// `1025 (smtp), 8025 (http)`: the main port first.
+    public static func servicePorts(_ status: ServiceStatus) -> String {
+        status.ports.sorted { a, b in
+            if a.value == status.mainPort { return true }
+            if b.value == status.mainPort { return false }
+            return a.value < b.value
+        }.map { "\($0.value) (\($0.key))" }.joined(separator: ", ")
+    }
+
+    /// Columns: service name, state, ports.
+    public static func serviceTable(_ services: [ServiceStatus]) -> String {
+        table([["SERVICE", "STATE", "PORTS"]]
+              + services.map { [$0.name, serviceState($0.state), servicePorts($0)] })
+    }
+
+    /// Columns: kind, name, versions, licence, download size.
+    public static func catalogTable(_ entries: [CatalogEntry]) -> String {
+        table([["KIND", "SERVICE", "VERSIONS", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
+            [entry.kind, entry.displayName, entry.versions.joined(separator: ", "), entry.licence,
+             entry.downloadBytes.map { "\(max(1, Int((Double($0) / 1_000_000).rounded()))) MB" } ?? "?"]
+        })
+    }
+
+    /// Left-aligned columns two spaces apart; the last column is not padded.
+    private static func table(_ rows: [[String]]) -> String {
+        guard let columns = rows.first?.count, columns > 0 else { return "" }
+        let widths = (0..<columns).map { column in rows.map { $0[column].count }.max()! + 2 }
+        return rows.map { row in
+            (0..<columns).map { $0 == columns - 1 ? row[$0] : row[$0].padding(toLength: widths[$0], withPad: " ",
+                                                                                startingAt: 0) }.joined()
+        }.joined(separator: "\n")
+    }
+
     /// Columns: site name, URL, PHP version, secured.
     public static func siteTable(_ sites: [Site]) -> String {
         let header = ["SITE", "URL", "PHP", "SECURED"]

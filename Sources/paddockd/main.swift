@@ -90,14 +90,18 @@ print("paddockd: listening on \(paths.daemonSocket.path)")
 // .test names resolve for as long as the daemon runs, whatever happens to the web server.
 engine.startDNS()
 
-// Start the engine through the same path as a client's `start`, so it queues with other requests.
+// Start the engine through the same path as a client's `start`, so it queues with other requests. Then the
+// services that start with Paddock, whatever happened to the web side (its ports may be taken).
 Task {
     switch await engine.handle(.start) {
     case .ok(let status):
         print("paddockd: engine \(status.running ? "running" : "not running")")
     case .error(let code, let message):
         fputs("paddockd: start failed (\(code)): \(message)\n", stderr)
+    default:
+        break
     }
+    await engine.startAutostartServices()
 }
 
 dispatchMain()

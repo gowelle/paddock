@@ -19,6 +19,8 @@ struct Start: ParsableCommand {
             // Held ports come back as the full "in use by …" sentence; ports macOS won't let Paddock use
             // as the not-permitted sentence.
             throw CLI.failure(message)
+        case .catalog, .removed:
+            throw CLI.unexpectedAnswer()
         }
     }
 }
@@ -82,6 +84,8 @@ struct Restart: ParsableCommand {
             print("Paddock restarted.")
         case .error(_, let message):
             throw CLI.failure(message)
+        case .catalog, .removed:
+            throw CLI.unexpectedAnswer()
         }
     }
 }

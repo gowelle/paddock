@@ -172,6 +172,14 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         }
     }
 
+    /// A copy with other downloads (tests serve them from a local cache).
+    func withAssets(_ assets: [RecipeAsset]) -> ServiceRecipe {
+        ServiceRecipe(kind: kind, displayName: displayName, version: version, licence: licence,
+                      minimumMacOS: minimumMacOS, assets: assets, initialise: initialise, start: start, ready: ready,
+                      stopSignal: stopSignal, stopGraceSeconds: stopGraceSeconds, ports: ports, socket: socket,
+                      env: env, openURL: openURL, needsPHP: needsPHP)
+    }
+
     /// A copy with other preferred ports (`ServicePorts.shifted`).
     func withPorts(_ ports: [RecipePort]) -> ServiceRecipe {
         ServiceRecipe(kind: kind, displayName: displayName, version: version, licence: licence,

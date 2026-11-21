@@ -9,14 +9,20 @@ public struct ProcessSpec: Sendable {
     public var environment: [String: String]
     /// stdout and stderr are appended here.
     public var logFile: URL
+    /// What `stop` sends the process group first.
+    public var stopSignal: Int32
+    /// Seconds between `stopSignal` and SIGKILL; nil uses the supervisor's grace period.
+    public var stopGrace: TimeInterval?
 
     public init(name: String, executable: URL, arguments: [String], environment: [String: String] = [:],
-                logFile: URL) {
+                logFile: URL, stopSignal: Int32 = SIGTERM, stopGrace: TimeInterval? = nil) {
         self.name = name
         self.executable = executable
         self.arguments = arguments
         self.environment = environment
         self.logFile = logFile
+        self.stopSignal = stopSignal
+        self.stopGrace = stopGrace
     }
 }
 
@@ -92,7 +98,8 @@ public final class Supervisor: @unchecked Sendable {
         try spawnLocked(entry)
     }
 
-    /// SIGTERM to the process group, SIGKILL after the grace period; returns once it has exited.
+    /// The spec's stop signal (SIGTERM unless it says otherwise) to the process group, SIGKILL after the
+    /// spec's grace period (or the supervisor's); returns once it has exited.
     public func stop(_ name: String) {
         lock.lock()
         guard let entry = entries[name] else { lock.unlock(); return }
@@ -100,12 +107,14 @@ public final class Supervisor: @unchecked Sendable {
         entry.generation += 1
         let pid = entry.pid
         let exited = entry.exited
+        let signal = entry.spec.stopSignal
+        let grace = entry.spec.stopGrace ?? stopGracePeriod
         if pid == nil { entry.status = .stopped }
         lock.unlock()
 
         guard let pid, let exited else { return }
-        kill(-pid, SIGTERM)
-        if exited.wait(timeout: .now() + stopGracePeriod) == .timedOut {
+        kill(-pid, signal)
+        if exited.wait(timeout: .now() + grace) == .timedOut {
             kill(-pid, SIGKILL)
             exited.wait()
         }

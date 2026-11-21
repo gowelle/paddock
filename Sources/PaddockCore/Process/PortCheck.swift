@@ -256,7 +256,7 @@ public enum PortCheck {
 
     /// A non-blocking socket connected to the loopback address on `port` within `timeout` milliseconds;
     /// the caller closes it.
-    private static func openConnection(port: Int, ipv6: Bool, timeout: Int32) -> Int32? {
+    static func openConnection(port: Int, ipv6: Bool, timeout: Int32) -> Int32? {
         let fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         var connected = false
