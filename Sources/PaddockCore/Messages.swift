@@ -331,6 +331,12 @@ public enum Messages {
             return "\(name) tried to listen on \(address), which is not this Mac only. Paddock stopped it."
         case .dataMismatch(let name, let found, let expected):
             return "\(name) can't start: its data was last used by \(found), and Paddock won't run \(expected) on it."
+        case .rollbackFailed(let name, let id, let version, let previous, let newFailure, let oldFailure):
+            return "\(name) \(version) didn't start: \(newFailure)\n\(name) couldn't go back to \(previous): version "
+                + "\(version) may have upgraded its data. Run paddock service update \(id) to try \(version) again.\n"
+                + oldFailure
+        case .unsafeRecipe(let name, let reason):
+            return "\(name) can't start: \(reason)."
         case .updateFailed(let name, let version, let previous, let log):
             return "\(name) \(version) didn't start, so Paddock went back to \(previous)."
                 + (log.isEmpty ? "" : " The end of its log:\n\(log)")

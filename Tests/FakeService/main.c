@@ -8,9 +8,17 @@
 //       --delay milliseconds listens on 127.0.0.1 (0.0.0.0 with --any-address) on every --port (and on the
 //       Unix socket, if a non-empty path is given). Answers any connection with "HTTP/1.0 200 OK" and closes
 //       it. Exits 0 on SIGTERM or SIGINT, writing <data>/stopped.
+//       More serve options: --fork-child (a child in the same group serves too, and stays when the leader
+//       dies); --poison-data (writes <data>/poison); --refuse-poison (exits 4 at once if <data>/poison exists);
+//       --late-listen PORT --late-delay MS (after MS milliseconds also listens on 0.0.0.0:PORT).
+//   paddock-fake-service spawn-orphan <program> [args...]
+//       Starts <program> as the leader of a new session and exits at once, printing its pid: an orphan of
+//       launchd, like a service whose daemon died.
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <time.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
@@ -82,13 +90,28 @@ static int serve(int argc, char **argv) {
     const char *socket_path = NULL;
     int delay_ms = 0;
     int no_listen = 0;
+    int fork_child = 0, poison = 0, refuse_poison = 0, late_port = 0, late_delay = 0;
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0 && i + 1 < argc && nports < 8) ports[nports++] = atoi(argv[++i]);
         else if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) socket_path = argv[++i];
         else if (strcmp(argv[i], "--delay") == 0 && i + 1 < argc) delay_ms = atoi(argv[++i]);
         else if (strcmp(argv[i], "--no-listen") == 0) no_listen = 1;
         else if (strcmp(argv[i], "--any-address") == 0) any_address = 1;
+        else if (strcmp(argv[i], "--fork-child") == 0) fork_child = 1;
+        else if (strcmp(argv[i], "--poison-data") == 0) poison = 1;
+        else if (strcmp(argv[i], "--refuse-poison") == 0) refuse_poison = 1;
+        else if (strcmp(argv[i], "--late-listen") == 0 && i + 1 < argc) late_port = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--late-delay") == 0 && i + 1 < argc) late_delay = atoi(argv[++i]);
     }
+    if (refuse_poison) {
+        char marker[4096];
+        snprintf(marker, sizeof marker, "%s/poison", data);
+        if (access(marker, F_OK) == 0) {
+            printf("fake-service: refusing data poisoned by a newer version\n");
+            return 4;
+        }
+    }
+    if (poison) write_file(data, "poison", "yes\n");
 
     char args[16384] = "";
     for (int i = 0; i < argc; i++) {
@@ -129,9 +152,26 @@ static int serve(int argc, char **argv) {
         printf("fake-service: ready\n");
         fflush(stdout);
     }
+    if (fork_child && fork() == 0) {
+        printf("fake-service: child %d serving\n", getpid());
+        fflush(stdout);
+    }
+    int late_fd = -1;
+    struct timespec started;
+    clock_gettime(CLOCK_MONOTONIC, &started);
 
     while (!stop_requested) {
-        int n = poll(fds, (nfds_t)nfds, 200);
+        if (late_port && late_fd < 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long elapsed = (now.tv_sec - started.tv_sec) * 1000 + (now.tv_nsec - started.tv_nsec) / 1000000;
+            if (elapsed >= late_delay) {
+                any_address = 1;
+                late_fd = listen_tcp(late_port);
+                if (late_fd >= 0) fds[nfds++] = (struct pollfd){ .fd = late_fd, .events = POLLIN };
+            }
+        }
+        int n = poll(fds, (nfds_t)nfds, 100);
         if (n <= 0) continue;
         for (int i = 0; i < nfds; i++) {
             if (!(fds[i].revents & POLLIN)) continue;
@@ -175,6 +215,18 @@ static int init(int argc, char **argv) {
 int main(int argc, char **argv) {
     if (argc >= 3 && strcmp(argv[1], "init") == 0) return init(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "serve") == 0) return serve(argc, argv);
+    if (argc >= 3 && strcmp(argv[1], "spawn-orphan") == 0) {
+        pid_t child = fork();
+        if (child == 0) {
+            setsid();
+            int null = open("/dev/null", O_RDWR);
+            dup2(null, 0); dup2(null, 1); dup2(null, 2);
+            execv(argv[2], argv + 2);
+            _exit(127);
+        }
+        printf("%d\n", child);
+        return child > 0 ? 0 : 1;
+    }
     fprintf(stderr, "usage: paddock-fake-service init|serve <data> ...\n");
     return 64;
 }

@@ -38,10 +38,13 @@ final class ServiceProcessRecordTests: XCTestCase {
         XCTAssertEqual(ServiceProcessRecord.read(from: file), record)
     }
 
-    func testOnlyAMatchingLiveProcessUnderAnAllowedFolderIsOurs() throws {
+    /// The positive case (a true orphan: group leader, parent launchd) runs in the integration tests, where the
+    /// fake service can make one; here every other way of not matching.
+    func testOnlyAMatchingOrphanUnderAnAllowedFolderIsOurs() throws {
         let sleep = try startSleep()
         let record = try XCTUnwrap(ServiceProcessRecord.live(pid: sleep.processIdentifier))
-        XCTAssertTrue(record.isOurLiveProcess(allowedDirectories: ["/bin"]))
+        XCTAssertFalse(record.isOurLiveProcess(allowedDirectories: ["/bin"]),
+                       "every field matches, but its parent (this test) is alive and it leads no group: not an orphan")
         XCTAssertFalse(record.isOurLiveProcess(allowedDirectories: ["/tmp/pdk-home/services/bin/fake"]),
                        "a program outside the recipe's binaries is never ours")
         let reused = ServiceProcessRecord(pid: record.pid, pgid: record.pgid, startSeconds: record.startSeconds - 100,
@@ -94,5 +97,29 @@ final class ServiceProcessRecordTests: XCTestCase {
         ServiceManager.removeStaleSocket(outside, inside: run)
         ServiceManager.removeStaleSocket(run.path + "/../../outside.sock", inside: run)
         XCTAssertTrue(FileManager.default.fileExists(atPath: outside))
+    }
+}
+
+final class ServicePathCheckTests: XCTestCase {
+    func testResolvedPathsMustStayInsideTheirFolder() throws {
+        let root = URL(fileURLWithPath: "/tmp/pdk-path-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: bin.appendingPathComponent("tool"))
+        try Data("x".utf8).write(to: bin.appendingPathComponent("sub/tool"))
+        try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent("server").path,
+                                                   withDestinationPath: "/bin/sh")
+        try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent("inner").path,
+                                                   withDestinationPath: "sub/tool")
+        XCTAssertTrue(ServiceManager.resolves(bin.appendingPathComponent("tool").path, inside: bin))
+        XCTAssertTrue(ServiceManager.resolves(bin.appendingPathComponent("inner").path, inside: bin))
+        XCTAssertFalse(ServiceManager.resolves(bin.appendingPathComponent("server").path, inside: bin), "symlink out")
+        XCTAssertFalse(ServiceManager.resolves(bin.path + "/../bin/../../etc/hosts", inside: bin))
+        XCTAssertFalse(ServiceManager.resolves(bin.path, inside: bin), "the folder itself is not inside it")
+        XCTAssertFalse(ServiceManager.resolves(bin.appendingPathComponent("missing").path, inside: bin),
+                       "a program that isn't there")
+        XCTAssertTrue(ServiceManager.isUnder(bin.path + "/new/file", folder: bin), "paths not yet created")
+        XCTAssertFalse(ServiceManager.isUnder(bin.path + "/../x", folder: bin))
     }
 }

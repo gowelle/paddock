@@ -336,7 +336,7 @@ final class ServiceLifecycleTests: XCTestCase {
         let manager = makeManager([recipe])
         _ = try await manager.add(kind: "fake", version: nil)
         let env = Set(FakeService.environment(paths: home.paths, id: "fake"))
-        XCTAssertEqual(env, ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=\(home.paths.serviceData("fake").path)",
+        XCTAssertEqual(env, ["PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=\(home.paths.serviceHome("fake").path)",
                              "TMPDIR=\(home.paths.serviceRun("fake").path)", "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8"])
         let conf = home.paths.serviceConfig("fake").appendingPathComponent("fake.conf")
         XCTAssertEqual(try String(contentsOf: conf, encoding: .utf8), "port = \(home.fakePort)\n")

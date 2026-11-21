@@ -52,14 +52,50 @@ public final class ServiceInstaller: Sendable {
         installedRecord(kind: recipe.kind, version: recipe.version) == record(of: recipe)
     }
 
-    /// The recipe a finished install of `kind` `version` was made from, if there is one.
-    public func installedRecipe(kind: String, version: String) -> ServiceRecipe? {
+    /// What is stored beside an installed version's binaries.
+    public enum StoredRecipe: Equatable {
+        /// No finished install, or one without a stored recipe (made before Paddock stored them).
+        case none
+        /// The stored recipe, validated like any catalog's.
+        case valid(ServiceRecipe)
+        /// A stored recipe that doesn't decode, doesn't match its install, or fails validation: never used.
+        case invalid(String)
+    }
+
+    /// The stored recipe of an installed `kind` `version`, validated (`ServiceCatalog.validate`) before
+    /// any field of it is used.
+    public func storedRecipe(kind: String, version: String) -> StoredRecipe {
         let file = paths.serviceBin(kind: kind, version: version).appendingPathComponent(Self.recipeName)
-        guard let data = try? Data(contentsOf: file),
-              let recipe = try? JSONDecoder().decode(ServiceRecipe.self, from: data),
-              recipe.kind == kind, recipe.version == version,
-              installedRecord(kind: kind, version: version) == record(of: recipe) else { return nil }
-        return recipe
+        guard let record = installedRecord(kind: kind, version: version),
+              let data = try? Data(contentsOf: file) else { return .none }
+        let recipe: ServiceRecipe
+        do { recipe = try JSONDecoder().decode(ServiceRecipe.self, from: data) } catch {
+            return .invalid("it can't be read")
+        }
+        guard recipe.kind == kind, recipe.version == version, record == self.record(of: recipe) else {
+            return .invalid("it doesn't match the installed files")
+        }
+        do { try ServiceCatalog.validate([recipe]) } catch { return .invalid("\(error)") }
+        return .valid(recipe)
+    }
+
+    /// The valid stored recipe of an installed `kind` `version`, if there is one.
+    public func installedRecipe(kind: String, version: String) -> ServiceRecipe? {
+        if case .valid(let recipe) = storedRecipe(kind: kind, version: version) { return recipe }
+        return nil
+    }
+
+    /// Whether `kind` `version` has a finished install (whatever its stored recipe).
+    public func hasInstall(kind: String, version: String) -> Bool {
+        installedRecord(kind: kind, version: version) != nil
+    }
+
+    /// Stores `recipe` beside its installed binaries (for installs made before recipes were stored, or whose
+    /// stored recipe was invalid). Only when exactly its downloads are installed.
+    public func storeRecipe(_ recipe: ServiceRecipe) throws {
+        guard isInstalled(recipe) else { return }
+        let file = paths.serviceBin(kind: recipe.kind, version: recipe.version).appendingPathComponent(Self.recipeName)
+        try JSONEncoder().encode(recipe).write(to: file, options: .atomic)
     }
 
     /// Whether every download of the recipe is already a file on this Mac (Paddock's own builds, or a

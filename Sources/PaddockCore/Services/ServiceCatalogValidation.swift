@@ -6,9 +6,15 @@ extension ServiceCatalog {
                                                  "resources"]
     static let stopSignals: Set<String> = ["TERM", "INT", "QUIT"]
     /// Environment names a recipe may set only to a path inside the instance's own folders.
-    static let pathVariables: Set<String> = ["PATH", "HOME", "TMPDIR"]
+    static let pathVariables: Set<String> = ["HOME", "TMPDIR", "PHPRC", "PHP_INI_SCAN_DIR"]
+    /// Environment names that change how a program loads code or parses its input: never set by a recipe.
+    static let forbiddenVariables: Set<String> = ["RUBYOPT", "NODE_OPTIONS", "BASH_ENV", "ENV", "IFS", "CDPATH",
+                                                  "GLOBIGNORE"]
+    static let forbiddenPrefixes = ["DYLD_", "LD_", "PERL5", "PYTHON"]
+    /// The folders an instance's own paths start from.
+    static let instanceRoots = ["{data}", "{config}", "{run}"]
 
-    /// Checks a whole catalog before anything uses it; throws `ServiceCatalogError.invalid` naming the
+    /// Checks a whole catalog (or one stored recipe) before anything uses it; throws `ServiceCatalogError.invalid` naming the
     /// first problem. Kinds, series and versions are safe in paths; every program runs from the recipe's
     /// binaries (or Paddock's PHP); environment, socket and config files stay inside the instance's folders;
     /// every placeholder is known; signals, archives, file names and ports make sense; and no recipe is
@@ -17,7 +23,8 @@ extension ServiceCatalog {
         var seen: Set<String> = []
         for recipe in recipes {
             try validate(recipe)
-            let key = "\(recipe.kind) \(recipe.series) \(recipe.version)"
+            // Binaries live per kind and version, so that pair is unique whatever the series.
+            let key = "\(recipe.kind) \(recipe.version)"
             guard seen.insert(key).inserted else {
                 throw ServiceCatalogError.invalid("\(recipe.kind) \(recipe.version) is listed more than once")
             }
@@ -28,6 +35,10 @@ extension ServiceCatalog {
         let label = "\(recipe.kind) \(recipe.version)"
         func fail(_ problem: String) -> ServiceCatalogError { .invalid("\(label): \(problem)") }
 
+        guard ServiceInstance.isValidName(recipe.displayName) else {
+            throw fail("the display name \"\(Messages.printable(recipe.displayName) ?? "")\" must be 1 to 64 printable "
+                       + "characters without \"/\"")
+        }
         guard ServiceInstance.isValidID(recipe.kind) else {
             throw fail("the kind \"\(recipe.kind)\" must be lowercase letters and digits joined by single dashes, and not \"bin\"")
         }
@@ -46,19 +57,27 @@ extension ServiceCatalog {
                 guard name.range(of: "^[A-Z_][A-Z0-9_]*$", options: .regularExpression) != nil else {
                     throw fail("the environment name \"\(name)\" must be uppercase letters, digits and underscores")
                 }
-                if name.hasPrefix("DYLD_") { throw fail("the environment may not set \(name) (DYLD_ variables)") }
-                if pathVariables.contains(name), !isInsideInstance(value) {
-                    throw fail("\(name) may only be set to a path inside the instance's {data}, {config} or {run}")
+                if let prefix = forbiddenPrefixes.first(where: { name.hasPrefix($0) }) {
+                    throw fail("the environment may not set \(name) (\(prefix) variables)")
+                }
+                if forbiddenVariables.contains(name) { throw fail("the environment may not set \(name)") }
+                if pathVariables.contains(name), !isRootedPath(value, roots: instanceRoots, restRequired: false) {
+                    throw fail("\(name) may only be set to {data}, {config} or {run}, or a literal path under one")
+                }
+                if name == "PATH", !value.split(separator: ":", omittingEmptySubsequences: false).allSatisfy({
+                    isRootedPath(String($0), roots: ["{bin}"] + instanceRoots, restRequired: false)
+                }) {
+                    throw fail("every PATH entry must be {bin}, {data}, {config} or {run}, or a literal path under one")
                 }
             }
         }
 
         // Where it writes.
-        if let socket = recipe.socket, !isUnder("{run}/", socket) {
-            throw fail("the socket \(socket) must be a file under {run}/")
+        if let socket = recipe.socket, !isRootedPath(socket, roots: ["{run}"], restRequired: true) {
+            throw fail("the socket \(socket) must be {run}/ followed by a literal file name")
         }
-        for file in recipe.configFiles where !isUnder("{config}/", file.path) {
-            throw fail("the config file \(file.path) must be a file under {config}/")
+        for file in recipe.configFiles where !isRootedPath(file.path, roots: ["{config}"], restRequired: true) {
+            throw fail("the config file \(file.path) must be {config}/ followed by a literal path")
         }
 
         // Ports, signals, downloads.
@@ -77,6 +96,9 @@ extension ServiceCatalog {
             throw fail("timeouts must be positive")
         }
         for asset in recipe.assets {
+            guard (0...8).contains(asset.stripComponents) else {
+                throw fail("stripComponents must be between 0 and 8")
+            }
             guard RecipeAsset.archiveTypes.contains(asset.archive) else {
                 throw fail("the archive type \"\(asset.archive)\" must be one of tar.gz, tar.xz, zip or binary")
             }
@@ -116,19 +138,19 @@ extension ServiceCatalog {
         !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\0")
     }
 
-    /// `prefix` followed by at least one path component, none of them `.`, `..` or empty.
-    private static func isUnder(_ prefix: String, _ path: String) -> Bool {
-        guard path.hasPrefix(prefix) else { return false }
-        let rest = path.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
-        return !rest.isEmpty && rest.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    /// One of `roots` (a single leading folder placeholder), then only literal text: `/` and path components
+    /// that are not empty, `.` or `..` and hold no placeholder. With `restRequired` the root alone isn't enough.
+    /// `{name}` and other free text can therefore never steer a path.
+    static func isRootedPath(_ value: String, roots: [String], restRequired: Bool) -> Bool {
+        guard let root = roots.first(where: { value.hasPrefix($0) }) else { return false }
+        let rest = value.dropFirst(root.count)
+        if rest.isEmpty { return !restRequired }
+        guard rest.hasPrefix("/"), ServiceTemplate.placeholders(in: String(rest)).isEmpty else { return false }
+        return rest.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+            .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 
     private static func runsFromBinariesOrPHP(_ executable: String) -> Bool {
-        executable == "{php}" || isUnder("{bin}/", executable)
-    }
-
-    /// `{data}`, `{config}` or `{run}`, or a path under one of them.
-    private static func isInsideInstance(_ value: String) -> Bool {
-        ["{data}", "{config}", "{run}"].contains { value == $0 || isUnder($0 + "/", value) }
+        executable == "{php}" || isRootedPath(executable, roots: ["{bin}"], restRequired: true)
     }
 }

@@ -162,17 +162,15 @@ func listenReusingAddress(port: Int) throws -> Int32 {
     return fd
 }
 
-/// For every recipe's integration test: the TCP listeners of a service's whole process group (as the manager
-/// checks them at run time), failing on any that isn't on 127.0.0.1 or [::1]. Returns the addresses.
+/// For every recipe's integration test: the TCP listeners of a service's whole process group, read and judged
+/// by the same code the manager uses at run time, failing on any that isn't on 127.0.0.1 or [::1]. Returns
+/// the addresses.
 @discardableResult
 func assertListensOnThisMacOnly(processGroup: Int32, file: StaticString = #filePath, line: UInt = #line) throws -> [String] {
-    let lsof = try SystemCommandRunner().run("/usr/sbin/lsof", ["-a", "-g", "\(processGroup)", "-iTCP", "-sTCP:LISTEN",
-                                                                "-nP", "-F", "n"], environment: nil, timeout: 10)
-    let addresses = lsof.output.split(separator: "\n").filter { $0.hasPrefix("n") }.map { String($0.dropFirst()) }
+    let addresses = try ServiceManager.listeningAddresses(processGroup: processGroup, runner: SystemCommandRunner())
     XCTAssertFalse(addresses.isEmpty, "the service listens somewhere", file: file, line: line)
     for address in addresses {
-        let host = address[..<(address.lastIndex(of: ":") ?? address.endIndex)]
-        XCTAssertTrue(host == "127.0.0.1" || host == "[::1]", "\(address) is not this Mac only", file: file, line: line)
+        XCTAssertTrue(ServiceManager.isLoopback(address), "\(address) is not this Mac only", file: file, line: line)
     }
     return addresses
 }

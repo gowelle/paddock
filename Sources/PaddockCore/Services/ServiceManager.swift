@@ -24,6 +24,12 @@ public enum ServiceError: Error, Equatable, Sendable {
     case dataMismatch(name: String, found: String, expected: String)
     /// The new version didn't start; the previous one runs again.
     case updateFailed(name: String, version: String, previous: String, log: String)
+    /// The new version didn't start (`newFailure`), and the previous one didn't start again either
+    /// (`oldFailure`): the new one may have upgraded the data.
+    case rollbackFailed(name: String, id: String, version: String, previous: String, newFailure: String,
+                        oldFailure: String)
+    /// What the recipe renders to would run a program, or use a path, outside the service's own folders.
+    case unsafeRecipe(name: String, reason: String)
     case unavailable(name: String, reason: String)
     /// Paddock began shutting down while the service was being added or updated.
     case cancelled(name: String)
@@ -72,13 +78,15 @@ public final class ServiceManager: @unchecked Sendable {
     private let resources: URL
     /// Runs `lsof` for the loopback check.
     private let runner: CommandRunner
+    /// Seconds after readiness at which the loopback check runs again, for listeners opened late.
+    private let lateLoopbackChecks: [TimeInterval]
     private let log: @Sendable (String) -> Void
 
     private let operationLock = NSLock()
     private let adds = AsyncMutex()
     /// Serializes installs from local files (starts of several instances run side by side).
     private let installLock = NSLock()
-    /// Guards `runtime`, `notices`, `cancelled` and `reportedIDs`; held only for an instant.
+    /// Guards `runtime`, `notices`, `cancelled` and `reported`; held only for an instant.
     private let runtimeLock = NSLock()
     /// What the manager last saw each instance do. The supervisor's own status refines it.
     private var runtime: [String: ServiceState] = [:]
@@ -86,8 +94,8 @@ public final class ServiceManager: @unchecked Sendable {
     private var notices: [String: String] = [:]
     /// Set while shutting down: readiness waits and initialise steps give up at once.
     private var cancelled = false
-    /// Saved ids already reported as invalid (one log line each).
-    private var reportedIDs: Set<String> = []
+    /// Problems already logged (one line each): invalid saved instances, invalid stored recipes.
+    private var reported: Set<String> = []
 
     /// Unix socket paths longer than this don't fit `sun_path` (104 bytes with the NUL).
     static let maximumSocketPath = 103
@@ -101,6 +109,7 @@ public final class ServiceManager: @unchecked Sendable {
                 readyTimeout: TimeInterval? = nil, resources: URL = Bundled.resources,
                 runner: CommandRunner = SystemCommandRunner(),
                 environment: [String: String] = ProcessInfo.processInfo.environment,
+                lateLoopbackChecks: [TimeInterval] = [5, 30],
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.paths = paths
         self.log = log
@@ -120,19 +129,21 @@ public final class ServiceManager: @unchecked Sendable {
         self.readyTimeout = readyTimeout
         self.resources = resources
         self.runner = runner
+        self.lateLoopbackChecks = lateLoopbackChecks
     }
 
     static func processName(_ id: String) -> String { "service-\(id)" }
 
     // MARK: - Instances
 
-    /// The saved instances Paddock may act on: an id, kind or version read back from `state.json` that
-    /// isn't one Paddock makes is ignored (and logged once), never used to build a path. A missing series is
-    /// filled in from the catalog.
+    /// The saved instances Paddock may act on: an id, kind, version, series or name read back from
+    /// `state.json` that isn't one Paddock makes is ignored (and logged once), never used to build a path or
+    /// shown. A missing series is filled in from the catalog.
     func instances() -> [ServiceInstance] {
         store.load().services.compactMap { instance in
             guard Self.isSafe(instance) else {
-                reportInvalid(instance.id)
+                reportOnce("instance:\(instance.id)", "ignoring the saved service \"\(Messages.printable(instance.id) ?? "?")\": "
+                           + "its name isn't one Paddock makes")
                 return nil
             }
             return withSeries(instance)
@@ -143,13 +154,15 @@ public final class ServiceManager: @unchecked Sendable {
         ServiceInstance.isValidID(instance.id) && ServiceInstance.isValidID(instance.kind)
             && ServiceCatalog.isSafeName(instance.version)
             && (instance.series.isEmpty || ServiceCatalog.isSafeName(instance.series))
+            && ServiceInstance.isValidName(instance.name)
+            && (instance.skippedVersion.map(ServiceCatalog.isSafeName) ?? true)
     }
 
-    private func reportInvalid(_ id: String) {
+    private func reportOnce(_ key: String, _ message: String) {
         runtimeLock.lock()
-        let first = reportedIDs.insert(id).inserted
+        let first = reported.insert(key).inserted
         runtimeLock.unlock()
-        if first { log("ignoring the saved service \"\(Messages.printable(id) ?? "?")\": its name isn't one Paddock makes") }
+        if first { log(message) }
     }
 
     /// The instance with its series: as saved, else the catalog's (or its installed recipe's) for that
@@ -178,16 +191,42 @@ public final class ServiceManager: @unchecked Sendable {
         catalog.recipe(kind: instance.kind, series: instance.series)
     }
 
-    /// The recipe stored with the instance's installed binaries.
+    /// The recipe the instance's installed binaries run with: the stored one, validated. An invalid stored
+    /// recipe is never used (and logged once); a missing or invalid one is replaced by the catalog's recipe of
+    /// exactly that version when its binaries are installed (installs made before recipes were stored), so
+    /// later catalog changes don't strand the instance. Nil when there is nothing safe to run.
     private func installedRecipe(_ instance: ServiceInstance) -> ServiceRecipe? {
-        installer.installedRecipe(kind: instance.kind, version: instance.version)
+        switch installer.storedRecipe(kind: instance.kind, version: instance.version) {
+        case .valid(let recipe):
+            return recipe
+        case .invalid(let reason):
+            reportOnce("recipe:\(instance.kind)/\(instance.version)",
+                       "not using the stored recipe of \(instance.kind) \(instance.version): \(reason)")
+        case .none:
+            break
+        }
+        guard let recipe = catalog.recipes(of: instance.kind).first(where: { $0.version == instance.version }),
+              installer.isInstalled(recipe) else { return nil }
+        do { try installer.storeRecipe(recipe) } catch {
+            log("could not store the recipe of \(recipe.kind) \(recipe.version): \(error.localizedDescription)")
+        }
+        return recipe
+    }
+
+    /// Why an instance has nothing to run.
+    private func nothingToRun(_ instance: ServiceInstance) -> String {
+        if installer.hasInstall(kind: instance.kind, version: instance.version) {
+            return "the stored recipe of \(instance.kind) \(instance.version) isn't valid, and this copy of Paddock "
+                + "doesn't offer that version"
+        }
+        return latest(instance) == nil
+            ? "this copy of Paddock no longer offers \(instance.kind) \(instance.series), and its programs are gone"
+            : "its programs are missing; download them with: paddock service update \(instance.id)"
     }
 
     /// The recipe that describes the instance for status, env and open: what it runs, else the catalog's.
     private func describingRecipe(_ instance: ServiceInstance) -> ServiceRecipe? {
-        installedRecipe(instance)
-            ?? catalog.recipes(of: instance.kind).first { $0.version == instance.version }
-            ?? latest(instance)
+        installedRecipe(instance) ?? latest(instance)
     }
 
     // MARK: - Adding
@@ -285,6 +324,8 @@ public final class ServiceManager: @unchecked Sendable {
                 log(notice)
             } else {
                 for step in recipe.initialise { try runStep(step, instance: instance, recipe: recipe, context: context) }
+                // Data that never becomes ready still says which series made it.
+                writeDataVersion(instance, recipe)
             }
             try store.update { $0.services.append(instance) }
         } catch {
@@ -303,11 +344,12 @@ public final class ServiceManager: @unchecked Sendable {
     private func runStep(_ step: RecipeCommand, instance: ServiceInstance, recipe: ServiceRecipe,
                          context: ServiceTemplateContext) throws {
         let command = try ServiceTemplate.render(step, context: context)
+        try checkRendered(command, template: step, instance: instance, recipe: recipe)
         let outcome: ServiceStepRunner.Outcome
         do {
             outcome = try ServiceStepRunner.run(
                 executable: command.executable, arguments: command.arguments,
-                environment: Self.baseEnvironment(context).merging(command.environment) { $1 },
+                environment: baseEnvironment(context, id: instance.id).merging(command.environment) { $1 },
                 directory: paths.serviceHome(instance.id), stdin: command.stdin, timeout: recipe.initialiseTimeout,
                 isCancelled: { [weak self] in self?.isCancelled ?? true })
         } catch {
@@ -328,10 +370,63 @@ public final class ServiceManager: @unchecked Sendable {
     }
 
     /// What every service program and step starts from; the recipe's own environment comes on top. Nothing
-    /// of the daemon's environment (and no `PADDOCK_*` variable) reaches a service.
-    static func baseEnvironment(_ context: ServiceTemplateContext) -> [String: String] {
-        ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": context.data, "TMPDIR": context.run,
+    /// of the daemon's environment (and no `PADDOCK_*` variable) reaches a service. `HOME` is the instance's
+    /// folder, not its data folder: `initdb` and `mysqld --initialize` want an empty data folder, and tools
+    /// write dotfiles to `HOME`.
+    private func baseEnvironment(_ context: ServiceTemplateContext, id: String) -> [String: String] {
+        ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": paths.serviceHome(id).path, "TMPDIR": context.run,
          "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"]
+    }
+
+    // MARK: - What a recipe renders to
+
+    /// Checked immediately before anything is spawned, whatever validation said about the templates: the
+    /// program (symlinks resolved) must be inside the recipe's installed binaries, or be exactly Paddock's PHP
+    /// for a `{php}` recipe; path variables must stay in the instance's folders (PATH also in its binaries).
+    private func checkRendered(_ command: RenderedCommand, template: RecipeCommand, instance: ServiceInstance,
+                               recipe: ServiceRecipe) throws {
+        let bin = paths.serviceBin(kind: recipe.kind, version: recipe.version)
+        if template.executable == "{php}" {
+            guard let php = phpBinary(), let wanted = Self.realPath(php.path),
+                  Self.realPath(command.executable) == wanted else {
+                throw ServiceError.unsafeRecipe(name: instance.name, reason: "its program isn't Paddock's PHP")
+            }
+        } else if !Self.resolves(command.executable, inside: bin) {
+            throw ServiceError.unsafeRecipe(name: instance.name, reason: "its program \(URL(fileURLWithPath: command.executable).lastPathComponent) "
+                                            + "is not inside its own installed files")
+        }
+        let own = [paths.serviceHome(instance.id), paths.serviceRun(instance.id)]
+        for (name, value) in command.environment {
+            let allowed: [URL]
+            switch name {
+            case "HOME", "TMPDIR", "PHPRC", "PHP_INI_SCAN_DIR": allowed = own
+            case "PATH": allowed = own + [bin]
+            default: continue
+            }
+            let entries = name == "PATH" ? value.split(separator: ":", omittingEmptySubsequences: false).map(String.init) : [value]
+            for entry in entries where !allowed.contains(where: { Self.isUnder(entry, folder: $0, orAt: true) }) {
+                throw ServiceError.unsafeRecipe(name: instance.name, reason: "\(name) would point outside its own folders")
+            }
+        }
+    }
+
+    /// Whether `path`, symlinks resolved, is inside `folder` (also resolved). False when either is missing.
+    static func resolves(_ path: String, inside folder: URL) -> Bool {
+        guard let resolved = realPath(path), let root = realPath(folder.path) else { return false }
+        return resolved.hasPrefix(root + "/")
+    }
+
+    /// Whether `path`, standardized (`..` removed; it need not exist), is inside `folder`, or is it with `orAt`.
+    static func isUnder(_ path: String, folder: URL, orAt: Bool = false) -> Bool {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let root = folder.standardizedFileURL.path
+        return standardized.hasPrefix(root + "/") || (orAt && standardized == root)
+    }
+
+    static func realPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     // MARK: - Updating
@@ -407,6 +502,7 @@ public final class ServiceManager: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         let all = instances()
+        persistSeries(all)
         for instance in all { reclaimOrphan(instance) }
         let wanted = all.filter(\.autostart)
         var errors = [ServiceError?](repeating: nil, count: wanted.count)
@@ -419,6 +515,25 @@ public final class ServiceManager: @unchecked Sendable {
         }
         for (instance, error) in zip(wanted, errors) {
             if let error { log("service \(instance.id) did not start: \(Messages.serviceError(error))") }
+        }
+    }
+
+    /// Saves series filled in for instances saved before series existed.
+    private func persistSeries(_ instances: [ServiceInstance]) {
+        let filled = Dictionary(instances.map { ($0.id, $0.series) }, uniquingKeysWith: { first, _ in first })
+        let missing = store.load().services.contains { $0.series.isEmpty && filled[$0.id] != nil }
+        guard missing else { return }
+        do {
+            try store.update { state in
+                state.services = state.services.map { saved in
+                    guard saved.series.isEmpty, let series = filled[saved.id] else { return saved }
+                    var updated = saved
+                    updated.series = series
+                    return updated
+                }
+            }
+        } catch {
+            log("could not save the services' series: \(error.localizedDescription)")
         }
     }
 
@@ -492,7 +607,7 @@ public final class ServiceManager: @unchecked Sendable {
         reclaimOrphan(instance)
         let current = installedRecipe(instance)
         var target = forcing ?? current
-        if forcing == nil, let latest = latest(instance),
+        if forcing == nil, let latest = latest(instance), latest.version != instance.skippedVersion,
            current == nil || ServiceCatalog.isNewer(latest.version, than: instance.version),
            installer.isInstalled(latest) || installer.isLocallyAvailable(latest) {
             installLock.lock()
@@ -505,9 +620,7 @@ public final class ServiceManager: @unchecked Sendable {
             installLock.unlock()
         }
         guard let target else {
-            let reason = latest(instance) == nil
-                ? "this copy of Paddock no longer offers \(instance.kind) \(instance.series), and its programs are gone"
-                : "its programs are missing; download them with: paddock service update \(instance.id)"
+            let reason = nothingToRun(instance)
             setRuntime(.unavailable(reason: reason), for: id)
             return .unavailable(name: instance.name, reason: reason)
         }
@@ -519,14 +632,33 @@ public final class ServiceManager: @unchecked Sendable {
         // A new version that didn't start: the old one again.
         guard target.version != instance.version, let current, shouldFallBack(after: failure) else { return failure }
         let failedLog = Self.lastLines(logTail(id), 20)
-        if let again = launch(instance, current) { return again }
+        if let again = launch(instance, current) {
+            let error = ServiceError.rollbackFailed(name: instance.name, id: id, version: target.version,
+                                                    previous: current.version, newFailure: Messages.serviceError(failure),
+                                                    oldFailure: Messages.serviceError(again))
+            log(Messages.serviceError(error))
+            return error
+        }
+        // Back on the old version: don't try this one again by itself, and drop its binaries if unused.
+        remember(skipped: target.version, for: id)
+        if !instances().contains(where: { $0.kind == target.kind && $0.version == target.version }) {
+            installer.remove(kind: target.kind, version: target.version)
+        }
         let error = ServiceError.updateFailed(name: instance.name, version: target.version,
                                               previous: current.version, log: failedLog)
-        if forcing != nil { return error }
-        let notice = Messages.serviceError(error)
-        setNotice(notice, for: id)
-        log(notice)
-        return nil
+        log(Messages.serviceError(error))
+        return forcing != nil ? error : nil
+    }
+
+    private func remember(skipped version: String?, for id: String) {
+        _ = try? store.update { state in
+            state.services = state.services.map { saved in
+                guard saved.id == id else { return saved }
+                var updated = saved
+                updated.skippedVersion = version
+                return updated
+            }
+        }
     }
 
     /// Port and data problems aren't the new version's fault: no point starting the old one.
@@ -547,6 +679,7 @@ public final class ServiceManager: @unchecked Sendable {
                     var updated = saved
                     updated.version = recipe.version
                     updated.series = recipe.series
+                    updated.skippedVersion = nil
                     return updated
                 }
             }
@@ -579,6 +712,10 @@ public final class ServiceManager: @unchecked Sendable {
         do {
             let context = try self.context(instance, recipe: recipe)
             let command = try ServiceTemplate.render(recipe.start, context: context)
+            try checkRendered(command, template: recipe.start, instance: instance, recipe: recipe)
+            if let socket = context.socket, !Self.isUnder(socket, folder: paths.serviceRun(id)) {
+                throw ServiceError.unsafeRecipe(name: instance.name, reason: "its socket would be outside its run folder")
+            }
             let files = try recipe.configFiles.map { try ServiceTemplate.render($0.contents, context: context) }
             let texts = [command.executable] + command.arguments + Array(command.environment.values)
                 + files.flatMap { $0.components(separatedBy: .newlines) }
@@ -593,7 +730,7 @@ public final class ServiceManager: @unchecked Sendable {
             try supervisor.start(ProcessSpec(
                 name: Self.processName(id), executable: URL(fileURLWithPath: command.executable),
                 arguments: command.arguments,
-                environment: Self.baseEnvironment(context).merging(command.environment) { $1 },
+                environment: baseEnvironment(context, id: id).merging(command.environment) { $1 },
                 logFile: paths.serviceLog(id), stopSignal: recipe.signalNumber,
                 stopGrace: TimeInterval(recipe.stopGraceSeconds), inheritsEnvironment: false,
                 didSpawn: { pid in try? ServiceProcessRecord.live(pid: pid)?.write(to: record) }))
@@ -605,11 +742,13 @@ public final class ServiceManager: @unchecked Sendable {
                 setRuntime(.crashed, for: id)
                 return .notReady(name: instance.name, log: Self.lastLines(logTail(id), 20))
             }
-            if case .running(let pid) = supervisor.status(Self.processName(id)),
-               let address = nonLoopbackListener(processGroup: pid) {
-                stopProcess(id)
-                setRuntime(.crashed, for: id)
-                return .notLoopback(name: instance.name, address: address)
+            if case .running(let pid) = supervisor.status(Self.processName(id)) {
+                if let address = checkListeners(instance, processGroup: pid) {
+                    stopProcess(id)
+                    setRuntime(.crashed, for: id)
+                    return .notLoopback(name: instance.name, address: address)
+                }
+                scheduleLateListenerChecks(instance, processGroup: pid)
             }
             writeDataVersion(instance, recipe)
             setRuntime(.running, for: id)
@@ -618,6 +757,10 @@ public final class ServiceManager: @unchecked Sendable {
             stopProcess(id)
             if let error = error as? ServiceError, case .unavailable(_, let reason) = error {
                 setRuntime(.unavailable(reason: reason), for: id)
+                return error
+            }
+            if let error = error as? ServiceError, case .unsafeRecipe = error {
+                setRuntime(.unavailable(reason: Messages.serviceError(error)), for: id)
                 return error
             }
             setRuntime(.crashed, for: id)
@@ -642,39 +785,76 @@ public final class ServiceManager: @unchecked Sendable {
 
     /// The first TCP listener of the process group that isn't on 127.0.0.1 or [::1] (`lsof`, at most 5
     /// seconds). A recipe can forget a bind flag (MySQL and Redis listen everywhere by default); this catches
-    /// it on the real process. If `lsof` can't answer, the service is let through and that is logged.
-    private func nonLoopbackListener(processGroup: Int32) -> String? {
-        let result: (status: Int32, output: String)
+    /// it on the real process. If `lsof` can't answer, the service is let through, and its notice says so.
+    private func checkListeners(_ instance: ServiceInstance, processGroup: Int32) -> String? {
         do {
-            result = try runner.run("/usr/sbin/lsof", ["-a", "-g", "\(processGroup)", "-iTCP", "-sTCP:LISTEN",
-                                                       "-nP", "-F", "n"], environment: nil, timeout: 5)
+            return try Self.listeningAddresses(processGroup: processGroup, runner: runner).first { !Self.isLoopback($0) }
         } catch {
-            log("could not check where process group \(processGroup) listens: \(error)")
+            let notice = "Paddock couldn't check what \(instance.name) is listening on."
+            setNotice(notice, for: instance.id)
+            log("\(notice) (\(error))")
             return nil
         }
-        for line in result.output.split(separator: "\n") where line.hasPrefix("n") {
-            let address = String(line.dropFirst())
-            guard let colon = address.lastIndex(of: ":") else { continue }
-            let host = address[..<colon]
-            if host != "127.0.0.1" && host != "[::1]" { return Messages.printable(address) ?? address }
+    }
+
+    /// The same check again a few seconds after readiness, off the request queue: some servers open more
+    /// listeners later (MySQL's X plugin, SeaweedFS's gRPC ports). A late violation stops the service.
+    private func scheduleLateListenerChecks(_ instance: ServiceInstance, processGroup: Int32) {
+        for delay in lateLoopbackChecks {
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.lateListenerCheck(instance, processGroup: processGroup)
+            }
         }
-        return nil
+    }
+
+    private func lateListenerCheck(_ instance: ServiceInstance, processGroup: Int32) {
+        let name = Self.processName(instance.id)
+        guard case .running(let pid) = supervisor.status(name), pid == processGroup,
+              let address = checkListeners(instance, processGroup: processGroup) else { return }
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard case .running(let current) = supervisor.status(name), current == processGroup else { return }
+        stopProcess(instance.id)
+        setRuntime(.crashed, for: instance.id)
+        let message = Messages.serviceError(.notLoopback(name: instance.name, address: address))
+        setNotice(message, for: instance.id)
+        log(message)
+    }
+
+    /// Every TCP listening address of a process group, as `lsof -F n` names them (`127.0.0.1:5432`,
+    /// `*:3306`). Shared with the tests' loopback assertion.
+    static func listeningAddresses(processGroup: Int32, runner: CommandRunner) throws -> [String] {
+        let result = try runner.run("/usr/sbin/lsof", ["-a", "-g", "\(processGroup)", "-iTCP", "-sTCP:LISTEN", "-nP",
+                                                       "-F", "n"], environment: nil, timeout: 5)
+        return result.output.split(separator: "\n").filter { $0.hasPrefix("n") }
+            .map { Messages.printable(String($0.dropFirst()), limit: 128) ?? "?" }
+    }
+
+    /// Whether an `lsof` address is on this Mac only.
+    static func isLoopback(_ address: String) -> Bool {
+        guard let colon = address.lastIndex(of: ":") else { return false }
+        let host = address[..<colon]
+        return host == "127.0.0.1" || host == "[::1]"
     }
 
     // MARK: - Orphans
 
-    /// If the instance's pid record names a live process that is provably the one Paddock started (same pid,
-    /// group and start time, a program under that kind's binaries or Paddock's PHP), it was left behind by a
-    /// daemon that died: stop it (the recipe's signal to its group, grace, then SIGKILL) and wait for its
+    /// If the instance's pid record names a live process that is provably the one Paddock started and now an
+    /// orphan (same pid, group and start time, leading its group, parent launchd, a program under that kind's
+    /// binaries, or Paddock's PHP for a `{php}` recipe), or names a group whose leader is gone and whose
+    /// remaining members all are such orphans, it was left behind by a daemon that died: stop it (the recipe's signal to its group, grace, then SIGKILL) and wait for its
     /// ports. Any other record is stale and removed. Nothing that fails a check is ever signalled.
     private func reclaimOrphan(_ instance: ServiceInstance) {
         let file = paths.serviceRun(instance.id).appendingPathComponent(Self.pidFileName)
         guard let record = ServiceProcessRecord.read(from: file) else { return }
         if case .running(let pid) = supervisor.status(Self.processName(instance.id)), pid == record.pid { return }
-        let kindBinaries = paths.serviceBin(kind: instance.kind, version: "-").deletingLastPathComponent().path
-        if record.isOurLiveProcess(allowedDirectories: [kindBinaries, paths.phpRoot.path]) {
-            let recipe = describingRecipe(instance)
-            log("stopping \(instance.name) (pid \(record.pid)), left running by an earlier Paddock")
+        let recipe = describingRecipe(instance)
+        // Paddock's PHP folder only for recipes that run `{php}`.
+        let allowed = [paths.serviceBin(kind: instance.kind, version: "-").deletingLastPathComponent().path]
+            + (recipe?.start.executable == "{php}" ? [paths.phpRoot.path] : [])
+        let leaderless = record.orphanedGroupMembers(allowedDirectories: allowed)
+        if record.isOurLiveProcess(allowedDirectories: allowed) || leaderless != nil {
+            log("stopping \(instance.name) (process group \(record.pgid)), left running by an earlier Paddock")
             record.stopGroup(signal: recipe?.signalNumber ?? SIGTERM, grace: TimeInterval(recipe?.stopGraceSeconds ?? 10))
             let deadline = Date().addingTimeInterval(5)
             while instance.ports.values.contains(where: { !portCheck.isFree($0) }) && Date() < deadline {
@@ -766,19 +946,20 @@ public final class ServiceManager: @unchecked Sendable {
                 if let known, known != .running {
                     state = known
                 } else if installedRecipe(instance) == nil && latest == nil {
-                    state = .unavailable(reason: "this copy of Paddock no longer offers \(instance.kind) "
-                                         + "\(instance.series), and its programs are gone")
+                    state = .unavailable(reason: nothingToRun(instance))
                 } else {
                     state = .stopped
                 }
             }
         }
         let update = latest.flatMap { ServiceCatalog.isNewer($0.version, than: instance.version) ? $0.version : nil }
+        let skipped = instance.skippedVersion.flatMap { $0 == update ? $0 : nil }
+            .map { "Version \($0) didn't start last time; run paddock service update \(instance.id) to try again." }
         return ServiceStatus(
             id: instance.id, name: instance.name, kind: instance.kind, version: instance.version,
             displayName: recipe?.displayName ?? instance.kind, state: state, ports: instance.ports, env: env,
             openURL: openURL, dataPath: paths.serviceData(instance.id).path, autostart: instance.autostart,
-            mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: notice,
+            mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: notice ?? skipped,
             updateAvailable: update, series: instance.series)
     }
 
@@ -814,7 +995,9 @@ public final class ServiceManager: @unchecked Sendable {
         let config = paths.serviceConfig(id).standardizedFileURL
         for file in recipe.configFiles {
             let target = URL(fileURLWithPath: try ServiceTemplate.render(file.path, context: context)).standardizedFileURL
-            guard target.path.hasPrefix(config.path + "/") else { continue }
+            guard target.path.hasPrefix(config.path + "/") else {
+                throw ServiceError.unsafeRecipe(name: context.name, reason: "its config file would be outside its config folder")
+            }
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(try ServiceTemplate.render(file.contents, context: context).utf8).write(to: target, options: .atomic)
         }

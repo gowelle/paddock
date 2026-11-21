@@ -42,14 +42,49 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
         try JSONEncoder().encode(self).write(to: file, options: .atomic)
     }
 
-    /// True only if a live process matches every field and its program is inside one of `allowedDirectories`.
+    /// True only for a true orphan of a daemon that died: a live process matching every field, leading its
+    /// own process group, whose parent is launchd (pid 1), running a program inside one of `allowedDirectories`.
+    /// While the daemon that started it is alive it is that daemon's child, so never an orphan.
     public func isOurLiveProcess(allowedDirectories: [String]) -> Bool {
-        let inside = allowedDirectories.contains { directory in
-            let prefix = URL(fileURLWithPath: directory).standardizedFileURL.path + "/"
-            return URL(fileURLWithPath: executable).standardizedFileURL.path.hasPrefix(prefix)
+        guard Self.isInside(executable, allowedDirectories), pid == pgid, let now = Self.live(pid: pid), now == self,
+              Self.parent(of: pid) == 1 else { return false }
+        return true
+    }
+
+    /// When the record's leader is gone but its group lives on: the remaining members, if there are any and
+    /// every one is an orphan (parent launchd) running a program inside `allowedDirectories`; else nil. A
+    /// process group id is never reused while the group has members, so these are the leader's own.
+    public func orphanedGroupMembers(allowedDirectories: [String]) -> [Int32]? {
+        guard pid == pgid, Self.live(pid: pid) == nil else { return nil }
+        let members = Self.members(ofGroup: pgid)
+        guard !members.isEmpty, members.allSatisfy({ member in
+            guard let program = PortCheck.executablePath(pid: member) else { return false }
+            return Self.isInside(program, allowedDirectories) && Self.parent(of: member) == 1 && getpgid(member) == pgid
+        }) else { return nil }
+        return members
+    }
+
+    static func isInside(_ program: String, _ directories: [String]) -> Bool {
+        let path = URL(fileURLWithPath: program).standardizedFileURL.path
+        return directories.contains { path.hasPrefix(URL(fileURLWithPath: $0).standardizedFileURL.path + "/") }
+    }
+
+    /// A process's parent pid, if macOS says.
+    static func parent(of pid: Int32) -> Int32? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return Int32(info.pbi_ppid)
+    }
+
+    /// The pids in a process group.
+    static func members(ofGroup pgid: Int32) -> [Int32] {
+        var pids = [pid_t](repeating: 0, count: 256)
+        let bytes = pids.withUnsafeMutableBytes {
+            proc_listpids(UInt32(PROC_PGRP_ONLY), UInt32(pgid), $0.baseAddress, Int32($0.count))
         }
-        guard inside, let now = Self.live(pid: pid) else { return false }
-        return now == self
+        guard bytes > 0 else { return [] }
+        return Array(pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size)).filter { $0 > 0 }
     }
 
     /// Stops the record's process group: `signal`, then SIGKILL after `grace`. Returns once it is gone (or

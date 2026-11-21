@@ -123,7 +123,7 @@ final class ServiceInstanceTests: XCTestCase {
 
         let old = try JSONDecoder().decode(EngineStatus.self, from: Data(#"{"running": true, "version": 3}"#.utf8))
         XCTAssertEqual(old.services, [])
-        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 5, "the status changed: the build number moves on")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 6, "the status changed: the build number moves on")
     }
 
     /// A newer daemon's unknown state reads as unavailable, and one service that can't be read never

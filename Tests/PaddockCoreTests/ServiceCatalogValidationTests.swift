@@ -117,6 +117,60 @@ final class ServiceCatalogValidationTests: XCTestCase {
         XCTAssertNoThrow(try ServiceCatalog.validate([valid(), valid(version: "1.3")]))
     }
 
+    /// Path-bearing fields take one leading folder placeholder and literal text after it: `{name}` (free
+    /// text) can never steer a program, socket, config file or path variable elsewhere.
+    func testPathFieldsTakeOnlyALeadingFolder() {
+        func start(_ executable: String = "{bin}/sample", _ environment: [String: String] = [:]) -> RecipeCommand {
+            RecipeCommand(executable: executable, environment: environment)
+        }
+        assertRejected([valid(start: start("{bin}/{name}"))], "under {bin}/")
+        assertRejected([valid(start: start("{bin}/x/{id}"))], "under {bin}/")
+        assertRejected([valid(start: start("{bin}//x"))], "under {bin}/")
+        assertRejected([valid(socket: "{run}/{name}.sock")], "socket")
+        assertRejected([valid(configFiles: [RecipeFile(path: "{config}/{id}.conf", contents: "")])], "config file")
+        assertRejected([valid(start: start("{bin}/sample", ["HOME": "{data}/{name}"]))], "HOME")
+        assertRejected([valid(start: start("{bin}/sample", ["PATH": "{data}/x:/anything"]))], "PATH")
+        assertRejected([valid(start: start("{bin}/sample", ["PATH": "{data}/x:"]))], "PATH")
+        assertRejected([valid(start: start("{bin}/sample", ["TMPDIR": "{run}{name}"]))], "TMPDIR")
+        XCTAssertNoThrow(try ServiceCatalog.validate([valid(start: start("{bin}/sample", ["PATH": "{bin}:{data}/bin",
+                                                                                          "TMPDIR": "{run}"]))]))
+    }
+
+    func testDisplayNamesAreShortPrintableAndHaveNoSlash() {
+        func named(_ name: String) -> ServiceRecipe {
+            ServiceRecipe(kind: "sample", displayName: name, version: "1.0", licence: "MIT", assets: [],
+                          start: RecipeCommand(executable: "{bin}/s"), ready: .tcp(port: "{port.main}"),
+                          ports: [RecipePort(name: "main", preferred: 4000)])
+        }
+        for bad in ["../../../../bin/sh", "", " ", "a\nb", "tab\there", String(repeating: "x", count: 65), "a\u{1B}[31m"] {
+            assertRejected([named(bad)], "display name")
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([named("Redis (Valkey)")]))
+    }
+
+    func testEnvironmentDenylist() {
+        func env(_ name: String, _ value: String = "x") -> ServiceRecipe {
+            valid(start: RecipeCommand(executable: "{bin}/sample", environment: [name: value]))
+        }
+        for name in ["LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "PERL5LIB", "PERL5OPT", "PYTHONPATH",
+                     "PYTHONSTARTUP", "RUBYOPT", "NODE_OPTIONS", "BASH_ENV", "ENV", "IFS", "CDPATH", "GLOBIGNORE"] {
+            assertRejected([env(name, "{data}/x")], name)
+        }
+        assertRejected([env("PHPRC", "/etc/php.ini")], "PHPRC")
+        assertRejected([env("PHP_INI_SCAN_DIR", "/etc/php.d")], "PHP_INI_SCAN_DIR")
+        XCTAssertNoThrow(try ServiceCatalog.validate([env("PHPRC", "{config}/php.ini")]))
+        XCTAssertNoThrow(try ServiceCatalog.validate([env("PHP_INI_SCAN_DIR", "{config}/conf.d")]))
+    }
+
+    func testStripComponentsAndOneInstallPerKindAndVersion() {
+        let url = URL(string: "https://example.invalid/s.tar.gz")!
+        assertRejected([valid(assets: [RecipeAsset(artifact: Artifact(url: url, sha256: "00"), archive: "tar.gz",
+                                                   stripComponents: 9)])], "stripComponents")
+        assertRejected([valid(assets: [RecipeAsset(artifact: Artifact(url: url, sha256: "00"), archive: "tar.gz",
+                                                   stripComponents: -1)])], "stripComponents")
+        assertRejected([valid(series: "1"), valid(series: "1.2")], "more than once")
+    }
+
     /// Decoding a catalog validates it, so a bad bundled, hosted or development catalog never loads.
     func testDecodingValidates() throws {
         let bad = ServiceCatalog(recipes: [valid(stopSignal: "KILL")])

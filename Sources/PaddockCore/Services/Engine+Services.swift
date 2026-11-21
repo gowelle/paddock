@@ -95,7 +95,8 @@ extension Engine {
         case .portInUse, .noFreePort: code = ErrorCode.servicePortInUse
         case .unavailable: code = ErrorCode.serviceUnavailable
         case .dataMismatch: code = ErrorCode.serviceUnavailable
-        case .initialiseFailed, .initialiseTimedOut, .installFailed, .notReady, .notLoopback, .updateFailed:
+        case .initialiseFailed, .initialiseTimedOut, .installFailed, .notReady, .notLoopback, .updateFailed,
+             .rollbackFailed, .unsafeRecipe:
             code = ErrorCode.serviceFailed
         case .cancelled: code = ErrorCode.serviceCancelled
         }

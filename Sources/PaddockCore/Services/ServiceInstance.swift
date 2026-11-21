@@ -17,9 +17,11 @@ public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
     /// Started when Paddock starts.
     public var autostart: Bool
     public let createdAt: Date
+    /// A newer patch whose automatic switch failed: not tried again until `paddock service update`.
+    public var skippedVersion: String?
 
     public init(id: String, kind: String, series: String, version: String, name: String, ports: [String: Int],
-                autostart: Bool, createdAt: Date) {
+                autostart: Bool, createdAt: Date, skippedVersion: String? = nil) {
         self.id = id
         self.kind = kind
         self.series = series
@@ -28,9 +30,12 @@ public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
         self.ports = ports
         self.autostart = autostart
         self.createdAt = createdAt
+        self.skippedVersion = skippedVersion
     }
 
-    private enum CodingKeys: String, CodingKey { case id, kind, series, version, name, ports, autostart, createdAt }
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, series, version, name, ports, autostart, createdAt, skippedVersion
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -42,6 +47,7 @@ public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
         ports = try c.decode([String: Int].self, forKey: .ports)
         autostart = try c.decodeIfPresent(Bool.self, forKey: .autostart) ?? true
         createdAt = try c.decode(Date.self, forKey: .createdAt)
+        skippedVersion = try c.decodeIfPresent(String.self, forKey: .skippedVersion)
     }
 
     public struct Identity: Equatable, Sendable {
@@ -61,6 +67,12 @@ public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
         return !id.isEmpty && id != "bin" && runs.allSatisfy { run in
             !run.isEmpty && run.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
         }
+    }
+
+    /// A display name or instance name Paddock shows and uses: 1 to 64 printable characters, no `/`, nothing
+    /// `Messages.displayName` would clean away. Checked for every catalog recipe and every saved instance.
+    public static func isValidName(_ name: String) -> Bool {
+        !name.contains("/") && name.count <= 64 && Messages.displayName(name, limit: 64) == name
     }
 
     /// The id and name of a new instance: `<kind>-<series, dots as dashes>` (`mysql-8-4`, `MySQL 8.4`), or
