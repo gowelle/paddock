@@ -33,6 +33,18 @@ final class ServiceMessagesTests: XCTestCase {
                        + "\n\nPostgreSQL 18: Includes PostGIS 3.6.4 (no raster or topology).")
     }
 
+    /// A note is shown whole up to the 120 characters a recipe may use.
+    func testServiceTableShowsAWhole120CharacterNote() {
+        let note = "Search indexes are tied to Meilisearch 1.57; export a dump before changing version. "
+            + String(repeating: "x", count: 36)
+        XCTAssertEqual(note.count, 120)
+        let noted = ServiceStatus(id: "meilisearch-1-57", name: "Meilisearch 1.57", kind: "meilisearch", version: "1.57.0",
+                                  displayName: "Meilisearch", state: .running, ports: ["main": 7700], env: [],
+                                  openURL: nil, dataPath: "/d", autostart: true, mainPort: 7700, notes: [note])
+        XCTAssertTrue(Messages.serviceTable([noted]).hasSuffix("\n\nMeilisearch 1.57: \(note)"),
+                      Messages.serviceTable([noted]))
+    }
+
     func testStates() {
         XCTAssertEqual([ServiceState.running, .starting, .stopped, .crashed, .portInUse(holder: "Herd"),
                         .unavailable(reason: "no PHP")].map(Messages.serviceState),

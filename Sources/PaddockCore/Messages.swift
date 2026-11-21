@@ -400,11 +400,12 @@ public enum Messages {
         }.map { "\($0.value) (\($0.key))" }.joined(separator: ", ")
     }
 
-    /// Columns: service name, state, ports; then each service's notes, one line each, after a blank line.
+    /// Columns: service name, state, ports; then each service's notes, one line each, after a blank line (up to
+    /// the 120 characters a recipe's note may have).
     public static func serviceTable(_ services: [ServiceStatus]) -> String {
         let rows = table([["SERVICE", "STATE", "PORTS"]]
                          + services.map { [$0.name, serviceState($0.state), servicePorts($0)] })
-        let notes = services.flatMap { service in (service.notes ?? []).map { "\(service.name): \(printable($0) ?? "")" } }
+        let notes = services.flatMap { service in (service.notes ?? []).map { "\(service.name): \(printable($0, limit: 120) ?? "")" } }
         return notes.isEmpty ? rows : rows + "\n\n" + notes.joined(separator: "\n")
     }
 
