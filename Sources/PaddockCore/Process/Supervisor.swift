@@ -20,10 +20,13 @@ public struct ProcessSpec: Sendable {
     public var stopGrace: TimeInterval?
     /// Where the process runs; nil keeps the supervisor's own working directory.
     public var workingDirectory: URL?
-    /// Asked after each unexpected exit, with its code: false leaves the process stopped instead of restarting
-    /// it. Nil restarts after every exit (until the failure limit). Called while the supervisor is busy, so it
-    /// must be quick and must not call the supervisor.
-    public var restartsAfterExit: (@Sendable (Int32) -> Bool)?
+    /// Asked after each unexpected exit, with its code: restart it (counting a failure), restart it without
+    /// counting one, or leave it stopped. Nil restarts after every exit, counting failures. Called while the
+    /// supervisor is busy, so it must be quick and must not call the supervisor.
+    public var exitDecision: (@Sendable (Int32) -> ExitDecision)?
+    /// When set, stdout and stderr go to a pipe whose read end is handed to it at every spawn (and `logFile` is
+    /// not used); otherwise they are appended to `logFile`.
+    public var output: ProcessOutput?
     /// Told about each unexpected exit (not one `stop` asked for): its code, and whether a restart follows.
     public var didExit: (@Sendable (_ code: Int32, _ restarting: Bool) -> Void)?
 
@@ -55,6 +58,22 @@ public enum ProcessStatus: Equatable, Sendable, CustomStringConvertible {
         case .crashed(let code): return "crashed (exit \(code))"
         }
     }
+}
+
+/// What happens after a supervised process exits unexpectedly (`ProcessSpec.exitDecision`).
+public enum ExitDecision: Equatable, Sendable {
+    /// Restart it with backoff; the exit counts toward the failure limit.
+    case restart
+    /// Restart it after this many seconds (times the supervisor's backoff scale), not counting a failure.
+    case restartUncounted(after: TimeInterval)
+    /// Leave it stopped.
+    case stop
+}
+
+/// Where a supervised process's output goes instead of a log file: `attach` gets the read end of a pipe whose
+/// write end is the process's stdout and stderr, once per spawn, and owns it (closes it at end of file).
+public protocol ProcessOutput: AnyObject, Sendable {
+    func attach(_ fd: Int32)
 }
 
 /// How a `stop` ended.
@@ -91,6 +110,8 @@ public final class Supervisor: @unchecked Sendable {
         /// Bumped on every start/stop so a pending restart from an earlier generation is dropped.
         var generation = 0
         var failures: [Date] = []
+        /// Set when the failure limit was reached; cleared by `start`.
+        var gaveUp = false
         /// Entered at spawn, left once the process is reaped; any number of stop() calls can wait on it.
         var exited: DispatchGroup?
 
@@ -122,6 +143,7 @@ public final class Supervisor: @unchecked Sendable {
         entry.spec = spec
         entry.wantsRunning = true
         entry.failures = []
+        entry.gaveUp = false
         entry.generation += 1
         entries[spec.name] = entry
         try spawnLocked(entry)
@@ -148,6 +170,24 @@ public final class Supervisor: @unchecked Sendable {
         kill(-pid, SIGKILL)
         exited.wait()
         return .killed
+    }
+
+    /// Sends `signal` to the running process's group now (say, SIGKILL to cut a stop short). False when it isn't
+    /// running.
+    @discardableResult
+    public func signal(_ name: String, _ signal: Int32) -> Bool {
+        lock.lock()
+        let pid = entries[name]?.pid
+        lock.unlock()
+        guard let pid else { return false }
+        return kill(-pid, signal) == 0
+    }
+
+    /// True once the process failed too often and is left crashed (until the next `start`).
+    public func hasGivenUp(_ name: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries[name]?.gaveUp ?? false
     }
 
     public func stopAll() {
@@ -218,22 +258,27 @@ public final class Supervisor: @unchecked Sendable {
         }
         let report = entry.spec.didExit
         let restarting: Bool
-        if entry.spec.restartsAfterExit?(code) == false {
+        switch entry.spec.exitDecision?(code) ?? .restart {
+        case .stop:
             entry.status = .stopped
             restarting = false
-        } else {
+        case .restartUncounted(let delay):
+            entry.status = .crashed(exitCode: code)
+            restarting = true
+            scheduleRestartLocked(entry, generation: generation, delay: delay * backoffScale)
+        case .restart:
             entry.status = .crashed(exitCode: code)
             let now = Date()
             entry.failures = entry.failures.filter { now.timeIntervalSince($0) < Self.failureWindow } + [now]
             restarting = entry.failures.count < Self.maxFailures
-            if restarting { scheduleRestartLocked(entry, generation: generation) }
+            if restarting { scheduleRestartLocked(entry, generation: generation) } else { entry.gaveUp = true }
         }
         lock.unlock()
         report?(code, restarting)
     }
 
-    private func scheduleRestartLocked(_ entry: Entry, generation: Int) {
-        let delay = Self.backoff(afterFailures: entry.failures.count) * backoffScale
+    private func scheduleRestartLocked(_ entry: Entry, generation: Int, delay given: TimeInterval? = nil) {
+        let delay = given ?? Self.backoff(afterFailures: entry.failures.count) * backoffScale
         DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.lock.lock()
@@ -246,6 +291,8 @@ public final class Supervisor: @unchecked Sendable {
                 entry.failures = entry.failures.filter { now.timeIntervalSince($0) < Self.failureWindow } + [now]
                 if entry.failures.count < Self.maxFailures {
                     self.scheduleRestartLocked(entry, generation: generation)
+                } else {
+                    entry.gaveUp = true
                 }
             }
         }
@@ -254,14 +301,24 @@ public final class Supervisor: @unchecked Sendable {
     /// posix_spawn into a new process group, with stdin from /dev/null, stdout and stderr appended
     /// to the log file, default signal handling, and no other inherited descriptors.
     private static func spawn(_ spec: ProcessSpec) throws -> Int32 {
-        try FileManager.default.createDirectory(at: spec.logFile.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
+        var pipeFDs: [Int32] = [-1, -1]
+        if spec.output != nil {
+            guard pipe(&pipeFDs) == 0 else { throw SupervisorError.spawnFailed(name: spec.name, errno: errno) }
+            for fd in pipeFDs { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        } else {
+            try FileManager.default.createDirectory(at: spec.logFile.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+        }
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_addopen(&actions, 1, spec.logFile.path,
-                                         O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        if spec.output != nil {
+            posix_spawn_file_actions_adddup2(&actions, pipeFDs[1], 1)
+        } else {
+            posix_spawn_file_actions_addopen(&actions, 1, spec.logFile.path,
+                                             O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        }
         posix_spawn_file_actions_adddup2(&actions, 1, 2)
         if let directory = spec.workingDirectory {
             posix_spawn_file_actions_addchdir_np(&actions, directory.path)
@@ -290,6 +347,14 @@ public final class Supervisor: @unchecked Sendable {
             withCStrings(envp) { cEnvp in
                 posix_spawn(&pid, spec.executable.path, &actions, &attr, cArgv, cEnvp)
             }
+        }
+        if let output = spec.output {
+            close(pipeFDs[1])
+            guard rc == 0 else {
+                close(pipeFDs[0])
+                throw SupervisorError.spawnFailed(name: spec.name, errno: rc)
+            }
+            output.attach(pipeFDs[0])
         }
         guard rc == 0 else { throw SupervisorError.spawnFailed(name: spec.name, errno: rc) }
         return pid

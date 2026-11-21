@@ -327,7 +327,7 @@ public final class SiteTaskManager: @unchecked Sendable {
                 }
             })
         spec.workingDirectory = URL(fileURLWithPath: task.folder, isDirectory: true)
-        spec.restartsAfterExit = { [weak self] status in self?.restartsAfterExit(name, status: status) ?? false }
+        spec.exitDecision = { [weak self] status in self?.restartsAfterExit(name, status: status) ?? false ? .restart : .stop }
         spec.didExit = { [weak self] status, restarting in
             self?.didExit(name, site: task.site, task: task.task, status: status, restarting: restarting)
         }

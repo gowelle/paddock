@@ -81,6 +81,20 @@ final class ServiceProcessRecordTests: XCTestCase {
         XCTAssertEqual(record.identity(belongs: { _ in true }), .gone)
     }
 
+    /// A record carries the boot it was made in; one written before records had it still identifies its process.
+    func testTheBootIsRecordedAndOlderRecordsStillMatch() throws {
+        let sleep = try startSleep()
+        let record = try XCTUnwrap(ServiceProcessRecord.live(pid: sleep.processIdentifier))
+        let boot = try XCTUnwrap(ServiceProcessRecord.currentBoot())
+        XCTAssertEqual(record.bootSeconds, boot)
+        let older = #"{"pid": \#(record.pid), "pgid": \#(record.pgid), "startSeconds": \#(record.startSeconds), "#
+            + #""startMicroseconds": \#(record.startMicroseconds), "executable": "\#(record.executable)"}"#
+        let decoded = try JSONDecoder().decode(ServiceProcessRecord.self, from: Data(older.utf8))
+        XCTAssertNil(decoded.bootSeconds)
+        XCTAssertTrue(decoded.isSameProgram(as: record))
+        XCTAssertEqual(decoded.identity(belongs: { _ in true }), .runningButNotOurs, "the same process, not .gone")
+    }
+
     /// A group is listed whole however many members it has (the buffer grows until the list fits), and a group
     /// that can't be listed whole is reported as such, never as a partial list.
     func testGroupMembersAreListedWholeOrNotAtAll() throws {

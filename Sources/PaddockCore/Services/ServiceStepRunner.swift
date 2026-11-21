@@ -3,7 +3,7 @@ import Foundation
 
 /// Runs one recipe step (an initialise step, and later steps such as creating a database) so that it can
 /// never wedge or kill the daemon: the step runs in its own process group with exactly the given
-/// environment; output (stdout and stderr together) is read as it comes, keeping the last 64 KB; stdin is
+/// environment; output (stdout and stderr together) is read as it comes, keeping the last 64 KB (or what the caller asks for); stdin is
 /// written alongside the reading, and a step that exits without reading it costs nothing (no SIGPIPE).
 /// At the deadline, or as soon as `isCancelled` says so, the whole group gets SIGTERM and, after
 /// `killGrace`, SIGKILL. A step that exits but leaves something holding its output is given a moment to
@@ -28,7 +28,7 @@ enum ServiceStepRunner {
 
     static func run(executable: String, arguments: [String], environment: [String: String], directory: URL,
                     stdin: String?, timeout: TimeInterval, killGrace: TimeInterval = 2,
-                    isCancelled: () -> Bool) throws -> Outcome {
+                    keepingLast limit: Int = outputLimit, isCancelled: () -> Bool) throws -> Outcome {
         var output: [Int32] = [-1, -1]
         guard pipe(&output) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         var input: [Int32] = [-1, -1]
@@ -115,7 +115,7 @@ enum ServiceStepRunner {
                     let n = read(readFD, &buffer, buffer.count)
                     if n > 0 {
                         collected += buffer[0..<n]
-                        if collected.count > outputLimit { collected.removeFirst(collected.count - outputLimit) }
+                        if collected.count > limit { collected.removeFirst(collected.count - limit) }
                     } else if n == 0 || (errno != EAGAIN && errno != EINTR) {
                         outputOpen = false
                     }

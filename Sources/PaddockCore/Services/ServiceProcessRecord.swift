@@ -11,13 +11,33 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
     public let startSeconds: Int64
     public let startMicroseconds: Int64
     public let executable: String
+    /// When this Mac booted (`kern.boottime`, seconds) when the record was made; nil in records written before
+    /// it was kept. No process outlives a reboot, so a record from another boot names nothing of ours.
+    public let bootSeconds: Int64?
 
-    public init(pid: Int32, pgid: Int32, startSeconds: Int64, startMicroseconds: Int64, executable: String) {
+    public init(pid: Int32, pgid: Int32, startSeconds: Int64, startMicroseconds: Int64, executable: String,
+                bootSeconds: Int64? = nil) {
         self.pid = pid
         self.pgid = pgid
         self.startSeconds = startSeconds
         self.startMicroseconds = startMicroseconds
         self.executable = executable
+        self.bootSeconds = bootSeconds
+    }
+
+    /// This boot's `kern.boottime` seconds, if macOS says.
+    public static func currentBoot() -> Int64? {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0, boot.tv_sec > 0 else { return nil }
+        return Int64(boot.tv_sec)
+    }
+
+    /// The same process running the same program: every field but the boot (which older records lack).
+    public func isSameProgram(as other: ServiceProcessRecord) -> Bool {
+        pid == other.pid && pgid == other.pgid && startSeconds == other.startSeconds
+            && startMicroseconds == other.startMicroseconds && executable == other.executable
     }
 
     /// The record of a live process of this user, or nil if there is none (or macOS won't say).
@@ -29,7 +49,8 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
         let pgid = getpgid(pid)
         guard pgid > 0 else { return nil }
         return ServiceProcessRecord(pid: pid, pgid: pgid, startSeconds: Int64(info.pbi_start_tvsec),
-                                    startMicroseconds: Int64(info.pbi_start_tvusec), executable: executable)
+                                    startMicroseconds: Int64(info.pbi_start_tvusec), executable: executable,
+                                    bootSeconds: currentBoot())
     }
 
     public static func read(from file: URL) -> ServiceProcessRecord? {
@@ -66,7 +87,9 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
     public func identity(belongs: (Int32) -> Bool) -> Identity {
         guard let now = Self.live(pid: pid), now.startSeconds == startSeconds,
               now.startMicroseconds == startMicroseconds else { return .gone }
-        guard pid == pgid, now == self, Self.parent(of: pid) == 1, belongs(pid) else { return .runningButNotOurs }
+        guard pid == pgid, now.isSameProgram(as: self), Self.parent(of: pid) == 1, belongs(pid) else {
+            return .runningButNotOurs
+        }
         return .orphan
     }
 

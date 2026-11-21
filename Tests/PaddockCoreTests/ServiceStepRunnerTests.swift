@@ -23,6 +23,16 @@ final class ServiceStepRunnerTests: XCTestCase {
                                   isCancelled: isCancelled)
     }
 
+    /// A caller can keep more than the default 64 KB of output (the last part is kept).
+    func testACallerCanKeepMoreOutput() throws {
+        let script = "head -c 200000 /dev/zero | tr '\\0' a; echo; echo end"
+        let outcome = try ServiceStepRunner.run(executable: "/bin/sh", arguments: ["-c", script],
+                                                environment: ["PATH": "/usr/bin:/bin"], directory: dir, stdin: nil,
+                                                timeout: 10, killGrace: 0.5, keepingLast: 300_000, isCancelled: { false })
+        XCTAssertEqual(outcome.output.count, 200_000 + 5)
+        XCTAssertTrue(try sh(script).output.utf8.count <= ServiceStepRunner.outputLimit, "the default is unchanged")
+    }
+
     func testExitStatusAndOutput() throws {
         let outcome = try sh("cd \"$PWD\"; echo out; echo err >&2; echo \"$PADDOCK_HOME|$PATH\"; exit 3")
         XCTAssertEqual(outcome.end, .exited(3))

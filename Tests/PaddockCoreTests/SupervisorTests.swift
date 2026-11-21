@@ -199,7 +199,7 @@ final class SupervisorTests: XCTestCase {
         let runs = dir.appendingPathComponent("runs").path
         let exits = Locked<[String]>([])
         var spec = shell("once", "echo run >> '\(runs)'; exit 0")
-        spec.restartsAfterExit = { code in code != 0 }
+        spec.exitDecision = { code in code != 0 ? .restart : .stop }
         spec.didExit = { code, restarting in exits.withValue { $0.append("\(code) \(restarting)") } }
         try supervisor.start(spec)
         XCTAssertTrue(waitUntil(5) { exits.value.count == 1 })
@@ -207,6 +207,7 @@ final class SupervisorTests: XCTestCase {
         XCTAssertEqual(lines("runs"), 1, "not restarted")
         XCTAssertEqual(exits.value, ["0 false"])
         XCTAssertEqual(supervisor.status("once"), .stopped)
+        XCTAssertFalse(supervisor.hasGivenUp("once"), "stopped by its spec's choice, not given up on")
 
         var failing = shell("fail", "exit 3")
         failing.didExit = { code, restarting in exits.withValue { $0.append("\(code) \(restarting)") } }
@@ -215,5 +216,66 @@ final class SupervisorTests: XCTestCase {
         XCTAssertTrue(waitUntil(5) { exits.value.count == 5 })
         Thread.sleep(forTimeInterval: 0.3)
         XCTAssertEqual(exits.value, ["3 true", "3 true", "3 true", "3 true", "3 false"], "the fifth failure gives up")
+        XCTAssertTrue(supervisor.hasGivenUp("fail"))
+        try supervisor.start(failing)
+        XCTAssertFalse(supervisor.hasGivenUp("fail"), "a new start forgets the give-up")
+    }
+
+    /// An exit the spec says not to count is restarted after the spec's delay and never reaches the failure
+    /// limit, however often it happens.
+    func testAnUncountedExitNeverGivesUp() throws {
+        supervisor = Supervisor(backoffScale: 0.01)
+        let runs = dir.appendingPathComponent("runs").path
+        var spec = shell("clean", "echo run >> '\(runs)'; exit 0")
+        spec.exitDecision = { _ in .restartUncounted(after: 1) }
+        try supervisor.start(spec)
+        XCTAssertTrue(waitUntil(10) { self.lines("runs") >= 8 }, "runs \(lines("runs"))")
+        XCTAssertFalse(supervisor.hasGivenUp("clean"))
+    }
+
+    /// With an output sink the process's stdout and stderr go to a pipe the sink reads, not to the log file.
+    func testOutputGoesToTheSink() throws {
+        supervisor = Supervisor()
+        let sink = CollectingOutput()
+        var spec = shell("talk", "echo out; echo err >&2; exec sleep 60")
+        spec.output = sink
+        try supervisor.start(spec)
+        XCTAssertTrue(waitUntil(5) { sink.text.contains("out\n") && sink.text.contains("err\n") }, sink.text)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("talk.log").path))
+        supervisor.stop("talk")
+        XCTAssertTrue(waitUntil(5) { sink.closed }, "the pipe closes when the process group is gone")
+    }
+
+    func testASignalReachesTheRunningGroup() throws {
+        supervisor = Supervisor(stopGracePeriod: 60)
+        try supervisor.start(shell("stubborn", "trap '' TERM; while :; do sleep 0.05; done"))
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertTrue(supervisor.signal("stubborn", SIGKILL))
+        XCTAssertTrue(waitUntil(5) { if case .running = self.supervisor.status("stubborn") { return false }; return true })
+        XCTAssertFalse(supervisor.signal("nothing", SIGKILL))
+    }
+}
+
+/// Collects what a process writes to its output pipe.
+final class CollectingOutput: ProcessOutput, @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    private var isClosed = false
+
+    var text: String { lock.lock(); defer { lock.unlock() }; return String(decoding: data, as: UTF8.self) }
+    var closed: Bool { lock.lock(); defer { lock.unlock() }; return isClosed }
+
+    func attach(_ fd: Int32) {
+        Thread {
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let n = read(fd, &buffer, buffer.count)
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { break }
+                self.lock.lock(); self.data.append(contentsOf: buffer[0..<n]); self.lock.unlock()
+            }
+            close(fd)
+            self.lock.lock(); self.isClosed = true; self.lock.unlock()
+        }.start()
     }
 }
