@@ -19,6 +19,7 @@ struct SitesTab: View {
                         }))
                         .labelsHidden()
                         .toggleStyle(.checkbox)
+                        .tint(Theme.pasture)
                         .disabled(model.isBusy(.secure(site: site.name)) || model.isBusy(.unsecure(site: site.name)))
                 }
                 .width(60)

@@ -57,14 +57,13 @@ final class MultiCallTests: XCTestCase {
                        .exec(path: binary, arguments: [binary, "-c", ini.path, "-v"], setEnvironment: [:]))
     }
 
-    func testComposerRunsPharAndSetsComposerHomeOnlyWhenUnset() throws {
+    func testComposerRunsPharAndLeavesComposerHomeAlone() throws {
         try installPHP()
         let binary = paths.phpDir(v85).appendingPathComponent("php").path
         let phar = resources.appendingPathComponent("composer.phar").path
-        let home = paths.home.appendingPathComponent("composer").path
+        // No COMPOSER_HOME of Paddock's: the owner's ~/.composer (auth.json, global packages) stays in use.
         XCTAssertEqual(plan("composer", ["--help"]),
-                       .exec(path: binary, arguments: [binary, phar, "--help"],
-                             setEnvironment: ["COMPOSER_HOME": home]))
+                       .exec(path: binary, arguments: [binary, phar, "--help"], setEnvironment: [:]))
         XCTAssertEqual(plan("composer", ["install"], env: ["COMPOSER_HOME": "/mine"]),
                        .exec(path: binary, arguments: [binary, phar, "install"], setEnvironment: [:]))
     }

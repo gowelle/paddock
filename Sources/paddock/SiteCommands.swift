@@ -41,7 +41,8 @@ struct Link: ParsableCommand {
     func run() throws {
         let dir = CLI.currentDirectory
         let chosen = name ?? URL(fileURLWithPath: dir).lastPathComponent
-        guard let site = SiteName.normalize(chosen) else {
+        // `foo.test` means the site `foo`, as for unlink and secure.
+        guard let site = Messages.normalizedSiteName(chosen, tld: CLI.tld) else {
             throw CLI.failure("\"\(chosen)\" can't be turned into a site name; use letters or digits.")
         }
         try CLI.send(.link(name: site, path: dir))
@@ -85,9 +86,8 @@ struct Secure: ParsableCommand {
         case .ok(let status):
             print(status.trustEnabled ? "\(target.host) is now served over HTTPS."
                   : Messages.securedWithoutTrust(host: target.host))
-        case .error(ErrorCode.needsTrust, _):
-            throw CLI.failure(Messages.needsTrust(host: target.host))
         case .error(_, let message):
+            // For needs_trust the daemon says why: not trusted yet, or the certificate isn't ready.
             throw CLI.failure(message)
         }
     }

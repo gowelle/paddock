@@ -24,14 +24,12 @@ public enum MultiCall {
 
         var argv = [binary]
         if let ini = resolver.ini(for: version) { argv += ["-c", ini.path] }
-        var set: [String: String] = [:]
+        // COMPOSER_HOME is left to Composer (the owner's ~/.composer, or what they set), so their
+        // auth.json, global config and global packages keep working.
         if name == "composer" {
             argv.append(resources().appendingPathComponent("composer.phar").path)
-            if (environment["COMPOSER_HOME"] ?? "").isEmpty {
-                set["COMPOSER_HOME"] = paths.home.appendingPathComponent("composer").path
-            }
         }
-        return .exec(path: binary, arguments: argv + arguments, setEnvironment: set)
+        return .exec(path: binary, arguments: argv + arguments, setEnvironment: [:])
     }
 
     /// Returns normally only when this process was not started as `php` or `composer`.

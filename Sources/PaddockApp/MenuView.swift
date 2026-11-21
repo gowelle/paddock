@@ -41,6 +41,8 @@ struct MenuContentView: View {
         }
         .padding(.vertical, 5)
         .frame(width: 280)
+        .foregroundStyle(Theme.ink)
+        .background(Theme.surface)
         .background(VisibilityReporter { visible in
             visible ? model.beginWatching() : model.endWatching()
         })
@@ -70,9 +72,8 @@ private struct StatusHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Circle()
-                    .fill(model.isRunning ? Color.green : Color.secondary.opacity(0.5))
-                    .frame(width: 8, height: 8)
+                StatusDot(state: dotState)
+                    .frame(width: 14, height: 14)
                 Text(model.statusLine)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -82,13 +83,18 @@ private struct StatusHeader: View {
             } else if let explanation = model.blockedExplanation {
                 Text(explanation)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.inkMuted)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
+    }
+
+    private var dotState: StatusDot.State {
+        if model.isRunning { return .running }
+        return model.status?.blockedBy.isEmpty == false ? .blocked : .stopped
     }
 }
 
@@ -143,7 +149,7 @@ private struct MenuRowLabel: View {
     }
 }
 
-/// Looks like a menu item: full width, highlighted with the system selection colour on hover.
+/// Looks like a menu item: full width, highlighted in honey on hover.
 private struct MenuRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         Row(configuration: configuration)
@@ -157,13 +163,13 @@ private struct MenuRowStyle: ButtonStyle {
         var body: some View {
             let highlighted = isEnabled && (hovering || configuration.isPressed)
             configuration.label
-                .foregroundStyle(highlighted ? Color(nsColor: .selectedMenuItemTextColor)
-                                 : isEnabled ? Color.primary : Color.secondary)
+                .foregroundStyle(highlighted ? Theme.onHoney
+                                 : isEnabled ? Theme.ink : Theme.inkMuted.opacity(0.6))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 4)
-                    .fill(highlighted ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear))
+                    .fill(highlighted ? Theme.honey : Color.clear))
                 .contentShape(Rectangle())
                 .padding(.horizontal, 5)
                 .onHover { hovering = $0 }
@@ -173,7 +179,7 @@ private struct MenuRowStyle: ButtonStyle {
 
 private struct MenuDivider: View {
     var body: some View {
-        Divider().padding(.horizontal, 12).padding(.vertical, 4)
+        Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, 12).padding(.vertical, 4)
     }
 }
 
@@ -282,7 +288,7 @@ struct ErrorLine: View {
     var body: some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.inkMuted)
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
     }

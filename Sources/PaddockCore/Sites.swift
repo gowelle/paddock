@@ -18,6 +18,19 @@ public enum SiteName {
         }
         return out.isEmpty ? nil : out
     }
+
+    /// The one rule for several folder (or link) names that normalize to the same site name, used by
+    /// both `SiteRegistry` and `RouterConfig` so they serve the same folder: an exactly named one
+    /// (`raw == normalize(raw)`) wins, otherwise the first in case-insensitive lexicographic order.
+    /// Returns `raws` in claiming order; the first to claim a name keeps it.
+    public static func claimOrder(_ raws: [String]) -> [String] {
+        raws.sorted { a, b in
+            let (aExact, bExact) = (normalize(a) == a, normalize(b) == b)
+            if aExact != bExact { return aExact }
+            let (la, lb) = (a.lowercased(), b.lowercased())
+            return la != lb ? la < lb : a < b
+        }
+    }
 }
 
 public struct Site: Codable, Equatable, Identifiable, Sendable {
@@ -66,10 +79,10 @@ public struct SiteRegistry {
     public func sites() -> [Site] {
         var byName: [String: Site] = [:]
 
-        for (rawName, target) in state.links {
-            guard let name = SiteName.normalize(rawName), isDirectory(target) else { continue }
-            // Two raw names may normalize alike; pick deterministically.
-            if byName[name] != nil && rawName != name { continue }
+        // Two raw names may normalize alike: the shared rule picks one (as RouterConfig does).
+        for rawName in SiteName.claimOrder(Array(state.links.keys)) {
+            guard let target = state.links[rawName], let name = SiteName.normalize(rawName),
+                  byName[name] == nil, isDirectory(target) else { continue }
             byName[name] = make(name: name, path: target, kind: .linked)
         }
 
@@ -78,8 +91,7 @@ public struct SiteRegistry {
             guard let entries = try? fileManager.contentsOfDirectory(
                 at: parentURL, includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]) else { continue }
-            for entry in entries {
-                let folder = entry.lastPathComponent
+            for folder in SiteName.claimOrder(entries.map(\.lastPathComponent)) {
                 let path = parentURL.appendingPathComponent(folder, isDirectory: true).path
                 guard !folder.hasPrefix("."), isDirectory(path),
                       let name = SiteName.normalize(folder), byName[name] == nil else { continue }

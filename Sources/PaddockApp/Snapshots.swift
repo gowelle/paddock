@@ -21,9 +21,9 @@ enum Snapshots {
             ("menu-running", AnyView(MenuContentView().environmentObject(running)), nil),
             ("menu-blocked", AnyView(MenuContentView().environmentObject(sampleModel(.blocked))), nil),
             ("menu-stopped", AnyView(MenuContentView().environmentObject(sampleModel(.stopped))), nil),
-            ("settings-general", AnyView(GeneralTab().environmentObject(running)), SettingsView.size),
-            ("settings-php", AnyView(PHPTab().environmentObject(running)), SettingsView.size),
-            ("settings-sites", AnyView(SitesTab().environmentObject(running)), SettingsView.size),
+            ("settings-general", AnyView(GeneralTab().settingsTheme().environmentObject(running)), SettingsView.size),
+            ("settings-php", AnyView(PHPTab().settingsTheme().environmentObject(running)), SettingsView.size),
+            ("settings-sites", AnyView(SitesTab().settingsTheme().environmentObject(running)), SettingsView.size),
         ]
         var ok = true
         for (name, view, size) in shots {

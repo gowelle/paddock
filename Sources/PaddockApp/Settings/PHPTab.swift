@@ -51,9 +51,9 @@ struct PHPTab: View {
     @ViewBuilder
     private func stateText(_ version: PHPVersion) -> some View {
         if version == model.defaultPHP {
-            Text("Default").foregroundStyle(.secondary)
+            Text("Default").foregroundStyle(Theme.honeyText)
         } else if model.installedPHP.contains(version) {
-            Text("Installed").foregroundStyle(.secondary)
+            Text("Installed").foregroundStyle(Theme.inkMuted)
         } else {
             Text("")
         }

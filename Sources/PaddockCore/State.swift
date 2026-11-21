@@ -30,6 +30,20 @@ public struct State: Codable, Equatable, Sendable {
     }
 }
 
+public enum StateError: Error, Equatable {
+    /// state.json exists but couldn't be read; it is left untouched rather than overwritten.
+    case unreadable(path: String, reason: String)
+}
+
+extension StateError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .unreadable(let path, let reason):
+            return "Paddock can't read \(path) (\(reason)), so it changed nothing. Check the file's permissions."
+        }
+    }
+}
+
 public final class StateStore: @unchecked Sendable {
     let paths: Paths
     private let lock = NSLock()
@@ -39,18 +53,30 @@ public final class StateStore: @unchecked Sendable {
     }
 
     /// Never throws. Missing or empty file gives `State.initial`; an undecodable file is
-    /// renamed to `state.json.corrupt-<unix timestamp>` and `State.initial` is returned.
+    /// renamed to `state.json.corrupt-<unix timestamp>` and `State.initial` is returned. A file that
+    /// exists but can't be read also reads as `State.initial`, but `update` then refuses to write.
     public func load() -> State {
         lock.lock()
         defer { lock.unlock() }
-        return loadLocked()
+        switch loadLocked() {
+        case .found(let state): return state
+        case .missing, .unreadable: return .initial
+        }
     }
 
+    /// Throws `StateError.unreadable` (writing nothing) when state.json exists but can't be read, so a
+    /// real file with links, pins and the saved resolver is never replaced by defaults.
     @discardableResult
     public func update(_ body: (inout State) -> Void) throws -> State {
         lock.lock()
         defer { lock.unlock() }
-        var state = loadLocked()
+        var state: State
+        switch loadLocked() {
+        case .found(let found): state = found
+        case .missing: state = .initial
+        case .unreadable(let reason):
+            throw StateError.unreadable(path: paths.stateFile.path, reason: reason)
+        }
         body(&state)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -60,17 +86,31 @@ public final class StateStore: @unchecked Sendable {
         return state
     }
 
-    private func loadLocked() -> State {
-        guard let data = try? Data(contentsOf: paths.stateFile), !data.isEmpty else {
-            return .initial
+    private enum Loaded {
+        case found(State)
+        /// No file, an empty one, or a corrupt one that was moved aside.
+        case missing
+        case unreadable(reason: String)
+    }
+
+    private func loadLocked() -> Loaded {
+        let data: Data
+        do {
+            data = try Data(contentsOf: paths.stateFile)
+        } catch {
+            // Only "there is no file" counts as missing.
+            if !FileManager.default.fileExists(atPath: paths.stateFile.path) { return .missing }
+            let underlying = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError
+            return .unreadable(reason: underlying?.localizedDescription ?? error.localizedDescription)
         }
+        if data.isEmpty { return .missing }
         if let state = try? JSONDecoder().decode(State.self, from: data) {
-            return state
+            return .found(state)
         }
         let aside = paths.home.appendingPathComponent(
             "state.json.corrupt-\(Int(Date().timeIntervalSince1970))")
         try? FileManager.default.removeItem(at: aside)
         try? FileManager.default.moveItem(at: paths.stateFile, to: aside)
-        return .initial
+        return .missing
     }
 }

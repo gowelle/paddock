@@ -49,4 +49,32 @@ final class StateTests: XCTestCase {
         try Data().write(to: paths.stateFile)
         XCTAssertEqual(StateStore(paths: paths).load(), State.initial)
     }
+
+    func testUnreadableFileReadsAsInitialButIsNeverOverwritten() throws {
+        let paths = try makePaths()
+        let saved = try StateStore(paths: paths).update {
+            $0.links["blog"] = "/tmp/blog"
+            $0.previousResolver = "nameserver 10.0.0.1\n"
+        }
+        let original = try Data(contentsOf: paths.stateFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: paths.stateFile.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: paths.stateFile.path) }
+        guard (try? Data(contentsOf: paths.stateFile)) == nil else { throw XCTSkip("running as root: file still readable") }
+
+        let store = StateStore(paths: paths)
+        XCTAssertEqual(store.load(), State.initial)
+        XCTAssertThrowsError(try store.update { $0.parked = ["/somewhere"] })
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: paths.stateFile.path)
+        XCTAssertEqual(try Data(contentsOf: paths.stateFile), original)
+        XCTAssertEqual(store.load(), saved)
+        let files = try FileManager.default.contentsOfDirectory(atPath: paths.home.path)
+        XCTAssertFalse(files.contains { $0.hasPrefix("state.json.corrupt-") }, "an unreadable file isn't corrupt")
+    }
+
+    func testMissingFileCanBeCreatedByUpdate() throws {
+        let paths = try makePaths()
+        let state = try StateStore(paths: paths).update { $0.parked = ["/x"] }
+        XCTAssertEqual(StateStore(paths: paths).load(), state)
+    }
 }

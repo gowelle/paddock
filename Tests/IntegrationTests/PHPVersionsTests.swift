@@ -107,8 +107,10 @@ final class PHPVersionsTests: XCTestCase {
         XCTAssertTrue(composer.out.hasPrefix("Composer version "), composer.err + composer.out)
         let config = try shim("composer", ["config", "--global", "--list"], cwd: home.root)
         XCTAssertEqual(config.status, 0, config.err)
-        let composerHome = home.paths.home.appendingPathComponent("composer").path
-        XCTAssertTrue(config.out.contains(composerHome), "COMPOSER_HOME not under the Paddock home: \(config.out)")
+        // Composer's own default: the (stand-in) user's ~/.composer, never a folder inside Paddock's home.
+        XCTAssertTrue(config.out.contains(userHome.appendingPathComponent(".composer").path),
+                      "COMPOSER_HOME isn't the user's own: \(config.out)")
+        XCTAssertFalse(config.out.contains(home.paths.home.appendingPathComponent("composer").path), config.out)
     }
 
     func testEngineInstallShimsCopiesTheSiblingPaddockOfTheRunningDaemon() throws {
@@ -185,6 +187,8 @@ final class PHPVersionsTests: XCTestCase {
 
     private struct ShimResult { let status: Int32; let out: String; let err: String }
 
+    private var userHome: URL { home.root.appendingPathComponent("user home", isDirectory: true) }
+
     private func shim(_ name: String, _ args: [String], cwd: URL, extraEnv: [String: String] = [:]) throws -> ShimResult {
         let binary = home.paths.bin.appendingPathComponent(name)
         let process = Process()
@@ -194,6 +198,9 @@ final class PHPVersionsTests: XCTestCase {
         env["PADDOCK_HOME"] = home.paths.home.path
         env["PADDOCK_RESOURCES"] = TestSupport.repoVendor.path
         env.removeValue(forKey: "COMPOSER_HOME")
+        env.removeValue(forKey: "XDG_CONFIG_HOME")
+        // A stand-in home, so Composer never reads or creates anything in the real ~/.composer.
+        env["HOME"] = userHome.path
         env.merge(extraEnv) { $1 }
         process.environment = env
         process.currentDirectoryURL = cwd

@@ -21,7 +21,7 @@ struct GeneralTab: View {
                     ForEach(model.parked, id: \.self) { path in
                         HStack {
                             Image(systemName: "folder")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Theme.inkMuted)
                             Text(Self.abbreviated(path))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -59,6 +59,7 @@ struct GeneralTab: View {
                 }
             }
             .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
             SettingsFooter()
         }
         .alert("Restore your previous setup?", isPresented: $confirmingRestore) {
@@ -95,7 +96,7 @@ struct Caption: View {
     var body: some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.inkMuted)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

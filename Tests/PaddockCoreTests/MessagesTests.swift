@@ -112,5 +112,7 @@ final class MessagesTests: XCTestCase {
     func testHostStripsTLDAndNormalizes() {
         XCTAssertEqual(Messages.siteName("My App.test", tld: "test"), "my-app")
         XCTAssertEqual(Messages.siteName("myapp", tld: "test"), "myapp")
+        XCTAssertEqual(Messages.normalizedSiteName("Foo.TEST", tld: "test"), "foo")
+        XCTAssertNil(Messages.normalizedSiteName("!!!.test", tld: "test"))
     }
 }

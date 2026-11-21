@@ -10,8 +10,8 @@ struct AboutView: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 64, height: 64)
-            Text("Paddock").font(.title2.bold())
-            Text("Version \(Self.version)").foregroundStyle(.secondary)
+            Text("Paddock").font(.title2.weight(.heavy))
+            Text("Version \(Self.version)").foregroundStyle(Theme.inkMuted)
             ScrollView {
                 Text(Self.notices)
                     .font(.system(.caption, design: .monospaced))
@@ -19,11 +19,14 @@ struct AboutView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
             }
-            .background(Color(nsColor: .textBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color(nsColor: .separatorColor)))
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
         }
         .padding(20)
         .frame(width: 560, height: 480)
+        .foregroundStyle(Theme.ink)
+        .background(Theme.ground)
     }
 
     static var version: String {

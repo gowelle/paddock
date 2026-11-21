@@ -19,20 +19,23 @@ final class CertificateTrustTests: XCTestCase {
         let runner = RecordingCommandRunner()
         try trust(runner).trust()
         XCTAssertEqual(runner.calls, [.init(executable: "/usr/bin/security", arguments: [
-            "add-trusted-cert", "-r", "trustRoot", "-k", "/Users/someone/Library/Keychains/login.keychain-db", root])])
+            "add-trusted-cert", "-r", "trustRoot", "-p", "ssl",
+            "-k", "/Users/someone/Library/Keychains/login.keychain-db", root])])
     }
 
     func testTrustThrowsWhenCommandFails() {
         let runner = RecordingCommandRunner { _, _ in (1, "declined") }
         XCTAssertThrowsError(try trust(runner).trust()) {
-            XCTAssertEqual($0 as? CertificateTrustError, .failed("declined"))
+            XCTAssertEqual($0 as? CertificateTrustError, .failed(status: 1, output: "declined"))
         }
     }
 
     func testIsTrustedMapsExitStatus() {
         let ok = RecordingCommandRunner { _, _ in (0, "") }
         XCTAssertTrue(trust(ok).isTrusted())
-        XCTAssertEqual(ok.calls, [.init(executable: "/usr/bin/security", arguments: ["verify-cert", "-c", root])])
+        // Trust is for SSL only, so it is checked under the SSL policy.
+        XCTAssertEqual(ok.calls, [.init(executable: "/usr/bin/security",
+                                        arguments: ["verify-cert", "-c", root, "-p", "ssl"])])
         XCTAssertFalse(trust(RecordingCommandRunner { _, _ in (3, "") }).isTrusted())
     }
 

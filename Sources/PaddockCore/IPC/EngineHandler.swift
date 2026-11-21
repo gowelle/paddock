@@ -191,8 +191,15 @@ extension Engine {
             // Never ask macOS to trust a file that is not there.
             guard FileManager.default.fileExists(atPath: trust.rootCertificate.path) else { return .notReady }
             if trust.isTrusted() { return .trusted }
-            try? trust.trust()
-            return trust.isTrusted() ? .trusted : .declined
+            do {
+                try trust.trust()
+            } catch {
+                // Declined, or the command failed: keep what `security` said for diagnosis.
+                self.log("trusting \(trust.rootCertificate.path) failed: \(error)")
+            }
+            if trust.isTrusted() { return .trusted }
+            self.log("macOS still doesn't trust \(trust.rootCertificate.path) after add-trusted-cert")
+            return .declined
         }) ?? .declined
         if outcome == .trusted { return nil }
         if outcome == .notReady { return error(ErrorCode.needsTrust, Messages.certificateNotReady) }

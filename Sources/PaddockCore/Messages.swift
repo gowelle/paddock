@@ -103,9 +103,18 @@ public enum Messages {
 
     /// A site name as the user may have typed it: `My App`, `myapp.test` -> `my-app`, `myapp`.
     public static func siteName(_ typed: String, tld: String) -> String {
+        normalizedSiteName(typed, tld: tld) ?? withoutTLD(typed, tld: tld)
+    }
+
+    /// Like `siteName`, but nil when nothing usable is left (`!!!.test`).
+    public static func normalizedSiteName(_ typed: String, tld: String) -> String? {
+        SiteName.normalize(withoutTLD(typed, tld: tld))
+    }
+
+    private static func withoutTLD(_ typed: String, tld: String) -> String {
         var name = typed
-        if name.lowercased().hasSuffix("." + tld) { name.removeLast(tld.count + 1) }
-        return SiteName.normalize(name) ?? name
+        if name.lowercased().hasSuffix("." + tld.lowercased()) { name.removeLast(tld.count + 1) }
+        return name
     }
 
     /// Columns: site name, URL, PHP version, secured.

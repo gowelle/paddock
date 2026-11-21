@@ -12,12 +12,22 @@ struct SettingsView: View {
             SitesTab().tabItem { Label("Sites", systemImage: "globe") }
         }
         .frame(width: SettingsView.size.width, height: SettingsView.size.height)
+        .settingsTheme()
         .background(VisibilityReporter { visible in
             visible ? model.beginWatching() : model.endWatching()
         })
     }
 
     static let size = CGSize(width: 540, height: 420)
+}
+
+extension View {
+    /// The design system's ground, ink and accent for a settings tab, in the window or a snapshot.
+    func settingsTheme() -> some View {
+        foregroundStyle(Theme.ink)
+            .tint(Theme.honeyText)
+            .background(Theme.ground)
+    }
 }
 
 /// The error line at the foot of a settings tab.

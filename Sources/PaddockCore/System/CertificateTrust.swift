@@ -21,22 +21,39 @@ public struct CertificateTrust: Sendable {
         paths.caddyData.appendingPathComponent("pki/authorities/local/root.crt")
     }
 
+    /// Checked under the SSL policy, the only one `trust()` trusts the certificate for.
     public func isTrusted() -> Bool {
-        (try? runner.run(Self.security, ["verify-cert", "-c", rootCertificate.path]))?.status == 0
+        (try? runner.run(Self.security, ["verify-cert", "-c", rootCertificate.path, "-p", "ssl"]))?.status == 0
     }
 
+    /// Trusts the root for SSL only (`-p ssl`), not for code signing, mail or anything else.
     public func trust() throws {
-        let result = try runner.run(Self.security, ["add-trusted-cert", "-r", "trustRoot",
+        let result = try runner.run(Self.security, ["add-trusted-cert", "-r", "trustRoot", "-p", "ssl",
                                                     "-k", keychain.path, rootCertificate.path])
-        guard result.status == 0 else { throw CertificateTrustError.failed(result.output) }
+        guard result.status == 0 else {
+            throw CertificateTrustError.failed(status: result.status, output: result.output)
+        }
     }
 
     public func untrust() throws {
         let result = try runner.run(Self.security, ["remove-trusted-cert", rootCertificate.path])
-        guard result.status == 0 else { throw CertificateTrustError.failed(result.output) }
+        guard result.status == 0 else {
+            throw CertificateTrustError.failed(status: result.status, output: result.output)
+        }
     }
 }
 
 public enum CertificateTrustError: Error, Equatable {
-    case failed(String)
+    /// `security` exited with `status`, printing `output`.
+    case failed(status: Int32, output: String)
+}
+
+extension CertificateTrustError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .failed(let status, let output):
+            let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "security exited with status \(status)" + (text.isEmpty ? "" : ": \(text)")
+        }
+    }
 }

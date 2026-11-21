@@ -20,9 +20,9 @@ public enum RouterConfig {
         // Valet matches directory names case-sensitively against the lowercased host, so link
         // under the normalized name, like SiteRegistry.
         var wanted: [String: String] = [:]
-        for (rawName, target) in state.links {
-            guard let name = SiteName.normalize(rawName) else { continue }
-            if wanted[name] != nil && rawName != name { continue }
+        for rawName in SiteName.claimOrder(Array(state.links.keys)) {
+            guard let target = state.links[rawName], let name = SiteName.normalize(rawName),
+                  wanted[name] == nil, isDirectory(target, fm) else { continue }
             wanted[name] = target
         }
         for (name, folder) in parkedFoldersNeedingLinks(state.parked, fileManager: fm)
@@ -49,7 +49,7 @@ public enum RouterConfig {
 
     /// The router finds parked sites by folder name, but a site is named `SiteName.normalize(folder)`.
     /// Returns site name -> folder path for each parked folder that the router would not find under
-    /// its site name. Earlier parked paths win; within one, an exactly named folder wins.
+    /// its site name. Earlier parked paths win; within one, `SiteName.claimOrder` decides.
     static func parkedFoldersNeedingLinks(_ parked: [String], fileManager fm: FileManager) -> [String: String] {
         var claimed = Set<String>()
         var links: [String: String] = [:]
@@ -59,12 +59,7 @@ public enum RouterConfig {
                 return !entry.hasPrefix(".")
                     && fm.fileExists(atPath: parkedPath + "/" + entry, isDirectory: &isDir) && isDir.boolValue
             }
-            let named = entries.compactMap { entry in SiteName.normalize(entry).map { (entry, $0) } }
-            // Exactly named folders first, then the rest in a stable order.
-            let ordered = named.sorted { a, b in
-                let (aExact, bExact) = (a.0 == a.1, b.0 == b.1)
-                return aExact != bExact ? aExact : a.0 < b.0
-            }
+            let ordered = SiteName.claimOrder(entries).compactMap { entry in SiteName.normalize(entry).map { (entry, $0) } }
             for (folder, name) in ordered where !claimed.contains(name) {
                 claimed.insert(name)
                 if folder != name {
@@ -73,5 +68,10 @@ public enum RouterConfig {
             }
         }
         return links
+    }
+
+    private static func isDirectory(_ path: String, _ fm: FileManager) -> Bool {
+        var isDir: ObjCBool = false
+        return fm.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
     }
 }

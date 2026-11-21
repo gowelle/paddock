@@ -82,6 +82,18 @@ final class CLITests: XCTestCase {
         XCTAssertFalse(try run(["links"]).out.contains("my-app"))
     }
 
+    func testLinkWithTheTLDTypedNamesTheSiteWithoutIt() throws {
+        try launchDaemon()
+        let app = try home.makeDirectory("somewhere")
+        let link = try run(["link", "Foo.test"], cwd: app)
+        XCTAssertEqual(link.status, 0, link.err)
+        XCTAssertTrue(link.out.hasPrefix("foo.test now serves "), link.out)
+        XCTAssertTrue(link.out.hasSuffix("/somewhere.\n"), link.out)
+        XCTAssertTrue(try run(["links"]).out.contains("foo → "))
+        XCTAssertEqual(try run(["unlink", "foo.test"]).status, 0)
+        XCTAssertFalse(try run(["links"]).out.contains("foo → "))
+    }
+
     func testStatusShowsSiteURLAndSecureChangesIt() throws {
         try launchDaemon()
         let status = try run(["status"])

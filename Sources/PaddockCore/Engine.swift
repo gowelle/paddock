@@ -74,6 +74,8 @@ public final class Engine: @unchecked Sendable {
     let installAction: (@Sendable (PHPVersion) async throws -> Void)?
     /// Serializes requests that change state, so each one's update and reload finish before the next.
     let mutations = AsyncMutex()
+    /// One line for the daemon log (stderr under the daemon). Tests capture it.
+    let log: @Sendable (String) -> Void
 
     private static let caddyName = "caddy"
     private static let readyTimeout: TimeInterval = 15
@@ -85,8 +87,10 @@ public final class Engine: @unchecked Sendable {
 
     /// `backoffScale` shortens the supervisor's restart delays (tests only).
     init(paths: Paths, settings: Settings, installAction: (@Sendable (PHPVersion) async throws -> Void)?,
-         trust: CertificateTrust? = nil, backoffScale: TimeInterval = 1, resolverFile: URL? = nil) {
+         trust: CertificateTrust? = nil, backoffScale: TimeInterval = 1, resolverFile: URL? = nil,
+         log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
+        self.log = log
         self.trust = trust
         self.resolverFile = resolverFile ?? Resolver.defaultFile(settings: settings)
         supervisor = Supervisor(backoffScale: backoffScale)
@@ -114,7 +118,7 @@ public final class Engine: @unchecked Sendable {
 
         try paths.ensureDirectories()
         do { try installShims() } catch {
-            fputs("paddockd: could not install the php and composer commands: \(error.localizedDescription)\n", stderr)
+            log("could not install the php and composer commands: \(error.localizedDescription)")
         }
         let state = try prepareState()
 
@@ -154,7 +158,7 @@ public final class Engine: @unchecked Sendable {
             setFlags(dnsRunning: true)
         } catch {
             setFlags(dnsRunning: false)
-            fputs("paddockd: the .test DNS responder could not listen on port \(settings.dnsPort): \(error)\n", stderr)
+            log("the .test DNS responder could not listen on port \(settings.dnsPort): \(error)")
         }
     }
 

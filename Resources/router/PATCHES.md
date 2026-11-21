@@ -21,6 +21,8 @@ Copied unmodified except for the edits listed below:
 3. `cli/includes/require-drivers.php`: the driver directory is now
    `__DIR__.'/../Valet/Drivers'` instead of `./cli/Valet/Drivers`; the helper
    variable is unset at the end with the others.
+4. `cli/templates/404.html`: the page title reads `Paddock - Not Found`
+   instead of `Valet - Not Found`, so visitors see Paddock's name.
 
 No Homebrew paths: the v4.14.0 files copied here contain no references to
 Homebrew, `/usr/local` or `/opt` (verified with grep), so nothing needed

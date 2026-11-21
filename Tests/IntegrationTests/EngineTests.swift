@@ -47,7 +47,10 @@ final class EngineTests: XCTestCase {
 
     func testUnknownSiteIs404() throws {
         try startEngine()
-        XCTAssertEqual(try get("nope.test", "/").status, 404)
+        let r = try get("nope.test", "/")
+        XCTAssertEqual(r.status, 404)
+        XCTAssertTrue(r.body.contains("<title>Paddock - Not Found</title>"), r.body)
+        XCTAssertFalse(r.body.contains("Valet"), r.body)
     }
 
     func testNewFolderIsServedWithoutReload() throws {
@@ -222,15 +225,22 @@ final class EngineTests: XCTestCase {
 
     func testDeclinedTrustLeavesSiteSecuredAndAnswersNeedsTrust() async throws {
         let (trust, runner) = fakeTrust(accepts: false)
-        try startEngine(trust: trust)
-        let response = await engine!.handle(.secure(site: "plain-php"))
+        let logged = LockedBox<[String]>([])
+        let engine = Engine(paths: paths, settings: settings, installAction: nil, trust: trust,
+                            log: { line in logged.value.append(line) })
+        self.engine = engine
+        try engine.start()
+        let response = await engine.handle(.secure(site: "plain-php"))
         guard case .error(let code, _) = response else { return XCTFail("\(response)") }
         XCTAssertEqual(code, ErrorCode.needsTrust)
-        XCTAssertTrue(engine!.store.load().secured.contains("plain-php"))
+        // The failed `security` command is in the daemon log, status and output.
+        XCTAssertTrue(logged.value.contains { $0.contains("status 1") && $0.contains("User canceled the authorization") },
+                      "\(logged.value)")
+        XCTAssertTrue(engine.store.load().secured.contains("plain-php"))
         XCTAssertEqual(try curlHTTPS("plain-php.test", "/").status, 200)
 
         // `trust` retries, and still reports needs_trust while the user keeps declining.
-        let retry = await engine!.handle(.trust)
+        let retry = await engine.handle(.trust)
         guard case .error(let retryCode, _) = retry else { return XCTFail("\(retry)") }
         XCTAssertEqual(retryCode, ErrorCode.needsTrust)
         XCTAssertEqual(runner.calls.filter { $0.arguments.first == "add-trusted-cert" }.count, 2)
