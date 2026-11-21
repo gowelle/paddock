@@ -1006,7 +1006,13 @@ public final class ServiceManager: @unchecked Sendable {
                                  isCancelled: { [weak self] in self?.isCancelled ?? true }) else {
                 stopProcess(id)
                 setRuntime(.crashed, for: id)
-                return .notReady(name: instance.name, log: Self.lastLines(logTail(id), 20))
+                let tail = Self.lastLines(logTail(id), 20)
+                // A known cause in the log: say what it means, beside the log and in the status.
+                guard let hint = recipe.logHints.first(where: { tail.contains($0.contains) })?.hint else {
+                    return .notReady(name: instance.name, log: tail)
+                }
+                setNotice(hint, for: id)
+                return .notReady(name: instance.name, log: tail + "\n\n" + hint)
             }
             if case .running(let pid) = supervisor.status(Self.processName(id)) {
                 if let address = checkListeners(instance, processGroup: pid) {

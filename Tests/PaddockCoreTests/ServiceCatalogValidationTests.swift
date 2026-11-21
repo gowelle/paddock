@@ -332,6 +332,24 @@ final class ServiceCatalogValidationTests: XCTestCase {
         }
     }
 
+    /// Log hints are plain printable text and sentences, a few at most.
+    func testLogHintsArePrintableAndFew() {
+        func hinted(_ hints: [RecipeLogHint]) -> ServiceRecipe {
+            ServiceRecipe(kind: "sample", displayName: "Sample", version: "1.0", licence: "MIT", assets: [],
+                          start: RecipeCommand(executable: "{bin}/s"), ready: .tcp(port: "{port.main}"),
+                          ports: [RecipePort(name: "main", preferred: 4000)], logHints: hints)
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([hinted([RecipeLogHint(contains: "Can't handle RDB format version",
+                                                                             hint: "Its data is from a newer version.")])]))
+        let ok = "fine"
+        for bad in [[RecipeLogHint(contains: "", hint: ok)], [RecipeLogHint(contains: ok, hint: "")],
+                    [RecipeLogHint(contains: ok, hint: "a\nb")], [RecipeLogHint(contains: "\u{1B}[31m", hint: ok)],
+                    [RecipeLogHint(contains: ok, hint: String(repeating: "x", count: 201))],
+                    Array(repeating: RecipeLogHint(contains: ok, hint: ok), count: 5)] {
+            assertRejected([hinted(bad)], "log hint")
+        }
+    }
+
     /// Decoding a catalog validates it, so a bad bundled, hosted or development catalog never loads.
     func testDecodingValidates() throws {
         let bad = ServiceCatalog(recipes: [valid(stopSignal: "KILL")])

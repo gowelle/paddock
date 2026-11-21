@@ -174,6 +174,20 @@ public struct RecipeFile: Codable, Equatable, Sendable {
     }
 }
 
+/// A sentence Paddock adds to a failed start when the log shows a known cause (Valkey's "Can't handle RDB
+/// format version": data from a newer version). Plain text, not templates.
+public struct RecipeLogHint: Codable, Equatable, Sendable {
+    /// Text the end of the log contains.
+    public let contains: String
+    /// What it means for the user, as a sentence.
+    public let hint: String
+
+    public init(contains: String, hint: String) {
+        self.contains = contains
+        self.hint = hint
+    }
+}
+
 /// A TCP port a service listens on, by name (`main`, `http`, `smtp`…), and the port it would like.
 public struct RecipePort: Codable, Equatable, Sendable {
     public let name: String
@@ -309,6 +323,8 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     public let lockFiles: [String]
     /// Short sentences shown beside the service (`Includes PostGIS 3.6.4 (no raster or topology).`).
     public let notes: [String]
+    /// Sentences added to a failed start whose log shows a known cause.
+    public let logHints: [RecipeLogHint]
 
     public static let defaultInitialiseTimeout: TimeInterval = 120
 
@@ -318,7 +334,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                 ports: [RecipePort], socket: String? = nil, env: [String] = [], openURL: String? = nil,
                 needsPHP: Bool = false, configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
                 initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:], lockFiles: [String] = [],
-                notes: [String] = []) {
+                notes: [String] = [], logHints: [RecipeLogHint] = []) {
         self.kind = kind
         self.displayName = displayName
         self.version = version
@@ -343,12 +359,13 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         self.actions = actions
         self.lockFiles = lockFiles
         self.notes = notes
+        self.logHints = logHints
     }
 
     private enum CodingKeys: String, CodingKey {
         case kind, displayName, version, series, seriesInID, licence, minimumMacOS, assets, initialise, start, ready
         case stopSignal, stopGraceSeconds, ports, socket, env, openURL, needsPHP, configFiles, readyTimeoutSeconds
-        case initialiseTimeoutSeconds, actions, lockFiles, notes
+        case initialiseTimeoutSeconds, actions, lockFiles, notes, logHints
     }
 
     public init(from decoder: Decoder) throws {
@@ -377,6 +394,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         actions = try c.decodeIfPresent([String: RecipeAction].self, forKey: .actions) ?? [:]
         lockFiles = try c.decodeIfPresent([String].self, forKey: .lockFiles) ?? []
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
+        logHints = try c.decodeIfPresent([RecipeLogHint].self, forKey: .logHints) ?? []
     }
 
     /// The signal `stopSignal` names; SIGTERM for anything else.
@@ -414,6 +432,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                       start: start, ready: ready, stopSignal: stopSignal, stopGraceSeconds: stopGraceSeconds,
                       ports: ports, socket: socket, env: env, openURL: openURL, needsPHP: needsPHP,
                       configFiles: configFiles, readyTimeoutSeconds: readyTimeoutSeconds,
-                      initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions, lockFiles: lockFiles, notes: notes)
+                      initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions, lockFiles: lockFiles, notes: notes,
+                      logHints: logHints)
     }
 }

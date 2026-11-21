@@ -58,6 +58,11 @@ extension ServiceCatalog {
         }) else {
             throw fail("a note must be 1 to 120 printable characters, and there may be at most 4")
         }
+        guard recipe.logHints.count <= 4, recipe.logHints.allSatisfy({ hint in
+            [hint.contains, hint.hint].allSatisfy { (1...200).contains($0.count) && Messages.displayName($0, limit: 200) == $0 }
+        }) else {
+            throw fail("a log hint's text and sentence must be 1 to 200 printable characters, and there may be at most 4")
+        }
         if let minimum = recipe.minimumMacOS, ServiceManager.versionNumbers(minimum) == nil {
             throw fail("minimumMacOS \"\(minimum)\" must be a macOS version such as 15.0")
         }
