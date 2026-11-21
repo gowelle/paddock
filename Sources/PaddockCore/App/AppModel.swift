@@ -79,9 +79,12 @@ public final class AppModel: ObservableObject {
     @Published public internal(set) var serviceNotice: String?
     /// The same for the tasks list (a task with no log yet).
     @Published public internal(set) var taskNotice: String?
-    /// The service whose `Remove and Delete Data…` the user was asked to confirm; only it may be removed with
-    /// its data, once.
-    @Published public internal(set) var dataDeletionAsked: String?
+    /// The `Remove and Delete Data…` question being shown; nil once hidden (which alone confirms or cancels
+    /// nothing).
+    @Published public internal(set) var dataDeletionRequest: DataDeletionRequest?
+    /// The one question whose confirmation may delete data: issued by `askToRemoveAndDeleteData`, ended by its use
+    /// or by cancelling.
+    var dataDeletionGrant: DataDeletionRequest?
     /// The site whose approval sheet is open.
     @Published public internal(set) var approvalSite: String?
     /// What the open approval sheet shows, set from every outcome of loading it (polling never changes it).

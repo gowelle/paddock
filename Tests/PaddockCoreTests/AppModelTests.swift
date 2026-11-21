@@ -851,8 +851,6 @@ extension AppModelTests {
 
         model.askToRemoveAndDeleteData("mail")
         XCTAssertEqual(model.deleteDataQuestion, "Remove Mail and delete its data?")
-        XCTAssertEqual(model.deleteDataMessage,
-                       "Its data folder, /h/services/mail/data, will be deleted. The data can't be recovered.")
         await model.removeService("postgres-18", deleteData: true)
         XCTAssertEqual(client.requests.filter { $0 != .status }, [], "the confirmation is for that service only")
         model.cancelRemoveAndDeleteData()
@@ -1417,23 +1415,53 @@ extension AppModelTests {
         XCTAssertNil(model.serviceNotice)
     }
 
-    /// The destructive button confirms the id it was asked about at once, so the dialog's dismissal right after it
-    /// can't withdraw it; a dismissal by any other route withdraws the question.
-    func testConfirmingDeleteDataIsCheckedAtOnceAndUsedUp() async {
+    /// The dialog presents the question the model issued (with a one-shot token); its destructive button hands that
+    /// back. Only a token the model issued and that wasn't used or cancelled deletes, whatever order SwiftUI hides
+    /// the dialog and runs the button in.
+    func testDeletingDataNeedsTheTokenTheModelIssued() async throws {
         let (model, client, _) = servicesModel { request in
             if case .serviceRemove = request { return .removed(dataPath: "/h/services/mail/data", status: statusWith()) }
             return .ok(statusWith(services: [mail, postgres]))
         }
         await model.refresh()
-        XCTAssertNil(model.confirmRemoveAndDeleteData("mail"), "never without asking")
         model.askToRemoveAndDeleteData("mail")
-        XCTAssertNil(model.confirmRemoveAndDeleteData("postgres-18"), "only the service asked about")
-        let removal = model.confirmRemoveAndDeleteData("mail")
-        XCTAssertNil(model.dataDeletionAsked, "used up at once")
-        model.cancelRemoveAndDeleteData()  // the dialog's dismissal, right after the button
-        await removal?.value
+        let question = try XCTUnwrap(model.dataDeletionRequest)
+        XCTAssertEqual(question.serviceID, "mail")
+        XCTAssertEqual(question.name, "Mail")
+        XCTAssertEqual(question.title, "Remove Mail and delete its data?")
+        XCTAssertEqual(question.message, "Its data folder, /h/services/mail/data, will be deleted. The data can't be recovered.")
+
+        // Cancelled (Cancel, Escape, the tab or window going away): its token deletes nothing afterwards.
+        model.cancelRemoveAndDeleteData()
+        XCTAssertNil(model.dataDeletionRequest)
+        XCTAssertNil(model.confirmRemoveAndDeleteData(question))
+        await model.removeService("mail", deleteData: true)
+
+        // A forged or older token deletes nothing either.
+        model.askToRemoveAndDeleteData("mail")
+        let current = try XCTUnwrap(model.dataDeletionRequest)
+        XCTAssertNotEqual(current.token, question.token)
+        XCTAssertNil(model.confirmRemoveAndDeleteData(question), "an older question's token")
+        XCTAssertNil(model.confirmRemoveAndDeleteData(DataDeletionRequest(serviceID: "postgres-18", name: "PostgreSQL 18",
+                                                                          title: "", message: "", token: current.token)),
+                     "the token is for Mail only")
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [])
+
+        // SwiftUI hides the dialog before running the button: the confirmation still holds.
+        model.hideDataDeletionQuestion()
+        XCTAssertNil(model.dataDeletionRequest)
+        let removal = try XCTUnwrap(model.confirmRemoveAndDeleteData(current))
+        await removal.value
         XCTAssertEqual(client.requests.filter { $0 != .status }, [.serviceRemove(name: "mail", deleteData: true)])
-        XCTAssertNil(model.confirmRemoveAndDeleteData("mail"), "and only once")
+        XCTAssertNil(model.confirmRemoveAndDeleteData(current), "used once")
+
+        // Or runs the button first and hides it after.
+        model.askToRemoveAndDeleteData("postgres-18")
+        let other = try XCTUnwrap(model.dataDeletionRequest)
+        let second = model.confirmRemoveAndDeleteData(other)
+        model.hideDataDeletionQuestion()
+        await second?.value
+        XCTAssertEqual(client.requests.filter { $0 != .status }.count, 2)
     }
 
     func testUnavailableCatalogEntriesSayWhy() async {

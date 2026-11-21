@@ -18,6 +18,27 @@ public struct ServiceRow: Identifiable, Equatable, Sendable {
     public let canCreateDatabase: Bool
 }
 
+/// The `Remove and Delete Data…` question as the dialog presents it; confirming hands it back whole.
+public struct DataDeletionRequest: Identifiable, Equatable, Sendable {
+    public var id: UUID { token }
+    public let serviceID: String
+    /// The service's name (`PostgreSQL 18`).
+    public let name: String
+    public let title: String
+    /// That the data folder is deleted for good.
+    public let message: String
+    /// Issued with the question; confirms only that question, once.
+    public let token: UUID
+
+    public init(serviceID: String, name: String, title: String, message: String, token: UUID) {
+        self.serviceID = serviceID
+        self.name = name
+        self.title = title
+        self.message = message
+        self.token = token
+    }
+}
+
 /// One entry of `Add Service…`: a series of a kind of service.
 public struct CatalogRow: Identifiable, Equatable, Sendable {
     public var id: String { "\(kind) \(version)" }
@@ -73,18 +94,8 @@ extension AppModel {
         isBusy(.serviceAdd(kind: kind, version: version))
     }
 
-    /// The question `Remove and Delete Data…` asks, while it is being asked: its title names the service.
-    public var deleteDataQuestion: String? {
-        dataDeletionAsked.map { id in "Remove \(serviceName(id)) and delete its data?" }
-    }
-
-    /// What the question explains: the data folder is deleted for good.
-    public var deleteDataMessage: String? {
-        dataDeletionAsked.map { id in
-            let folder = status?.services.first { $0.id == id }.map { Messages.displayName($0.dataPath, limit: 256) ?? "?" }
-            return "Its data folder\(folder.map { ", \($0)," } ?? "") will be deleted. The data can't be recovered."
-        }
-    }
+    /// The question `Remove and Delete Data…` asks, while it is shown: its title names the service.
+    public var deleteDataQuestion: String? { dataDeletionRequest?.title }
 
     /// The rule the daemon applies (`ServiceManager.isValidDatabaseName`).
     public static func isValidDatabaseName(_ name: String) -> Bool {
@@ -112,32 +123,47 @@ extension AppModel {
     public func stopService(_ id: String) async { await serviceAction(.serviceStop(name: id)) }
     public func restartService(_ id: String) async { await serviceAction(.serviceRestart(name: id)) }
 
-    /// `Remove and Delete Data…`: asks first; only the answer (`confirmRemoveAndDeleteData`) deletes.
+    /// `Remove and Delete Data…`: issues the question, with a token only its confirmation can use.
     public func askToRemoveAndDeleteData(_ id: String) {
-        dataDeletionAsked = id
+        let folder = status?.services.first { $0.id == id }.map { Messages.displayName($0.dataPath, limit: 256) ?? "?" }
+        let name = serviceName(id)
+        let request = DataDeletionRequest(
+            serviceID: id, name: name, title: "Remove \(name) and delete its data?",
+            message: "Its data folder\(folder.map { ", \($0)," } ?? "") will be deleted. The data can't be recovered.",
+            token: UUID())
+        dataDeletionGrant = request
+        dataDeletionRequest = request
     }
 
-    /// The question went away (Cancel, Escape, the window closed): nothing is confirmed.
+    /// The dialog went away by itself (as it does after any button): hides the question, nothing more.
+    public func hideDataDeletionQuestion() {
+        dataDeletionRequest = nil
+    }
+
+    /// Cancel, Escape, or the tab or window going away: the question's token can no longer delete anything.
     public func cancelRemoveAndDeleteData() {
-        dataDeletionAsked = nil
+        dataDeletionRequest = nil
+        dataDeletionGrant = nil
     }
 
-    /// The user confirmed deleting `id`'s data. Checked and used up at once (before the dialog's dismissal
-    /// withdraws the question); the removal runs in the returned task. Nil, doing nothing, unless the question
-    /// asked was about `id`.
+    /// The user confirmed `request`, as the dialog presented it. Deletes only for the question the model issued
+    /// last, not yet used or cancelled (checked and used up at once, whatever has hidden the dialog); the removal
+    /// runs in the returned task. Nil, doing nothing, otherwise.
     @discardableResult
-    public func confirmRemoveAndDeleteData(_ id: String) -> Task<Void, Never>? {
-        guard dataDeletionAsked == id else { return nil }
-        dataDeletionAsked = nil
-        return Task { await self.remove(id, deleteData: true) }
+    public func confirmRemoveAndDeleteData(_ request: DataDeletionRequest) -> Task<Void, Never>? {
+        guard let grant = dataDeletionGrant, grant == request else { return nil }
+        dataDeletionGrant = nil
+        dataDeletionRequest = nil
+        return Task { await self.remove(request.serviceID, deleteData: true) }
     }
 
-    /// Removes the service, keeping its data unless `deleteData`, which needs the user's confirmation of
-    /// `askToRemoveAndDeleteData` for this very service (used up here).
+    /// Removes the service, keeping its data unless `deleteData`, which needs the question about this very service
+    /// still open (used up here).
     public func removeService(_ id: String, deleteData: Bool) async {
         if deleteData {
-            guard dataDeletionAsked == id else { return }
-            dataDeletionAsked = nil
+            guard dataDeletionGrant?.serviceID == id else { return }
+            dataDeletionGrant = nil
+            dataDeletionRequest = nil
         }
         await remove(id, deleteData: deleteData)
     }

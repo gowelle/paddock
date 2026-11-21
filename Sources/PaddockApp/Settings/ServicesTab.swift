@@ -50,16 +50,16 @@ struct ServicesTab: View {
         .task { await model.loadCatalog() }
         // Leaving the tab (or the window closing) withdraws an unanswered question.
         .onDisappear { model.cancelRemoveAndDeleteData() }
-        .confirmationDialog(model.deleteDataQuestion ?? "", isPresented: Binding(
-            get: { model.deleteDataQuestion != nil },
-            // Any dismissal withdraws the question; the destructive button has used it up already.
-            set: { if !$0 { model.cancelRemoveAndDeleteData() } }), titleVisibility: .visible) {
-            Button("Remove and Delete Data", role: .destructive) {
-                if let id = model.dataDeletionAsked { model.confirmRemoveAndDeleteData(id) }
-            }
+        // The buttons get the question as it was presented: hiding the dialog (before or after a button runs)
+        // only hides it; Cancel and Escape cancel it, and confirming hands its token back.
+        .confirmationDialog(model.dataDeletionRequest?.title ?? "", isPresented: Binding(
+            get: { model.dataDeletionRequest != nil },
+            set: { if !$0 { model.hideDataDeletionQuestion() } }),
+            titleVisibility: .visible, presenting: model.dataDeletionRequest) { request in
+            Button("Remove and Delete Data", role: .destructive) { model.confirmRemoveAndDeleteData(request) }
             Button("Cancel", role: .cancel) { model.cancelRemoveAndDeleteData() }
-        } message: {
-            Text(verbatim: model.deleteDataMessage ?? "")
+        } message: { request in
+            Text(verbatim: request.message)
         }
         .sheet(isPresented: Binding(get: { databaseFor != nil }, set: { if !$0 { databaseFor = nil } })) {
             createDatabaseSheet
