@@ -2,11 +2,17 @@ import Foundation
 
 extension ServiceCatalog {
     /// Placeholders every recipe may use; `{port.<name>}` for each of its own ports comes on top.
-    static let knownPlaceholders: Set<String> = ["bin", "data", "config", "run", "log", "name", "id", "socket", "php",
-                                                 "resources"]
+    static let knownPlaceholders: Set<String> = ["bin", "data", "config", "run", "log", "name", "id", "socket",
+                                                 "socketDir", "php", "resources"]
     static let stopSignals: Set<String> = ["TERM", "INT", "QUIT"]
     /// Environment names a recipe may set only to a path inside the instance's own folders.
-    static let pathVariables: Set<String> = ["HOME", "TMPDIR", "PHPRC", "PHP_INI_SCAN_DIR"]
+    static let pathVariables: Set<String> = ["HOME", "TMPDIR", "PHPRC"]
+    /// Environment names holding `:`-separated folders, each of which must be one of these roots or under it.
+    /// A recipe's PATH comes before the base PATH (`/usr/bin:/bin:/usr/sbin:/sbin`).
+    static let folderListVariables: [String: [String]] = ["PATH": ["{bin}", "{data}", "{config}", "{run}"],
+                                                          "PHP_INI_SCAN_DIR": ["{data}", "{config}", "{run}"]]
+    /// Display names leave room for the series and a ` (2)` within an instance name's 64 characters.
+    static let maximumDisplayNameLength = 48
     /// Environment names that change how a program loads code or parses its input: never set by a recipe.
     static let forbiddenVariables: Set<String> = ["RUBYOPT", "NODE_OPTIONS", "BASH_ENV", "ENV", "IFS", "CDPATH",
                                                   "GLOBIGNORE"]
@@ -35,9 +41,9 @@ extension ServiceCatalog {
         let label = "\(recipe.kind) \(recipe.version)"
         func fail(_ problem: String) -> ServiceCatalogError { .invalid("\(label): \(problem)") }
 
-        guard ServiceInstance.isValidName(recipe.displayName) else {
-            throw fail("the display name \"\(Messages.printable(recipe.displayName) ?? "")\" must be 1 to 64 printable "
-                       + "characters without \"/\"")
+        guard ServiceInstance.isValidName(recipe.displayName), recipe.displayName.count <= maximumDisplayNameLength else {
+            throw fail("the display name \"\(Messages.printable(recipe.displayName) ?? "")\" must be 1 to "
+                       + "\(maximumDisplayNameLength) printable characters without \"/\"")
         }
         guard ServiceInstance.isValidID(recipe.kind) else {
             throw fail("the kind \"\(recipe.kind)\" must be lowercase letters and digits joined by single dashes, and not \"bin\"")
@@ -46,8 +52,16 @@ extension ServiceCatalog {
             throw fail("the \(field) \"\(value)\" must be lowercase letters, digits, dots and dashes, without \"..\"")
         }
 
+        if let minimum = recipe.minimumMacOS, ServiceManager.versionNumbers(minimum) == nil {
+            throw fail("minimumMacOS \"\(minimum)\" must be a macOS version such as 15.0")
+        }
+
         // Programs.
-        let commands = [recipe.start] + recipe.initialise
+        for name in recipe.actions.keys.sorted() where !RecipeAction.names.contains(name) {
+            throw fail("the action \"\(name)\" is not one Paddock knows")
+        }
+        let actions = recipe.actions.sorted { $0.key < $1.key }.map(\.value)
+        let commands = [recipe.start] + recipe.initialise + actions.map(\.command)
         for command in commands where !runsFromBinariesOrPHP(command.executable) {
             throw fail("\(command.executable) must be a program under {bin}/ or exactly {php}")
         }
@@ -64,17 +78,16 @@ extension ServiceCatalog {
                 if pathVariables.contains(name), !isRootedPath(value, roots: instanceRoots, restRequired: false) {
                     throw fail("\(name) may only be set to {data}, {config} or {run}, or a literal path under one")
                 }
-                if name == "PATH", !value.split(separator: ":", omittingEmptySubsequences: false).allSatisfy({
-                    isRootedPath(String($0), roots: ["{bin}"] + instanceRoots, restRequired: false)
-                }) {
-                    throw fail("every PATH entry must be {bin}, {data}, {config} or {run}, or a literal path under one")
+                if let roots = folderListVariables[name], !value.split(separator: ":", omittingEmptySubsequences: false)
+                    .allSatisfy({ isRootedPath(String($0), roots: roots, restRequired: false) }) {
+                    throw fail("every \(name) entry must be \(roots.joined(separator: ", ")), or a literal path under one")
                 }
             }
         }
 
         // Where it writes.
-        if let socket = recipe.socket, !isRootedPath(socket, roots: ["{run}"], restRequired: true) {
-            throw fail("the socket \(socket) must be {run}/ followed by a literal file name")
+        if let socket = recipe.socket, !isSocketPath(socket) {
+            throw fail("the socket \(socket) must be {run}/ followed by one file name, literal but for {port.<name>}")
         }
         for file in recipe.configFiles where !isRootedPath(file.path, roots: ["{config}"], restRequired: true) {
             throw fail("the config file \(file.path) must be {config}/ followed by a literal path")
@@ -92,7 +105,8 @@ extension ServiceCatalog {
             }
         }
         if !stopSignals.contains(recipe.stopSignal) { throw fail("the stop signal must be TERM, INT or QUIT") }
-        if (recipe.readyTimeoutSeconds ?? 1) <= 0 || (recipe.initialiseTimeoutSeconds ?? 1) <= 0 {
+        if (recipe.readyTimeoutSeconds ?? 1) <= 0 || (recipe.initialiseTimeoutSeconds ?? 1) <= 0
+            || actions.contains(where: { ($0.timeoutSeconds ?? 1) <= 0 }) {
             throw fail("timeouts must be positive")
         }
         for asset in recipe.assets {
@@ -117,7 +131,8 @@ extension ServiceCatalog {
         // Placeholders.
         let known = knownPlaceholders.union(recipe.ports.map { "port.\($0.name)" })
         var templates = [recipe.ready.template] + recipe.env + [recipe.socket, recipe.openURL].compactMap { $0 }
-        for command in commands {
+        // (Actions below: their arguments may also use their parameters.)
+        for command in [recipe.start] + recipe.initialise {
             templates += [command.executable] + command.arguments.flatMap(\.templates) + Array(command.environment.values)
             templates += [command.stdin].compactMap { $0 }
         }
@@ -127,6 +142,48 @@ extension ServiceCatalog {
                 throw fail("{\(unknown)} is not a placeholder Paddock knows")
             }
         }
+
+        // An action's parameters: declared once each, with a whole-value pattern, and only ever arguments.
+        for (name, action) in recipe.actions.sorted(by: { $0.key < $1.key }) {
+            var parameters: Set<String> = []
+            for parameter in action.parameters {
+                guard parameter.name.range(of: "^[a-z][a-z0-9_]*$", options: .regularExpression) != nil,
+                      !known.contains(parameter.name), !parameter.name.hasPrefix("port"),
+                      parameters.insert(parameter.name).inserted else {
+                    throw fail("the \(name) parameter \"\(parameter.name)\" must be unique, lowercase letters, digits and "
+                               + "underscores, and not a name Paddock uses")
+                }
+                guard parameter.pattern.hasPrefix("^"), parameter.pattern.hasSuffix("$"),
+                      (try? NSRegularExpression(pattern: parameter.pattern)) != nil else {
+                    throw fail("the pattern of the \(name) parameter \"\(parameter.name)\" must be a regular expression "
+                               + "anchored with ^ and $")
+                }
+            }
+            let command = action.command
+            for template in [command.executable] + Array(command.environment.values) + [command.stdin].compactMap({ $0 }) {
+                for placeholder in ServiceTemplate.placeholders(in: template) where !known.contains(placeholder) {
+                    if parameters.contains(placeholder) {
+                        throw fail("{\(placeholder)} may only be an argument of \(name), never its program, environment "
+                                   + "or input")
+                    }
+                    throw fail("{\(placeholder)} is not a placeholder Paddock knows")
+                }
+            }
+            let withParameters = known.union(parameters)
+            for template in command.arguments.flatMap(\.templates) + [action.alreadyDone].compactMap({ $0 }) {
+                if let unknown = ServiceTemplate.placeholders(in: template).first(where: { !withParameters.contains($0) }) {
+                    throw fail("{\(unknown)} is not a placeholder Paddock knows")
+                }
+            }
+        }
+    }
+
+    /// `{run}/` and one file name: literal text, except `{port.<name>}` (digits once rendered).
+    static func isSocketPath(_ value: String) -> Bool {
+        guard value.hasPrefix("{run}/") else { return false }
+        let name = String(value.dropFirst("{run}/".count))
+        return !name.isEmpty && name != "." && name != ".." && !name.contains("/")
+            && ServiceTemplate.placeholders(in: name).allSatisfy { $0.hasPrefix("port.") }
     }
 
     /// `^[a-z0-9][a-z0-9.-]*$` without `..`.

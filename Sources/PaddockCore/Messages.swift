@@ -296,6 +296,11 @@ public enum Messages {
     /// Replaces the `.env` lines that name a service's Unix socket when its path would be too long.
     public static let unixSocketDisabled = "# Unix socket disabled: Paddock's folder path is too long"
 
+    /// What `paddock service create-db` prints.
+    public static func databaseCreated(_ database: String, in name: String, alreadyExisted: Bool) -> String {
+        alreadyExisted ? "\(database) already exists in \(name)." : "Created database \(database) in \(name)."
+    }
+
     /// Re-adding a service whose data folder is still there (it was removed without deleting its data).
     public static func existingServiceData(_ name: String) -> String {
         "Found existing data for \(name); using it."
@@ -354,6 +359,20 @@ public enum Messages {
             return "\(name) isn't available: \(reason)"
         case .cancelled(let name):
             return "Adding \(name) was cancelled because Paddock is shutting down."
+        case .needsNewerMacOS(let name, let minimum):
+            // `15.0` reads as macOS 15.
+            let shown = minimum.hasSuffix(".0") ? String(minimum.dropLast(2)) : minimum
+            return "\(name) needs macOS \(shown) or later."
+        case .noAction(let name, let action):
+            return action == RecipeAction.createDatabase ? "\(name) doesn't have databases." : "\(name) can't do \(action)."
+        case .actionFailed(let name, let action, let output):
+            let what = action == RecipeAction.createDatabase ? "create the database" : "do \(action)"
+            return "Couldn't \(what) in \(name):" + (output.isEmpty ? "" : "\n\(output)")
+        case .invalidParameter(let parameter, let value):
+            return parameter == "database" ? "Database names can use letters, numbers and underscores."
+                : "\"\(printable(value) ?? "?")\" isn't a valid \(parameter)."
+        case .notRunning(let name, let id):
+            return "\(name) isn't running. Start it with: paddock service start \(id)"
         }
     }
 

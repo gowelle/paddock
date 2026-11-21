@@ -33,6 +33,23 @@ public enum ServiceError: Error, Equatable, Sendable {
     case unavailable(name: String, reason: String)
     /// Paddock began shutting down while the service was being added or updated.
     case cancelled(name: String)
+    /// Its binaries need a newer macOS than this Mac runs (`minimum`, as the recipe says it).
+    case needsNewerMacOS(name: String, minimum: String)
+    /// Its recipe has no such action (`RecipeAction.names`).
+    case noAction(name: String, action: String)
+    /// The action ran and failed; `output` is what it printed.
+    case actionFailed(name: String, action: String, output: String)
+    /// A value given for an action's parameter isn't one Paddock accepts.
+    case invalidParameter(parameter: String, value: String)
+    /// The request needs the service running.
+    case notRunning(name: String, id: String)
+}
+
+/// How an action ended when it didn't fail.
+public enum ServiceActionResult: Equatable, Sendable {
+    case done
+    /// It had nothing to do (the database was there already).
+    case alreadyDone
 }
 
 /// How the manager finds out whether a port is free, and who holds one that isn't.
@@ -80,6 +97,8 @@ public final class ServiceManager: @unchecked Sendable {
     private let runner: CommandRunner
     /// Seconds after readiness at which the loopback check runs again, for listeners opened late.
     private let lateLoopbackChecks: [TimeInterval]
+    /// The macOS this runs on (tests pretend to be older).
+    private let macOSVersion: OperatingSystemVersion
     private let log: @Sendable (String) -> Void
 
     private let operationLock = NSLock()
@@ -110,6 +129,7 @@ public final class ServiceManager: @unchecked Sendable {
                 runner: CommandRunner = SystemCommandRunner(),
                 environment: [String: String] = ProcessInfo.processInfo.environment,
                 lateLoopbackChecks: [TimeInterval] = [5, 30],
+                macOSVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.paths = paths
         self.log = log
@@ -130,6 +150,105 @@ public final class ServiceManager: @unchecked Sendable {
         self.resources = resources
         self.runner = runner
         self.lateLoopbackChecks = lateLoopbackChecks
+        self.macOSVersion = macOSVersion
+    }
+
+    // MARK: - Actions
+
+    /// Creates `database` in a running service with its recipe's `createDatabase` action. The name is
+    /// checked here (`isValidDatabaseName`) and against the recipe's own pattern before anything runs; a
+    /// database already there is `.alreadyDone`, not an error.
+    public func createDatabase(_ name: String, database: String) throws -> ServiceActionResult {
+        guard Self.isValidDatabaseName(database) else {
+            throw ServiceError.invalidParameter(parameter: "database", value: database)
+        }
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        let instance = try find(name)
+        return try perform(RecipeAction.createDatabase, on: instance, parameters: ["database": database])
+    }
+
+    /// 1 to 63 ASCII letters, digits and underscores (PostgreSQL's limit; fine for MySQL too).
+    public static func isValidDatabaseName(_ name: String) -> Bool {
+        (1...63).contains(name.unicodeScalars.count) && name.unicodeScalars.allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0) || $0 == "_"
+        }
+    }
+
+    /// Runs one of the recipe's actions on a running instance, through the bounded step runner, in the
+    /// instance's folder, with `parameters` bound. Every parameter the action declares must be given and
+    /// match its pattern (and never start with `-` or hold a control character); no other value is bound.
+    /// The caller holds `operationLock`.
+    private func perform(_ actionName: String, on instance: ServiceInstance,
+                         parameters: [String: String]) throws -> ServiceActionResult {
+        guard let recipe = installedRecipe(instance) else {
+            throw ServiceError.unavailable(name: instance.name, reason: nothingToRun(instance))
+        }
+        guard let action = recipe.actions[actionName] else {
+            throw ServiceError.noAction(name: instance.name, action: actionName)
+        }
+        var bound: [String: String] = [:]
+        for parameter in action.parameters {
+            let value = parameters[parameter.name] ?? ""
+            guard Self.isAcceptableParameter(value), Self.wholly(value, matches: parameter.pattern) else {
+                throw ServiceError.invalidParameter(parameter: parameter.name, value: value)
+            }
+            bound[parameter.name] = value
+        }
+        guard case .running = supervisor.status(Self.processName(instance.id)) else {
+            throw ServiceError.notRunning(name: instance.name, id: instance.id)
+        }
+        var context = try self.context(instance, recipe: recipe)
+        context.parameters = bound
+        let failed = { (output: String) in
+            ServiceError.actionFailed(name: instance.name, action: actionName, output: output)
+        }
+        let outcome = try runBounded(action.command, instance: instance, recipe: recipe, context: context,
+                                     timeout: action.timeout, couldNotRun: failed)
+        switch outcome.end {
+        case .exited(0):
+            return .done
+        case .exited:
+            if let marker = try action.alreadyDone.map({ try ServiceTemplate.render($0, context: context) }),
+               !marker.isEmpty, outcome.output.contains(marker) {
+                return .alreadyDone
+            }
+            throw failed(Self.lastLines(outcome.output, 30))
+        case .timedOut:
+            throw failed("It took longer than \(Int(action.timeout)) seconds, so Paddock stopped it.\n"
+                         + Self.lastLines(outcome.output, 30))
+        case .cancelled:
+            throw ServiceError.cancelled(name: instance.name)
+        }
+    }
+
+    /// Not empty, not an option (`-h`), no control characters: whatever a recipe's pattern allows.
+    static func isAcceptableParameter(_ value: String) -> Bool {
+        !value.isEmpty && !value.hasPrefix("-")
+            && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || $0 == "\u{7F}" }
+    }
+
+    /// Whether the whole of `value` matches `pattern` (never just a part, nor up to a trailing newline).
+    static func wholly(_ value: String, matches pattern: String) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let whole = NSRange(value.startIndex..., in: value)
+        return regex.firstMatch(in: value, range: whole)?.range == whole
+    }
+
+    /// `15.0` -> [15, 0]; nil unless it is one to three numbers joined by dots.
+    static func versionNumbers(_ text: String) -> [Int]? {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard (1...3).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } }) else { return nil }
+        return parts.compactMap { Int($0) }
+    }
+
+    /// Whether this Mac's macOS is at least `minimum` (a recipe's `minimumMacOS`).
+    private func runsOn(minimum: String) -> Bool {
+        guard let wanted = Self.versionNumbers(minimum) else { return false }
+        let have = [macOSVersion.majorVersion, macOSVersion.minorVersion, macOSVersion.patchVersion]
+        for (index, number) in wanted.enumerated() where have[index] != number { return have[index] > number }
+        return true
     }
 
     static func processName(_ id: String) -> String { "service-\(id)" }
@@ -249,11 +368,15 @@ public final class ServiceManager: @unchecked Sendable {
         let identity = ServiceInstance.newIdentity(
             kind: recipe.kind, series: recipe.series, displayName: recipe.displayName, seriesInID: recipe.seriesInID,
             existing: Set(store.load().services.map(\.id)))
-        guard ServiceInstance.isValidID(identity.id) else {
-            throw ServiceError.unavailable(name: identity.name, reason: "its catalog entry has an unusable name")
+        // An instance saved under a name Paddock wouldn't use would be ignored from then on: refuse it now.
+        guard ServiceInstance.isValidID(identity.id), ServiceInstance.isValidName(identity.name) else {
+            throw ServiceError.unavailable(name: recipe.displayName, reason: "its catalog entry would give it an unusable name")
+        }
+        if let minimum = recipe.minimumMacOS, !runsOn(minimum: minimum) {
+            throw ServiceError.needsNewerMacOS(name: identity.name, minimum: minimum)
         }
         if recipe.needsPHP && phpBinary() == nil {
-            throw ServiceError.unavailable(name: identity.name, reason: "it runs on PHP, and no PHP is installed")
+            throw ServiceError.unavailable(name: identity.name, reason: Self.noPHP)
         }
         var ports = try choosePorts(recipe, name: identity.name)
         do {
@@ -333,6 +456,9 @@ public final class ServiceManager: @unchecked Sendable {
             try? fm.removeItem(at: paths.serviceRun(instance.id))
             setNotice(nil, for: instance.id)
             if let error = error as? ServiceError { throw error }
+            if error as? TemplateError == .unavailable("php") {
+                throw ServiceError.unavailable(name: instance.name, reason: Self.noPHP)
+            }
             if let error = error as? TemplateError {
                 throw ServiceError.unavailable(name: instance.name, reason: "its recipe is broken (\(error))")
             }
@@ -340,23 +466,12 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// Runs one step through the bounded runner; its output goes to the service's log too.
+    /// Runs one initialise step through the bounded runner; its output goes to the service's log too.
     private func runStep(_ step: RecipeCommand, instance: ServiceInstance, recipe: ServiceRecipe,
                          context: ServiceTemplateContext) throws {
-        let command = try ServiceTemplate.render(step, context: context)
-        try checkRendered(command, template: step, instance: instance, recipe: recipe)
-        let outcome: ServiceStepRunner.Outcome
-        do {
-            outcome = try ServiceStepRunner.run(
-                executable: command.executable, arguments: command.arguments,
-                environment: baseEnvironment(context, id: instance.id).merging(command.environment) { $1 },
-                directory: paths.serviceHome(instance.id), stdin: command.stdin, timeout: recipe.initialiseTimeout,
-                isCancelled: { [weak self] in self?.isCancelled ?? true })
-        } catch {
-            throw ServiceError.initialiseFailed(name: instance.name,
-                                                output: "\(command.executable) could not be run: \(error.localizedDescription)")
-        }
-        appendToLog(instance.id, Data(outcome.output.utf8))
+        let outcome = try runBounded(step, instance: instance, recipe: recipe, context: context,
+                                     timeout: recipe.initialiseTimeout,
+                                     couldNotRun: { ServiceError.initialiseFailed(name: instance.name, output: $0) })
         switch outcome.end {
         case .exited(0): return
         case .exited:
@@ -369,13 +484,48 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
+    /// Renders and checks one command (an initialise step or an action) and runs it through the bounded
+    /// runner in the instance's folder, with the service environment; its output goes to the service's log.
+    /// A program that can't be run at all is `couldNotRun`.
+    private func runBounded(_ step: RecipeCommand, instance: ServiceInstance, recipe: ServiceRecipe,
+                            context: ServiceTemplateContext, timeout: TimeInterval,
+                            couldNotRun: (String) -> ServiceError) throws -> ServiceStepRunner.Outcome {
+        let command = try ServiceTemplate.render(step, context: context)
+        try checkRendered(command, template: step, instance: instance, recipe: recipe)
+        let outcome: ServiceStepRunner.Outcome
+        do {
+            outcome = try ServiceStepRunner.run(
+                executable: command.executable, arguments: command.arguments,
+                environment: environment(for: command, context: context, id: instance.id),
+                directory: paths.serviceHome(instance.id), stdin: command.stdin, timeout: timeout,
+                isCancelled: { [weak self] in self?.isCancelled ?? true })
+        } catch {
+            throw couldNotRun("\(command.executable) could not be run: \(error.localizedDescription)")
+        }
+        appendToLog(instance.id, Data(outcome.output.utf8))
+        return outcome
+    }
+
     /// What every service program and step starts from; the recipe's own environment comes on top. Nothing
     /// of the daemon's environment (and no `PADDOCK_*` variable) reaches a service. `HOME` is the instance's
     /// folder, not its data folder: `initdb` and `mysqld --initialize` want an empty data folder, and tools
     /// write dotfiles to `HOME`.
     private func baseEnvironment(_ context: ServiceTemplateContext, id: String) -> [String: String] {
-        ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": paths.serviceHome(id).path, "TMPDIR": context.run,
+        ["PATH": Self.basePATH, "HOME": paths.serviceHome(id).path, "TMPDIR": context.run,
          "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"]
+    }
+
+    static let basePATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+    static let noPHP = "it runs on PHP, and no PHP is installed"
+
+    /// The base environment with the command's own on top; a recipe's PATH comes before the base PATH, so
+    /// its programs are found first and the system's still are.
+    private func environment(for command: RenderedCommand, context: ServiceTemplateContext, id: String) -> [String: String] {
+        var environment = baseEnvironment(context, id: id)
+        for (name, value) in command.environment {
+            environment[name] = name == "PATH" ? "\(value):\(Self.basePATH)" : value
+        }
+        return environment
     }
 
     // MARK: - What a recipe renders to
@@ -403,7 +553,8 @@ public final class ServiceManager: @unchecked Sendable {
             case "PATH": allowed = own + [bin]
             default: continue
             }
-            let entries = name == "PATH" ? value.split(separator: ":", omittingEmptySubsequences: false).map(String.init) : [value]
+            let entries = ServiceCatalog.folderListVariables[name] != nil
+                ? value.split(separator: ":", omittingEmptySubsequences: false).map(String.init) : [value]
             for entry in entries where !allowed.contains(where: { Self.isUnder(entry, folder: $0, orAt: true) }) {
                 throw ServiceError.unsafeRecipe(name: instance.name, reason: "\(name) would point outside its own folders")
             }
@@ -727,15 +878,21 @@ public final class ServiceManager: @unchecked Sendable {
             try writeConfigFiles(recipe, context: context, id: id)
             if let socket = context.socket { Self.removeStaleSocket(socket, inside: paths.serviceRun(id)) }
             let record = paths.serviceRun(id).appendingPathComponent(Self.pidFileName)
-            try supervisor.start(ProcessSpec(
+            let target = try ServiceTemplate.render(recipe.ready.template, context: context)
+            let spawns = SpawnCounter()
+            var spec = ProcessSpec(
                 name: Self.processName(id), executable: URL(fileURLWithPath: command.executable),
-                arguments: command.arguments,
-                environment: baseEnvironment(context, id: id).merging(command.environment) { $1 },
+                arguments: command.arguments, environment: environment(for: command, context: context, id: id),
                 logFile: paths.serviceLog(id), stopSignal: recipe.signalNumber,
                 stopGrace: TimeInterval(recipe.stopGraceSeconds), inheritsEnvironment: false,
-                didSpawn: { pid in try? ServiceProcessRecord.live(pid: pid)?.write(to: record) }))
+                didSpawn: { [weak self] pid in
+                    try? ServiceProcessRecord.live(pid: pid)?.write(to: record)
+                    // The first spawn is this launch, checked below; later ones are the supervisor's restarts.
+                    if spawns.next() > 1 { self?.checkAfterRestart(instance, recipe, target, processGroup: pid) }
+                })
+            spec.workingDirectory = paths.serviceHome(id)
+            try supervisor.start(spec)
             setRuntime(.starting, for: id)
-            let target = try ServiceTemplate.render(recipe.ready.template, context: context)
             guard waitUntilReady(Self.processName(id), recipe.ready, target,
                                  timeout: readyTimeout ?? recipe.readyTimeout) else {
                 stopProcess(id)
@@ -755,6 +912,10 @@ public final class ServiceManager: @unchecked Sendable {
             return nil
         } catch {
             stopProcess(id)
+            if error as? TemplateError == .unavailable("php") {
+                setRuntime(.unavailable(reason: Self.noPHP), for: id)
+                return .unavailable(name: instance.name, reason: Self.noPHP)
+            }
             if let error = error as? ServiceError, case .unavailable(_, let reason) = error {
                 setRuntime(.unavailable(reason: reason), for: id)
                 return error
@@ -804,6 +965,25 @@ public final class ServiceManager: @unchecked Sendable {
             DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.lateListenerCheck(instance, processGroup: processGroup)
             }
+        }
+    }
+
+    /// After the supervisor restarted a service on its own: once the new process is ready (or the recipe's
+    /// readiness deadline passes), the same listener checks as after a launch, tied to the new process: a
+    /// later restart or stop makes them do nothing.
+    private func checkAfterRestart(_ instance: ServiceInstance, _ recipe: ServiceRecipe, _ target: String,
+                                   processGroup: Int32) {
+        let name = Self.processName(instance.id)
+        let timeout = readyTimeout ?? recipe.readyTimeout
+        DispatchQueue.global().async { [weak self] in
+            guard let self else { return }
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline, !ServiceReadiness.probe(recipe.ready, rendered: target) {
+                guard case .running(let pid) = self.supervisor.status(name), pid == processGroup else { return }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            self.lateListenerCheck(instance, processGroup: processGroup)
+            self.scheduleLateListenerChecks(instance, processGroup: processGroup)
         }
     }
 
@@ -1075,5 +1255,18 @@ public final class ServiceManager: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async { continuation.resume(with: Result { try work() }) }
         }
+    }
+}
+
+/// Counts a launch's spawns (the first is the launch itself, later ones are the supervisor's restarts).
+private final class SpawnCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count
     }
 }

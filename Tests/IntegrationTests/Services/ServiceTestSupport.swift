@@ -44,7 +44,8 @@ enum FakeService {
                        initialiseArguments: [String] = [], initialiseTimeoutSeconds: Int? = nil,
                        assets: [RecipeAsset]? = nil, socket: String? = "{run}/fake.sock",
                        ready: Readiness = .tcp(port: "{port.main}"), stopSignal: String = "TERM",
-                       configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil) -> ServiceRecipe {
+                       configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
+                       actions: [String: RecipeAction] = [:]) -> ServiceRecipe {
         var arguments = ["serve", "{data}"]
         for port in ports { arguments += ["--port", "{port.\(port.name)}"] }
         arguments += ["--socket", "{socket}", "--name", "{name}"] + extraArguments
@@ -58,8 +59,16 @@ enum FakeService {
             ready: ready, stopSignal: stopSignal, stopGraceSeconds: 5, ports: ports, socket: socket,
             env: ["FAKE_HOST=127.0.0.1", "FAKE_PORT={port.main}", "FAKE_SOCKET={socket}"],
             openURL: "http://127.0.0.1:{port.main}", configFiles: configFiles,
-            readyTimeoutSeconds: readyTimeoutSeconds, initialiseTimeoutSeconds: initialiseTimeoutSeconds)
+            readyTimeoutSeconds: readyTimeoutSeconds, initialiseTimeoutSeconds: initialiseTimeoutSeconds,
+            actions: actions)
     }
+
+    /// Like createdb: `action <data> <database>` makes `made-<database>` in the data folder, and says
+    /// `"<database>" already exists` the second time.
+    static let createDatabase = RecipeAction(
+        command: RecipeCommand(executable: "{bin}/\(installedName)", arguments: ["action", "{data}", "{database}"]),
+        parameters: [RecipeParameter(name: "database", pattern: "^[A-Za-z0-9_]{1,63}$")],
+        alreadyDone: "\"{database}\" already exists")
 
     /// The installed program an instance of `version` runs.
     static func installed(paths: Paths, kind: String = "fake", version: String = "1.0") -> String {

@@ -68,7 +68,7 @@ enum CLI {
     @discardableResult
     static func send(_ request: Request, timeout: TimeInterval = 600) throws -> EngineStatus {
         switch try sendRaw(request, timeout: timeout) {
-        case .ok(let status), .removed(_, let status): return status
+        case .ok(let status), .removed(_, let status), .databaseCreated(_, _, let status): return status
         case .error(_, let message): throw failure(message)
         case .catalog: throw unexpectedAnswer()
         }

@@ -100,6 +100,59 @@ public struct RecipeCommand: Codable, Equatable, Sendable {
     }
 }
 
+/// A value an action takes from the user (`{database}`), and the whole-value pattern it must match.
+public struct RecipeParameter: Codable, Equatable, Sendable {
+    /// Its placeholder name: lowercase letters, digits and underscores, not a name Paddock already uses.
+    public let name: String
+    /// A regular expression anchored with `^` and `$`.
+    public let pattern: String
+
+    public init(name: String, pattern: String) {
+        self.name = name
+        self.pattern = pattern
+    }
+}
+
+/// Something a recipe does to its running service, by name: `createDatabase` on request (and, later, steps
+/// after it is ready). Its command runs like an initialise step: through the bounded step runner, in the
+/// instance's folder, with the service environment, its program inside the recipe's binaries. Its parameters
+/// are bound only for its arguments (and `alreadyDone`), never its program, environment or input, and every
+/// value is checked against the parameter's pattern before anything runs.
+public struct RecipeAction: Codable, Equatable, Sendable {
+    public static let createDatabase = "createDatabase"
+    /// The actions Paddock knows how to ask for.
+    public static let names: Set<String> = [createDatabase]
+    public static let defaultTimeout: TimeInterval = 60
+
+    public let command: RecipeCommand
+    public let parameters: [RecipeParameter]
+    /// Output (a template) that, from a command that exits with an error, means there was nothing to do (the
+    /// database is there already): reported as already done, not as a failure.
+    public let alreadyDone: String?
+    /// Seconds the command may take (default 60).
+    public let timeoutSeconds: Int?
+
+    public init(command: RecipeCommand, parameters: [RecipeParameter] = [], alreadyDone: String? = nil,
+                timeoutSeconds: Int? = nil) {
+        self.command = command
+        self.parameters = parameters
+        self.alreadyDone = alreadyDone
+        self.timeoutSeconds = timeoutSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey { case command, parameters, alreadyDone, timeoutSeconds }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        command = try c.decode(RecipeCommand.self, forKey: .command)
+        parameters = try c.decodeIfPresent([RecipeParameter].self, forKey: .parameters) ?? []
+        alreadyDone = try c.decodeIfPresent(String.self, forKey: .alreadyDone)
+        timeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
+    }
+
+    public var timeout: TimeInterval { timeoutSeconds.map(TimeInterval.init) ?? Self.defaultTimeout }
+}
+
 /// A command with every template rendered and conditional arguments resolved.
 public struct RenderedCommand: Equatable, Sendable {
     public let executable: String
@@ -192,6 +245,8 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     public let readyTimeoutSeconds: Int?
     /// Seconds each initialise step may take (default 120).
     public let initialiseTimeoutSeconds: Int?
+    /// What it can do on request while it runs, by name (`RecipeAction.names`).
+    public let actions: [String: RecipeAction]
 
     public static let defaultInitialiseTimeout: TimeInterval = 120
 
@@ -200,7 +255,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                 start: RecipeCommand, ready: Readiness, stopSignal: String = "TERM", stopGraceSeconds: Int = 10,
                 ports: [RecipePort], socket: String? = nil, env: [String] = [], openURL: String? = nil,
                 needsPHP: Bool = false, configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
-                initialiseTimeoutSeconds: Int? = nil) {
+                initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:]) {
         self.kind = kind
         self.displayName = displayName
         self.version = version
@@ -222,12 +277,13 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         self.configFiles = configFiles
         self.readyTimeoutSeconds = readyTimeoutSeconds
         self.initialiseTimeoutSeconds = initialiseTimeoutSeconds
+        self.actions = actions
     }
 
     private enum CodingKeys: String, CodingKey {
         case kind, displayName, version, series, seriesInID, licence, minimumMacOS, assets, initialise, start, ready
         case stopSignal, stopGraceSeconds, ports, socket, env, openURL, needsPHP, configFiles, readyTimeoutSeconds
-        case initialiseTimeoutSeconds
+        case initialiseTimeoutSeconds, actions
     }
 
     public init(from decoder: Decoder) throws {
@@ -253,6 +309,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         configFiles = try c.decodeIfPresent([RecipeFile].self, forKey: .configFiles) ?? []
         readyTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .readyTimeoutSeconds)
         initialiseTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .initialiseTimeoutSeconds)
+        actions = try c.decodeIfPresent([String: RecipeAction].self, forKey: .actions) ?? [:]
     }
 
     /// The signal `stopSignal` names; SIGTERM for anything else.
@@ -290,6 +347,6 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                       start: start, ready: ready, stopSignal: stopSignal, stopGraceSeconds: stopGraceSeconds,
                       ports: ports, socket: socket, env: env, openURL: openURL, needsPHP: needsPHP,
                       configFiles: configFiles, readyTimeoutSeconds: readyTimeoutSeconds,
-                      initialiseTimeoutSeconds: initialiseTimeoutSeconds)
+                      initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions)
     }
 }

@@ -18,6 +18,8 @@ public struct ProcessSpec: Sendable {
     public var stopSignal: Int32
     /// Seconds between `stopSignal` and SIGKILL; nil uses the supervisor's grace period.
     public var stopGrace: TimeInterval?
+    /// Where the process runs; nil keeps the supervisor's own working directory.
+    public var workingDirectory: URL?
 
     public init(name: String, executable: URL, arguments: [String], environment: [String: String] = [:],
                 logFile: URL, stopSignal: Int32 = SIGTERM, stopGrace: TimeInterval? = nil,
@@ -232,6 +234,9 @@ public final class Supervisor: @unchecked Sendable {
         posix_spawn_file_actions_addopen(&actions, 1, spec.logFile.path,
                                          O_WRONLY | O_CREAT | O_APPEND, 0o644)
         posix_spawn_file_actions_adddup2(&actions, 1, 2)
+        if let directory = spec.workingDirectory {
+            posix_spawn_file_actions_addchdir_np(&actions, directory.path)
+        }
 
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)

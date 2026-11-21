@@ -22,6 +22,9 @@ public enum Request: Codable, Equatable, Sendable {
     /// Downloads the newest version of the service's series and switches to it (back to the old one if
     /// the new one doesn't start).
     case serviceUpdate(name: String)
+    /// Creates a database in a running service (answered with `.databaseCreated`); one already there is not
+    /// an error.
+    case serviceCreateDatabase(name: String, database: String)
 }
 
 extension Request {
@@ -33,7 +36,8 @@ extension Request {
             return true
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
              .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
-             .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate:
+             .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate,
+             .serviceCreateDatabase:
             return false
         }
     }
@@ -46,6 +50,8 @@ public enum Response: Codable, Equatable, Sendable {
     case catalog([CatalogEntry])
     /// A service was removed (`serviceRemove`); its data is (or was, if deleted) at `dataPath`.
     case removed(dataPath: String, status: EngineStatus)
+    /// `serviceCreateDatabase` worked: `database` was created, or was there already.
+    case databaseCreated(database: String, alreadyExisted: Bool, status: EngineStatus)
 }
 
 /// The `code` values of `Response.error`.
@@ -71,6 +77,8 @@ public enum ErrorCode {
     public static let serviceUnavailable = "service_unavailable"
     /// Adding or updating a service was cut short because Paddock is shutting down.
     public static let serviceCancelled = "service_cancelled"
+    /// A value in the request isn't one Paddock accepts (a database name with a dash).
+    public static let invalidArgument = "invalid_argument"
     public static let `internal` = "internal"
 }
 

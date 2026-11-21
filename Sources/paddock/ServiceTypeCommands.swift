@@ -11,7 +11,7 @@ struct ServiceGroup: ParsableCommand {
         subcommands: [
             ServiceList.self, ServiceAdd.self, ServiceStart.self, ServiceStop.self, ServiceRestart.self,
             ServiceRemove.self, ServiceUpdate.self, ServiceEnv.self, ServiceLogs.self, ServiceOpen.self,
-            ServiceAvailable.self,
+            ServiceAvailable.self, ServiceCreateDatabase.self,
         ],
         defaultSubcommand: ServiceList.self
     )
@@ -23,7 +23,7 @@ extension CLI {
         switch try sendRaw(.serviceCatalog, timeout: 30) {
         case .catalog(let entries): return entries
         case .error(_, let message): throw failure(message)
-        case .ok, .removed: throw unexpectedAnswer()
+        case .ok, .removed, .databaseCreated: throw unexpectedAnswer()
         }
     }
 
@@ -146,7 +146,7 @@ struct ServiceRemove: ParsableCommand {
                              : "Removed \(service.name). Its data is still at \(path).")
         case .error(_, let message):
             throw CLI.failure(message)
-        case .ok, .catalog:
+        case .ok, .catalog, .databaseCreated:
             throw CLI.unexpectedAnswer()
         }
     }
@@ -167,6 +167,26 @@ struct ServiceUpdate: ParsableCommand {
         let after = try CLI.service(named: before.id, in: try CLI.send(.serviceUpdate(name: before.id), timeout: 3600))
         print(after.version == before.version ? "\(after.name) is up to date (\(after.version))."
                                               : "\(after.name) now runs \(after.version).")
+    }
+}
+
+struct ServiceCreateDatabase: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "create-db", abstract: "Create a database in a running service, such as PostgreSQL.")
+    @Argument(help: "The service's name, such as postgres-18.") var name: String
+    @Argument(help: "The new database's name: letters, numbers and underscores.") var database: String
+
+    func run() throws {
+        try CLI.refuseChangesFromDevelopmentBuild()
+        switch try CLI.sendRaw(.serviceCreateDatabase(name: name, database: database), timeout: 120) {
+        case .databaseCreated(let database, let existed, let status):
+            let service = try CLI.service(named: name, in: status)
+            print(Messages.databaseCreated(database, in: service.name, alreadyExisted: existed))
+        case .error(_, let message):
+            throw CLI.failure(message)
+        case .ok, .catalog, .removed:
+            throw CLI.unexpectedAnswer()
+        }
     }
 }
 

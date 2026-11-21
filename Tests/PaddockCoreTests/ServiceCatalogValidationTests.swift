@@ -171,6 +171,107 @@ final class ServiceCatalogValidationTests: XCTestCase {
         assertRejected([valid(series: "1"), valid(series: "1.2")], "more than once")
     }
 
+    // MARK: - What PostgreSQL needs
+
+    /// The socket is `{run}/` and one file name; that name may carry the instance's port (`.s.PGSQL.5432`),
+    /// which renders to digits, and nothing else.
+    func testTheSocketFileNameMayCarryAPortAndNothingElse() {
+        XCTAssertNoThrow(try ServiceCatalog.validate([valid(socket: "{run}/.s.PGSQL.{port.main}")]))
+        XCTAssertNoThrow(try ServiceCatalog.validate([valid(socket: "{run}/s-{port.main}.sock")]))
+        assertRejected([valid(socket: "{run}/{port.other}.sock")], "{port.other}")
+        assertRejected([valid(socket: "{run}/{name}.sock")], "socket")
+        assertRejected([valid(socket: "{run}/{socketDir}.sock")], "socket")
+        assertRejected([valid(socket: "{run}/x/{port.main}")], "socket")
+        assertRejected([valid(socket: "{run}/x/s.sock")], "socket")
+        assertRejected([valid(socket: "{run}/{port.main}/s.sock")], "socket")
+        assertRejected([valid(socket: "{run}{port.main}")], "socket")
+        XCTAssertTrue(ServiceCatalog.knownPlaceholders.contains("socketDir"))
+    }
+
+    func testDisplayNamesLeaveRoomForTheSeries() {
+        func named(_ name: String) -> ServiceRecipe {
+            ServiceRecipe(kind: "sample", displayName: name, version: "1.0", licence: "MIT", assets: [],
+                          start: RecipeCommand(executable: "{bin}/s"), ready: .tcp(port: "{port.main}"),
+                          ports: [RecipePort(name: "main", preferred: 4000)])
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([named(String(repeating: "x", count: 48))]))
+        assertRejected([named(String(repeating: "x", count: 49))], "48")
+    }
+
+    /// Each `:`-separated entry of PHP_INI_SCAN_DIR stays in the instance's folders, like PATH (an empty one
+    /// would mean PHP's own compiled-in folder).
+    func testPHPIniScanDirIsCheckedPerEntry() {
+        func env(_ value: String) -> ServiceRecipe {
+            valid(start: RecipeCommand(executable: "{bin}/sample", environment: ["PHP_INI_SCAN_DIR": value]))
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([env("{config}/conf.d:{data}/php")]))
+        assertRejected([env("{config}/conf.d:/etc/php.d")], "PHP_INI_SCAN_DIR")
+        assertRejected([env("{config}/conf.d:")], "PHP_INI_SCAN_DIR")
+        assertRejected([env(":{config}/conf.d")], "PHP_INI_SCAN_DIR")
+        assertRejected([env("{bin}/conf.d")], "PHP_INI_SCAN_DIR")
+    }
+
+    func testMinimumMacOSIsAVersion() {
+        func needing(_ minimum: String) -> ServiceRecipe {
+            ServiceRecipe(kind: "sample", displayName: "Sample", version: "1.0", licence: "MIT", minimumMacOS: minimum,
+                          assets: [], start: RecipeCommand(executable: "{bin}/s"), ready: .tcp(port: "{port.main}"),
+                          ports: [RecipePort(name: "main", preferred: 4000)])
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([needing("15.0")]))
+        XCTAssertNoThrow(try ServiceCatalog.validate([needing("13")]))
+        for bad in ["", "15.", "x", "15.0.1.2", "15 .0"] { assertRejected([needing(bad)], "minimumMacOS") }
+    }
+
+    // MARK: - Actions
+
+    private func withAction(_ action: RecipeAction, named name: String = "createDatabase") -> ServiceRecipe {
+        let base = valid()
+        return ServiceRecipe(kind: base.kind, displayName: base.displayName, version: base.version, series: base.series,
+                             licence: base.licence, assets: base.assets, initialise: base.initialise, start: base.start,
+                             ready: base.ready, ports: base.ports, socket: base.socket, env: base.env,
+                             configFiles: base.configFiles, actions: [name: action])
+    }
+
+    private let database = RecipeParameter(name: "database", pattern: "^[A-Za-z0-9_]{1,63}$")
+
+    private func action(_ executable: String = "{bin}/createdb", arguments: [RecipeArgument] = ["-p", "{port.main}", "{database}"],
+                        environment: [String: String] = [:], stdin: String? = nil,
+                        parameters: [RecipeParameter]? = nil, alreadyDone: String? = nil) -> RecipeAction {
+        RecipeAction(command: RecipeCommand(executable: executable, arguments: arguments, environment: environment, stdin: stdin),
+                     parameters: parameters ?? [database], alreadyDone: alreadyDone)
+    }
+
+    func testAValidActionPasses() {
+        XCTAssertNoThrow(try ServiceCatalog.validate([withAction(action(alreadyDone: "database \"{database}\" already exists"))]))
+        XCTAssertNoThrow(try ServiceCatalog.validate([withAction(action(arguments: [.ifSocket(["-h", "{socketDir}"]), "{database}"]))]))
+    }
+
+    func testActionsAreKnownByName() {
+        assertRejected([withAction(action(), named: "dropEverything")], "dropEverything")
+    }
+
+    /// A parameter is free text the user typed: it may only be an argument, never a program, a path variable,
+    /// another environment value or standard input.
+    func testParametersOnlyInArguments() {
+        assertRejected([withAction(action("{bin}/{database}"))], "under {bin}/")
+        assertRejected([withAction(action(environment: ["PGDATABASE": "{database}"]))], "{database}")
+        assertRejected([withAction(action(environment: ["HOME": "{data}/{database}"]))], "HOME")
+        assertRejected([withAction(action(stdin: "create database {database};"))], "{database}")
+        assertRejected([valid(env: ["DB={database}"])], "{database}")
+        assertRejected([valid(start: RecipeCommand(executable: "{bin}/s", arguments: ["{database}"]))], "{database}")
+    }
+
+    func testParametersAreDeclaredWithAWholeValuePattern() {
+        assertRejected([withAction(action(parameters: []))], "{database}")
+        assertRejected([withAction(action(parameters: [RecipeParameter(name: "database", pattern: "[a-z]+")]))], "pattern")
+        assertRejected([withAction(action(parameters: [RecipeParameter(name: "database", pattern: "^[a-z+$")]))], "pattern")
+        assertRejected([withAction(action(arguments: ["{data}"], parameters: [RecipeParameter(name: "data", pattern: "^x$")]))],
+                       "parameter")
+        assertRejected([withAction(action(parameters: [database, database]))], "parameter")
+        assertRejected([withAction(action(arguments: ["{dbname}"]))], "{dbname}")
+        assertRejected([withAction(action("/usr/bin/createdb"))], "under {bin}/")
+    }
+
     /// Decoding a catalog validates it, so a bad bundled, hosted or development catalog never loads.
     func testDecodingValidates() throws {
         let bad = ServiceCatalog(recipes: [valid(stopSignal: "KILL")])

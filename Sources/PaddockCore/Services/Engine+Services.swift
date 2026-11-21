@@ -62,6 +62,9 @@ extension Engine {
                 try await ServiceManager.offPool { try services.restart(name) }
             case .serviceCatalog:
                 return .catalog(services.catalogEntries())
+            case .serviceCreateDatabase(let name, let database):
+                let result = try await ServiceManager.offPool { try services.createDatabase(name, database: database) }
+                return .databaseCreated(database: database, alreadyExisted: result == .alreadyDone, status: status())
             default:
                 return .error(code: ErrorCode.internal, message: "not a service request")
             }
@@ -99,6 +102,9 @@ extension Engine {
              .rollbackFailed, .unsafeRecipe:
             code = ErrorCode.serviceFailed
         case .cancelled: code = ErrorCode.serviceCancelled
+        case .needsNewerMacOS, .noAction, .notRunning: code = ErrorCode.serviceUnavailable
+        case .actionFailed: code = ErrorCode.serviceFailed
+        case .invalidParameter: code = ErrorCode.invalidArgument
         }
         return .error(code: code, message: Messages.serviceError(error))
     }

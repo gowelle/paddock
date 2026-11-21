@@ -17,6 +17,8 @@ public struct ServiceTemplateContext: Equatable, Sendable {
     /// Paddock's default PHP binary; nil when none is installed.
     public var php: String?
     public var resources: String
+    /// An action's bound parameters (`database` -> `shop`); empty everywhere else.
+    public var parameters: [String: String] = [:]
 
     public init(bin: String, data: String, config: String, run: String, log: String, name: String, id: String,
                 ports: [String: Int], socket: String?, php: String?, resources: String) {
@@ -42,8 +44,9 @@ public enum TemplateError: Error, Equatable {
 }
 
 /// Renders recipe templates: `{bin}`, `{data}`, `{config}`, `{run}`, `{log}`, `{name}`, `{id}`,
-/// `{port.<name>}`, `{socket}`, `{php}` and `{resources}`. Only `{` + a lowercase name + `}` is a
-/// placeholder; any other brace (`${APP_NAME}`, JSON) is plain text.
+/// `{port.<name>}`, `{socket}`, `{socketDir}`, `{php}`, `{resources}`, and in an action its bound parameters
+/// (`{database}`). Only `{` + a name starting with a lowercase letter + `}` is a placeholder; any other brace
+/// (`${APP_NAME}`, JSON) is plain text. A bound value is inserted as it is, never rendered again.
 public enum ServiceTemplate {
     public static func render(_ template: String, context: ServiceTemplateContext) throws -> String {
         var output = ""
@@ -97,13 +100,16 @@ public enum ServiceTemplate {
         return names
     }
 
-    /// Whether `template` uses `{socket}`.
-    static func mentionsSocket(_ template: String) -> Bool { template.contains("{socket}") }
+    /// Whether `template` uses `{socket}` or `{socketDir}`.
+    static func mentionsSocket(_ template: String) -> Bool {
+        template.contains("{socket}") || template.contains("{socketDir}")
+    }
 
     private static func isPlaceholderName(_ name: Substring) -> Bool {
         guard let first = name.unicodeScalars.first, ("a"..."z").contains(first) else { return false }
         return name.unicodeScalars.allSatisfy {
-            ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "." || $0 == "_" || $0 == "-"
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0) || $0 == "." || $0 == "_"
+                || $0 == "-"
         }
     }
 
@@ -117,6 +123,8 @@ public enum ServiceTemplate {
         case "name": return context.name
         case "id": return context.id
         case "socket": return context.socket ?? ""
+        // For programs that take the socket's folder (PostgreSQL's `unix_socket_directories`).
+        case "socketDir": return context.socket == nil ? "" : context.run
         case "resources": return context.resources
         case "php":
             guard let php = context.php else { throw TemplateError.unavailable("php") }
@@ -125,6 +133,7 @@ public enum ServiceTemplate {
             if name.hasPrefix("port."), let port = context.ports[String(name.dropFirst("port.".count))] {
                 return String(port)
             }
+            if let value = context.parameters[name] { return value }
             throw TemplateError.unknown(name)
         }
     }

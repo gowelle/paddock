@@ -52,12 +52,12 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
     }
 
     /// When the record's leader is gone but its group lives on: the remaining members, if there are any and
-    /// every one is an orphan (parent launchd) running a program inside `allowedDirectories`; else nil. A
-    /// process group id is never reused while the group has members, so these are the leader's own.
+    /// every one is an orphan (parent launchd) running a program inside `allowedDirectories`; else nil (also
+    /// when the group can't be listed whole). A process group id is never reused while the group has members,
+    /// so these are the leader's own.
     public func orphanedGroupMembers(allowedDirectories: [String]) -> [Int32]? {
         guard pid == pgid, Self.live(pid: pid) == nil else { return nil }
-        let members = Self.members(ofGroup: pgid)
-        guard !members.isEmpty, members.allSatisfy({ member in
+        guard let members = Self.members(ofGroup: pgid), !members.isEmpty, members.allSatisfy({ member in
             guard let program = PortCheck.executablePath(pid: member) else { return false }
             return Self.isInside(program, allowedDirectories) && Self.parent(of: member) == 1 && getpgid(member) == pgid
         }) else { return nil }
@@ -77,14 +77,22 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
         return Int32(info.pbi_ppid)
     }
 
-    /// The pids in a process group.
-    static func members(ofGroup pgid: Int32) -> [Int32] {
-        var pids = [pid_t](repeating: 0, count: 256)
-        let bytes = pids.withUnsafeMutableBytes {
-            proc_listpids(UInt32(PROC_PGRP_ONLY), UInt32(pgid), $0.baseAddress, Int32($0.count))
+    /// Every pid in a process group, or nil when macOS won't list the whole group: the list grows from
+    /// `initialCapacity` until it fits (a full buffer may have been cut short), up to `maximumCapacity`.
+    /// Nothing is ever decided on a partial list.
+    static func members(ofGroup pgid: Int32, initialCapacity: Int = 256, maximumCapacity: Int = 1 << 16) -> [Int32]? {
+        var capacity = max(1, initialCapacity)
+        while capacity <= maximumCapacity {
+            var pids = [pid_t](repeating: 0, count: capacity)
+            let bytes = pids.withUnsafeMutableBytes {
+                proc_listpids(UInt32(PROC_PGRP_ONLY), UInt32(pgid), $0.baseAddress, Int32($0.count))
+            }
+            guard bytes >= 0 else { return nil }
+            let count = Int(bytes) / MemoryLayout<pid_t>.size
+            if count < capacity { return Array(pids.prefix(count)).filter { $0 > 0 } }
+            capacity *= 2
         }
-        guard bytes > 0 else { return [] }
-        return Array(pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size)).filter { $0 > 0 }
+        return nil
     }
 
     /// Stops the record's process group: `signal`, then SIGKILL after `grace`. Returns once it is gone (or

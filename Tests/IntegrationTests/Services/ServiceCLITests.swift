@@ -14,7 +14,9 @@ final class ServiceCLITests: XCTestCase {
         try TestSupport.requireVendored()
         home = try ServiceHome()
         let catalog = home.root.appendingPathComponent("catalog.json")
-        try JSONEncoder().encode(ServiceCatalog(recipes: [FakeService.recipe()])).write(to: catalog)
+        try JSONEncoder().encode(ServiceCatalog(recipes: [
+            FakeService.recipe(actions: [RecipeAction.createDatabase: FakeService.createDatabase]),
+        ])).write(to: catalog)
         var env = ProcessInfo.processInfo.environment
         env["PADDOCK_HOME"] = home.paths.home.path
         let http = TestSupport.freeTCPPort()
@@ -78,6 +80,15 @@ final class ServiceCLITests: XCTestCase {
         XCTAssertTrue(logs.out.hasPrefix(home.paths.serviceLog("fake").path + "\n"), logs.out)
         XCTAssertTrue(logs.out.contains("fake-service: ready"), logs.out)
         XCTAssertEqual(try run(["service", "open", "fake"]).out, "http://127.0.0.1:\(port)\n")
+
+        XCTAssertEqual(try run(["service", "create-db", "fake", "shop"]).out, "Created database shop in Fake.\n")
+        let existing = try run(["service", "create-db", "Fake", "shop"])
+        XCTAssertEqual(existing.status, 0, existing.err)
+        XCTAssertEqual(existing.out, "shop already exists in Fake.\n")
+        let invalid = try run(["service", "create-db", "fake", "my-shop"])
+        XCTAssertEqual(invalid.status, 1)
+        XCTAssertEqual(invalid.err, "Database names can use letters, numbers and underscores.\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.serviceData("fake").appendingPathComponent("made-my-shop").path))
 
         let missing = try run(["service", "stop", "nope"])
         XCTAssertEqual(missing.status, 1)

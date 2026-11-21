@@ -74,5 +74,22 @@ final class ServiceMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.serviceError(.cancelled(name: "mail")),
                        "Adding mail was cancelled because Paddock is shutting down.")
         XCTAssertEqual(Messages.existingServiceData("Mail"), "Found existing data for Mail; using it.")
+        XCTAssertEqual(Messages.serviceError(.needsNewerMacOS(name: "PostgreSQL 18", minimum: "15.0")),
+                       "PostgreSQL 18 needs macOS 15 or later.")
+        XCTAssertEqual(Messages.serviceError(.needsNewerMacOS(name: "Sample", minimum: "14.2")),
+                       "Sample needs macOS 14.2 or later.")
+        XCTAssertEqual(Messages.serviceError(.noAction(name: "Mail", action: RecipeAction.createDatabase)),
+                       "Mail doesn't have databases.")
+        XCTAssertEqual(Messages.serviceError(.invalidParameter(parameter: "database", value: "a-b")),
+                       "Database names can use letters, numbers and underscores.")
+        XCTAssertEqual(Messages.serviceError(.actionFailed(name: "PostgreSQL 18", action: RecipeAction.createDatabase,
+                                                           output: "boom")),
+                       "Couldn't create the database in PostgreSQL 18:\nboom")
+        XCTAssertEqual(Messages.serviceError(.notRunning(name: "PostgreSQL 18", id: "postgres-18")),
+                       "PostgreSQL 18 isn't running. Start it with: paddock service start postgres-18")
+        XCTAssertEqual(Messages.databaseCreated("shop", in: "PostgreSQL 18", alreadyExisted: false),
+                       "Created database shop in PostgreSQL 18.")
+        XCTAssertEqual(Messages.databaseCreated("shop", in: "PostgreSQL 18", alreadyExisted: true),
+                       "shop already exists in PostgreSQL 18.")
     }
 }

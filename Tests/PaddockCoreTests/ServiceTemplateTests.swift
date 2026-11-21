@@ -76,4 +76,29 @@ final class ServiceTemplateTests: XCTestCase {
         bare.socket = nil
         XCTAssertEqual(try ServiceTemplate.render(command, context: bare).arguments, ["--port", "4001", "end"])
     }
+
+    /// `{socketDir}` is the run folder while the socket is usable (PostgreSQL takes a folder), and nothing
+    /// otherwise (`unix_socket_directories=` then makes no socket at all).
+    func testSocketDirIsTheRunFolderOnlyWithAUsableSocket() throws {
+        XCTAssertEqual(try ServiceTemplate.render("unix_socket_directories={socketDir}", context: context),
+                       "unix_socket_directories=/h/run/svc/sample")
+        var bare = context
+        bare.socket = nil
+        XCTAssertEqual(try ServiceTemplate.render("unix_socket_directories={socketDir}", context: bare),
+                       "unix_socket_directories=")
+        XCTAssertEqual(try ServiceTemplate.render("{run}/.s.PGSQL.{port.main}", context: context), "/h/run/svc/sample/.s.PGSQL.4001")
+    }
+
+    /// An action's parameters render only where they are bound; anywhere else they are unknown.
+    func testParametersRenderOnlyWhenBound() throws {
+        XCTAssertThrowsError(try ServiceTemplate.render("{database}", context: context)) {
+            XCTAssertEqual($0 as? TemplateError, .unknown("database"))
+        }
+        var bound = context
+        bound.parameters = ["database": "shop_1"]
+        XCTAssertEqual(try ServiceTemplate.render("-U root {database}", context: bound), "-U root shop_1")
+        // A bound value is inserted as it is, never rendered again.
+        bound.parameters = ["database": "{data}"]
+        XCTAssertEqual(try ServiceTemplate.render("{database}", context: bound), "{data}")
+    }
 }

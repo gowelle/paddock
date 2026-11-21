@@ -61,6 +61,30 @@ final class ServiceProcessRecordTests: XCTestCase {
         XCTAssertFalse(record.isOurLiveProcess(allowedDirectories: ["/bin"]), "gone")
     }
 
+    /// A group is listed whole however many members it has (the buffer grows until the list fits), and a group
+    /// that can't be listed whole is reported as such, never as a partial list.
+    func testGroupMembersAreListedWholeOrNotAtAll() throws {
+        // A shell leading its own group (the supervisor starts every process in one) with three sleeping children.
+        let supervisor = Supervisor()
+        defer { supervisor.stopAll() }
+        try supervisor.start(ProcessSpec(name: "group", executable: URL(fileURLWithPath: "/bin/sh"),
+                                         arguments: ["-c", "sleep 30 & sleep 30 & sleep 30 & wait"],
+                                         logFile: dir.appendingPathComponent("group.log")))
+        guard case .running(let group) = supervisor.status("group") else { return XCTFail("not running") }
+        var members: [Int32] = []
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            members = ServiceProcessRecord.members(ofGroup: group) ?? []
+            if members.count == 4 { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertEqual(members.count, 4, "the shell and its three children")
+        XCTAssertEqual(Set(ServiceProcessRecord.members(ofGroup: group, initialCapacity: 1) ?? []), Set(members),
+                       "a buffer too small at first grows until every member fits")
+        XCTAssertNil(ServiceProcessRecord.members(ofGroup: group, initialCapacity: 1, maximumCapacity: 2),
+                     "never a partial list")
+    }
+
     func testStaleSocketsAreUnlinkedButNothingElse() throws {
         let run = dir.appendingPathComponent("run/svc/fake", isDirectory: true)
         try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)

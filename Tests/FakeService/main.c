@@ -4,13 +4,17 @@
 //       Writes <data>/initialised, or prints MSG and exits 3. --ignore-term ignores SIGTERM; --sleep waits
 //       S seconds first; --grandchild leaves a child holding stdout for 60 seconds. Never reads stdin.
 //   paddock-fake-service serve <data> [--port N]... [--socket PATH] [--delay MS] [--no-listen] [--any-address]
-//       Records its arguments in <data>/args (one per line) and its environment in <data>/env, then after
+//       Records its arguments in <data>/args (one per line), its environment in <data>/env and its working
+//       directory in <data>/cwd, then after
 //       --delay milliseconds listens on 127.0.0.1 (0.0.0.0 with --any-address) on every --port (and on the
 //       Unix socket, if a non-empty path is given). Answers any connection with "HTTP/1.0 200 OK" and closes
 //       it. Exits 0 on SIGTERM or SIGINT, writing <data>/stopped.
 //       More serve options: --fork-child (a child in the same group serves too, and stays when the leader
 //       dies); --poison-data (writes <data>/poison); --refuse-poison (exits 4 at once if <data>/poison exists);
 //       --late-listen PORT --late-delay MS (after MS milliseconds also listens on 0.0.0.0:PORT).
+//   paddock-fake-service action <data> <value>
+//       Like createdb: creates <data>/made-<value> and prints "made <value>"; if it is there already, prints
+//       `"<value>" already exists` and exits 1. Also records its working directory in <data>/action-cwd.
 //   paddock-fake-service spawn-orphan <program> [args...]
 //       Starts <program> as the leader of a new session and exits at once, printing its pid: an orphan of
 //       launchd, like a service whose daemon died.
@@ -125,6 +129,8 @@ static int serve(int argc, char **argv) {
         strlcat(env, "\n", sizeof env);
     }
     write_file(data, "env", env);
+    char cwd[4096];
+    if (getcwd(cwd, sizeof cwd)) write_file(data, "cwd", cwd);
 
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -212,7 +218,24 @@ static int init(int argc, char **argv) {
     return write_file(argv[2], "initialised", "yes\n") == 0 ? 0 : 1;
 }
 
+static int action(char **argv) {
+    char name[4096];
+    snprintf(name, sizeof name, "made-%s", argv[3]);
+    char path[8192];
+    snprintf(path, sizeof path, "%s/%s", argv[2], name);
+    char cwd[4096];
+    if (getcwd(cwd, sizeof cwd)) write_file(argv[2], "action-cwd", cwd);
+    if (access(path, F_OK) == 0) {
+        printf("\"%s\" already exists\n", argv[3]);
+        return 1;
+    }
+    if (write_file(argv[2], name, "yes\n") != 0) return 2;
+    printf("made %s\n", argv[3]);
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc >= 4 && strcmp(argv[1], "action") == 0) return action(argv);
     if (argc >= 3 && strcmp(argv[1], "init") == 0) return init(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "serve") == 0) return serve(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "spawn-orphan") == 0) {

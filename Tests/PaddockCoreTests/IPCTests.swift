@@ -46,11 +46,13 @@ final class IPCTests: XCTestCase {
             .serviceAdd(kind: "postgres", version: "18"), .serviceAdd(kind: "mail", version: nil),
             .serviceRemove(name: "mail", deleteData: true), .serviceStart(name: "mail"), .serviceStop(name: "mail"),
             .serviceRestart(name: "mail"), .serviceCatalog, .serviceUpdate(name: "mail"),
+            .serviceCreateDatabase(name: "postgres-18", database: "shop"),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
             XCTAssertEqual(try JSONDecoder().decode(Request.self, from: data), request, "\(request)")
         }
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 7, "serviceCreateDatabase is new: the build number moves on")
     }
 
     // MARK: - What a development build may send
@@ -64,7 +66,7 @@ final class IPCTests: XCTestCase {
          .unisolate(site: "blog"), .use(version: v84), .installPHP(version: v84), .removePHP(version: v84),
          .trust, .serviceAdd(kind: "mail", version: nil), .serviceRemove(name: "mail", deleteData: false),
          .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog,
-         .serviceUpdate(name: "mail")]
+         .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop")]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -93,11 +95,12 @@ final class IPCTests: XCTestCase {
         case .serviceRestart: return "serviceRestart"
         case .serviceCatalog: return "serviceCatalog"
         case .serviceUpdate: return "serviceUpdate"
+        case .serviceCreateDatabase: return "serviceCreateDatabase"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 24, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 25, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }
@@ -132,6 +135,7 @@ final class IPCTests: XCTestCase {
             .catalog([CatalogEntry(kind: "mail", displayName: "Mail", licence: "MIT", versions: ["1.34.0"],
                                    downloadBytes: 11_224_715)]),
             .removed(dataPath: "/h/services/mail/data", status: sampleStatus()),
+            .databaseCreated(database: "shop", alreadyExisted: true, status: sampleStatus()),
         ]
         for response in responses {
             let data = try JSONEncoder().encode(response)

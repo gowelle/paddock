@@ -94,6 +94,20 @@ final class SupervisorTests: XCTestCase {
         }
     }
 
+    /// A spec's working directory is where the process (and every restart of it) runs; without one it is the
+    /// supervisor's own.
+    func testWorkingDirectory() throws {
+        supervisor = Supervisor(backoffScale: 0.01)
+        let folder = dir.appendingPathComponent("work dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var spec = shell("cwd", "pwd -P; exec sleep 60")
+        spec.workingDirectory = folder
+        try supervisor.start(spec)
+        XCTAssertTrue(waitUntil(5) { self.lines("cwd.log") == 1 })
+        let log = try String(contentsOf: dir.appendingPathComponent("cwd.log"), encoding: .utf8)
+        XCTAssertEqual(log, (ServiceManager.realPath(folder.path) ?? "?") + "\n")
+    }
+
     func testEnvironmentAndLogFile() throws {
         supervisor = Supervisor()
         try supervisor.start(shell("env", "echo \"value=$PDK_TEST\"; echo err >&2; exec sleep 60",

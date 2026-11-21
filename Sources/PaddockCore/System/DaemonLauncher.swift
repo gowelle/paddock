@@ -151,7 +151,7 @@ public struct DaemonLauncher: Sendable {
             throw DaemonLaunchError.failed(Messages.unexpectedAnswer(error))
         }
         switch response {
-        case .ok(let status), .removed(_, let status): return status
+        case .ok(let status), .removed(_, let status), .databaseCreated(_, _, let status): return status
         case .error(_, let message): throw DaemonLaunchError.failed(message)
         case .catalog: throw DaemonLaunchError.failed(Messages.unexpectedAnswer(ClientError.badResponse("a catalog")))
         }

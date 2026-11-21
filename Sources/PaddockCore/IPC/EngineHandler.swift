@@ -152,7 +152,8 @@ extension Engine {
             }
             return .ok(status())
 
-        case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog, .serviceUpdate:
+        case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog, .serviceUpdate,
+             .serviceCreateDatabase:
             return await performService(request)
         }
     }

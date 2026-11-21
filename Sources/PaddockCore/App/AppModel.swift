@@ -223,7 +223,7 @@ public final class AppModel: ObservableObject {
             shellConfigured = extras.shellConfigured
         }
         switch result {
-        case .success(.ok(let fresh)), .success(.removed(_, let fresh)):
+        case .success(.ok(let fresh)), .success(.removed(_, let fresh)), .success(.databaseCreated(_, _, let fresh)):
             status = fresh
             // Setup finished meanwhile (say, from the command line): the held ports are old news.
             if fresh.running && fresh.portHelperInstalled { setupBlockedBy = [] }
@@ -275,7 +275,7 @@ public final class AppModel: ObservableObject {
         let client = client
         let result = await Task.detached { Result { try client.send(r) } }.value
         switch result {
-        case .success(.ok(let fresh)), .success(.removed(_, let fresh)):
+        case .success(.ok(let fresh)), .success(.removed(_, let fresh)), .success(.databaseCreated(_, _, let fresh)):
             status = fresh
             lastError = nil
             if Self.isTrustRequest(r) { trustNotice = nil }
