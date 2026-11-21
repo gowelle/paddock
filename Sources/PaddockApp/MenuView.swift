@@ -22,7 +22,15 @@ struct MenuContentView: View {
             if model.isRunning {
                 MenuRow("Stop", isEnabled: !model.isBusy(.stop)) { Task { await model.stop() } }
             } else {
-                MenuRow("Start", isEnabled: !model.isBusy(.start)) { Task { await model.start() } }
+                MenuRow("Start", isEnabled: !model.isBusy(.start)) {
+                    Task { @MainActor in
+                        guard AppDelegate.isLicenseAccepted else {
+                            (NSApp.delegate as? AppDelegate)?.showLicenseAcceptance()
+                            return
+                        }
+                        await model.start()
+                    }
+                }
             }
             MenuDivider()
 

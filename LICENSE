@@ -1,21 +1,36 @@
-Paddock
+Paddock Proprietary End-User License Agreement
 Copyright (c) 2026 John Gowelle. All rights reserved.
 
-This software and its source code are proprietary. No licence is granted
-except as follows.
+This document governs Paddock's compiled application and the Paddock source
+code. Paddock and its source code are proprietary. No license is granted
+except as expressly stated below.
 
 Permission is granted to install and use the compiled Paddock application
 free of charge, for any purpose, on any number of computers you own or
 control.
 
-You may not copy, redistribute, sublicense, sell, rent or lease Paddock or
-any part of it, and you may not modify, decompile, disassemble or create
-derivative works of it, except where applicable law expressly permits this
-despite this restriction.
+You may make a reasonable number of copies of the compiled application solely
+for personal backup, archival, reinstallation, or recovery on computers you
+own or control. You may not distribute those copies or otherwise redistribute,
+sublicense, sell, rent or lease Paddock or any part of it. You may not modify,
+decompile, disassemble or create derivative works of Paddock, except where
+applicable law expressly permits this despite this restriction.
 
 Third-party components bundled with Paddock are licensed to you under their
-own terms, listed in THIRD-PARTY-NOTICES. Nothing in this licence restricts
-your rights under those terms.
+own terms, listed in THIRD-PARTY-NOTICES. Nothing in this license restricts
+rights granted to you under those third-party terms, including applicable
+rights to corresponding source for GPL components and, for LGPL components,
+the source and the relinking materials those licenses require. THIRD-PARTY-NOTICES
+states where to obtain them.
+The Paddock license grants no ownership interest in or license to third-party
+components.
+
+No source-code license is granted merely by making build recipes or source
+links available. The Paddock source remains proprietary unless it is
+distributed separately under an identified license or an applicable contribution
+agreement. Nothing in this document is a license to submit or contribute
+code; contributions remain subject to any separate terms agreed with the
+owner.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

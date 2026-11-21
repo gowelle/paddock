@@ -38,8 +38,54 @@ struct PaddockApp: App {
     }
 }
 
+struct LicenseAcceptanceView: View {
+    var onAccept: () -> Void
+    var onDecline: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Paddock License Agreement")
+                .font(.title2.weight(.heavy))
+            Text("Review the license before using Paddock.")
+                .foregroundStyle(Theme.inkMuted)
+            ScrollView {
+                Text(AboutView.license)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .frame(height: 380)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
+            HStack {
+                Spacer()
+                Button("Decline") {
+                    onDecline()
+                }
+                Button("Accept") {
+                    onAccept()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
+        .foregroundStyle(Theme.ink)
+        .background(Theme.ground)
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static let licenseAcceptedKey = "PaddockLicenseAccepted-v1"
+
+    static var isLicenseAccepted: Bool {
+        UserDefaults.standard.bool(forKey: licenseAcceptedKey)
+    }
+
+    private var licenseWindow: NSWindow?
     static let model: AppModel = {
         let manifest = (try? PHPManifest.bundled())?.builds.map(\.version) ?? []
         return AppModel(client: PaddockClient(), services: LiveAppServices(), quitter: AppKitQuitter(),
@@ -47,8 +93,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // First launch (and every launch): start Paddock exactly as `paddock start` does. No windows.
-        Task { await Self.model.launch() }
+        if UserDefaults.standard.bool(forKey: Self.licenseAcceptedKey) {
+            // Every accepted launch: start Paddock exactly as `paddock start` does.
+            Task { await Self.model.launch() }
+        } else {
+            showLicenseAcceptance()
+        }
+    }
+
+    func showLicenseAcceptance() {
+        if let licenseWindow, licenseWindow.isVisible {
+            activateApp()
+            licenseWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        activateApp()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Paddock License Agreement"
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.contentViewController = NSHostingController(
+            rootView: LicenseAcceptanceView(
+                onAccept: { [weak self, weak window] in
+                    guard let self else { return }
+                    UserDefaults.standard.set(true, forKey: Self.licenseAcceptedKey)
+                    window?.close()
+                    self.licenseWindow = nil
+                    Task { await Self.model.launch() }
+                },
+                onDecline: {
+                    NSApplication.shared.terminate(nil)
+                }
+            )
+        )
+        licenseWindow = window
+        window.makeKeyAndOrderFront(nil)
+        activateApp()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
