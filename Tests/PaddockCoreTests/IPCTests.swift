@@ -53,6 +53,7 @@ final class IPCTests: XCTestCase {
             XCTAssertEqual(try JSONDecoder().decode(Request.self, from: data), request, "\(request)")
         }
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 7, "serviceCreateDatabase is new: the build number moves on")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 8, "ServiceStatus.notes is new: the build number moves on")
     }
 
     // MARK: - What a development build may send

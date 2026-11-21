@@ -319,6 +319,19 @@ final class ServiceCatalogValidationTests: XCTestCase {
         assertRejected([ready(RecipeCommand(executable: "{bin}/x", stdin: "x"))], "stdin")
     }
 
+    /// Notes are short sentences shown beside the service: printable, a few at most.
+    func testNotesAreShortPrintableSentences() {
+        func noted(_ notes: [String]) -> ServiceRecipe {
+            ServiceRecipe(kind: "sample", displayName: "Sample", version: "1.0", licence: "MIT", assets: [],
+                          start: RecipeCommand(executable: "{bin}/s"), ready: .tcp(port: "{port.main}"),
+                          ports: [RecipePort(name: "main", preferred: 4000)], notes: notes)
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([noted(["Includes PostGIS 3.6.4 (no raster or topology)."])]))
+        for bad in [[""], ["a\nb"], ["\u{1B}[31mred"], [String(repeating: "x", count: 121)], ["a", "b", "c", "d", "e"]] {
+            assertRejected([noted(bad)], "note")
+        }
+    }
+
     /// Decoding a catalog validates it, so a bad bundled, hosted or development catalog never loads.
     func testDecodingValidates() throws {
         let bad = ServiceCatalog(recipes: [valid(stopSignal: "KILL")])

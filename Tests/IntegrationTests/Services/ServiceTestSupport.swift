@@ -46,7 +46,7 @@ enum FakeService {
                        ready: Readiness = .tcp(port: "{port.main}"), stopSignal: String = "TERM",
                        configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
                        actions: [String: RecipeAction] = [:], lockFiles: [String] = [],
-                       stopGraceSeconds: Int = 5) -> ServiceRecipe {
+                       stopGraceSeconds: Int = 5, notes: [String] = []) -> ServiceRecipe {
         var arguments = ["serve", "{data}"]
         for port in ports { arguments += ["--port", "{port.\(port.name)}"] }
         arguments += ["--socket", "{socket}", "--name", "{name}"] + extraArguments
@@ -61,7 +61,7 @@ enum FakeService {
             env: ["FAKE_HOST=127.0.0.1", "FAKE_PORT={port.main}", "FAKE_SOCKET={socket}"],
             openURL: "http://127.0.0.1:{port.main}", configFiles: configFiles,
             readyTimeoutSeconds: readyTimeoutSeconds, initialiseTimeoutSeconds: initialiseTimeoutSeconds,
-            actions: actions, lockFiles: lockFiles)
+            actions: actions, lockFiles: lockFiles, notes: notes)
     }
 
     /// Like createdb: `action <data> <database>` makes `made-<database>` in the data folder, and says
@@ -127,6 +127,14 @@ enum ServiceDownloadCache {
     /// The artifact as a `file://` URL in the cache, downloading it there (verified) first if it isn't
     /// cached; skips the test when it is neither cached nor downloadable.
     static func local(_ artifact: Artifact) async throws -> Artifact {
+        // Paddock's own builds (the PostGIS add-on) come from Vendor/builds/, as in a development home.
+        if artifact.url.scheme == BuildSource.scheme {
+            guard BuildSource.resolve(artifact.url) != nil else {
+                throw XCTSkip("\(BuildSource.fileName(artifact.url) ?? "?") is not in Vendor/builds/; build it with "
+                              + "Scripts/build-postgis.sh (or copy the archive there)")
+            }
+            return artifact
+        }
         let cached = directory.appendingPathComponent("\(artifact.sha256.lowercased())-\(artifact.url.lastPathComponent)")
         if !FileManager.default.fileExists(atPath: cached.path) {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

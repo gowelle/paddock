@@ -306,6 +306,8 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     public let actions: [String: RecipeAction]
     /// Files whose first line is the pid of the process holding them (PostgreSQL's `postmaster.pid`).
     public let lockFiles: [String]
+    /// Short sentences shown beside the service (`Includes PostGIS 3.6.4 (no raster or topology).`).
+    public let notes: [String]
 
     public static let defaultInitialiseTimeout: TimeInterval = 120
 
@@ -314,7 +316,8 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                 start: RecipeCommand, ready: Readiness, stopSignal: String = "TERM", stopGraceSeconds: Int = 10,
                 ports: [RecipePort], socket: String? = nil, env: [String] = [], openURL: String? = nil,
                 needsPHP: Bool = false, configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
-                initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:], lockFiles: [String] = []) {
+                initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:], lockFiles: [String] = [],
+                notes: [String] = []) {
         self.kind = kind
         self.displayName = displayName
         self.version = version
@@ -338,12 +341,13 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         self.initialiseTimeoutSeconds = initialiseTimeoutSeconds
         self.actions = actions
         self.lockFiles = lockFiles
+        self.notes = notes
     }
 
     private enum CodingKeys: String, CodingKey {
         case kind, displayName, version, series, seriesInID, licence, minimumMacOS, assets, initialise, start, ready
         case stopSignal, stopGraceSeconds, ports, socket, env, openURL, needsPHP, configFiles, readyTimeoutSeconds
-        case initialiseTimeoutSeconds, actions, lockFiles
+        case initialiseTimeoutSeconds, actions, lockFiles, notes
     }
 
     public init(from decoder: Decoder) throws {
@@ -371,6 +375,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         initialiseTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .initialiseTimeoutSeconds)
         actions = try c.decodeIfPresent([String: RecipeAction].self, forKey: .actions) ?? [:]
         lockFiles = try c.decodeIfPresent([String].self, forKey: .lockFiles) ?? []
+        notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
     }
 
     /// The signal `stopSignal` names; SIGTERM for anything else.
@@ -408,6 +413,6 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                       start: start, ready: ready, stopSignal: stopSignal, stopGraceSeconds: stopGraceSeconds,
                       ports: ports, socket: socket, env: env, openURL: openURL, needsPHP: needsPHP,
                       configFiles: configFiles, readyTimeoutSeconds: readyTimeoutSeconds,
-                      initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions, lockFiles: lockFiles)
+                      initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions, lockFiles: lockFiles, notes: notes)
     }
 }

@@ -375,20 +375,29 @@ public final class ServiceManager: @unchecked Sendable {
         catalog.recipe(kind: instance.kind, series: instance.series)
     }
 
-    /// The recipe the instance's installed binaries run with: the stored one, validated. An invalid stored
-    /// recipe is never used (and logged once); a missing or invalid one is replaced by the catalog's recipe of
-    /// exactly that version when its binaries are installed (installs made before recipes were stored), so
-    /// later catalog changes don't strand the instance. Nil when there is nothing safe to run.
+    /// The recipe the instance's installed binaries run with. The catalog's recipe of exactly that version
+    /// comes first when its downloads are exactly the installed ones (the same build, described anew: lock
+    /// files, readiness, notes); it is stored in place of the old description. Otherwise the stored one,
+    /// validated. An invalid stored recipe is never used (and logged once); a missing or invalid one is
+    /// replaced by the catalog's recipe of exactly that version when its binaries are installed (installs made
+    /// before recipes were stored), so later catalog changes don't strand the instance. Nil when there is
+    /// nothing safe to run.
     private func installedRecipe(_ instance: ServiceInstance) -> ServiceRecipe? {
-        switch installer.storedRecipe(kind: instance.kind, version: instance.version) {
-        case .valid(let recipe):
-            return recipe
-        case .invalid(let reason):
+        let stored = installer.storedRecipe(kind: instance.kind, version: instance.version)
+        if case .invalid(let reason) = stored {
             reportOnce("recipe:\(instance.kind)/\(instance.version)",
                        "not using the stored recipe of \(instance.kind) \(instance.version): \(reason)")
-        case .none:
-            break
         }
+        if let recipe = catalog.recipes(of: instance.kind).first(where: { $0.version == instance.version }),
+           installer.isInstalled(recipe) {
+            if stored != .valid(recipe) {
+                do { try installer.storeRecipe(recipe) } catch {
+                    log("could not store the recipe of \(recipe.kind) \(recipe.version): \(error.localizedDescription)")
+                }
+            }
+            return recipe
+        }
+        if case .valid(let recipe) = stored { return recipe }
         guard let recipe = catalog.recipes(of: instance.kind).first(where: { $0.version == instance.version }),
               installer.isInstalled(recipe) else { return nil }
         do { try installer.storeRecipe(recipe) } catch {
@@ -672,7 +681,9 @@ public final class ServiceManager: @unchecked Sendable {
             throw ServiceError.unavailable(name: instance.name,
                                            reason: "this copy of Paddock offers no \(instance.kind) \(instance.series)")
         }
-        if installedRecipe(instance) != nil, !ServiceCatalog.isNewer(latest.version, than: instance.version) {
+        // Up to date unless newer, or the same version with a download it doesn't have yet (an add-on).
+        if installedRecipe(instance) != nil, !ServiceCatalog.isNewer(latest.version, than: instance.version),
+           latest.version != instance.version || installer.isInstalled(latest) {
             return instance
         }
         do {
@@ -833,8 +844,9 @@ public final class ServiceManager: @unchecked Sendable {
         let current = installedRecipe(instance)
         var target = forcing ?? current
         if forcing == nil, let latest = latest(instance), latest.version != instance.skippedVersion,
-           current == nil || ServiceCatalog.isNewer(latest.version, than: instance.version),
-           installer.isInstalled(latest) || installer.isLocallyAvailable(latest) {
+           current == nil || ServiceCatalog.isNewer(latest.version, than: instance.version)
+               || (latest.version == instance.version && !installer.isInstalled(latest)),
+           installer.isInstalled(latest) || installer.canInstallLocally(latest) {
             installLock.lock()
             do {
                 try installer.installLocally(latest)
@@ -1253,7 +1265,7 @@ public final class ServiceManager: @unchecked Sendable {
     /// The catalog as clients see it, saying which series would download when added.
     public func catalogEntries() -> [CatalogEntry] {
         catalog.kinds(needsDownload: { [installer] recipe in
-            !recipe.assets.isEmpty && !installer.isInstalled(recipe) && !installer.isLocallyAvailable(recipe)
+            !recipe.assets.isEmpty && !installer.isInstalled(recipe) && !installer.canInstallLocally(recipe)
         })
     }
 
@@ -1308,7 +1320,7 @@ public final class ServiceManager: @unchecked Sendable {
             displayName: recipe?.displayName ?? instance.kind, state: state, ports: instance.ports, env: env,
             openURL: openURL, dataPath: paths.serviceData(instance.id).path, autostart: instance.autostart,
             mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: notice ?? skipped,
-            updateAvailable: update, series: instance.series)
+            updateAvailable: update, series: instance.series, notes: recipe?.notes)
     }
 
     // MARK: - Templates and folders

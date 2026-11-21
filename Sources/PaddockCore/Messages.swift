@@ -401,9 +401,12 @@ public enum Messages {
     }
 
     /// Columns: service name, state, ports.
+    /// Columns: service name, state, ports; then each service's notes, one line each, after a blank line.
     public static func serviceTable(_ services: [ServiceStatus]) -> String {
-        table([["SERVICE", "STATE", "PORTS"]]
-              + services.map { [$0.name, serviceState($0.state), servicePorts($0)] })
+        let rows = table([["SERVICE", "STATE", "PORTS"]]
+                         + services.map { [$0.name, serviceState($0.state), servicePorts($0)] })
+        let notes = services.flatMap { service in (service.notes ?? []).map { "\(service.name): \(printable($0) ?? "")" } }
+        return notes.isEmpty ? rows : rows + "\n\n" + notes.joined(separator: "\n")
     }
 
     /// Columns: kind, name, series (newest first), licence, the newest series' download size (`none` for a

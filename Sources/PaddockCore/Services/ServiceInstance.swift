@@ -160,10 +160,13 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
     public let updateAvailable: String?
     /// Its series (`18`); nil from an older daemon.
     public let series: String?
+    /// Its recipe's notes (`Includes PostGIS 3.6.4 (no raster or topology).`); nil from an older daemon.
+    public let notes: [String]?
 
     public init(id: String, name: String, kind: String, version: String, displayName: String, state: ServiceState,
                 ports: [String: Int], env: [String], openURL: String?, dataPath: String, autostart: Bool,
-                mainPort: Int?, notice: String? = nil, updateAvailable: String? = nil, series: String? = nil) {
+                mainPort: Int?, notice: String? = nil, updateAvailable: String? = nil, series: String? = nil,
+                notes: [String]? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -179,6 +182,7 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
         self.notice = notice
         self.updateAvailable = updateAvailable
         self.series = series
+        self.notes = notes
     }
 }
 

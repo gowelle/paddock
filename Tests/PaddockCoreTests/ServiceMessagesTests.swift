@@ -18,6 +18,21 @@ final class ServiceMessagesTests: XCTestCase {
                        "9500 (main), 8000 (b), 9000 (a)", "the main port first, then by number")
     }
 
+    /// A service's notes follow the table, one line each, named.
+    func testServiceTableWithNotes() {
+        let plain = status(.running)
+        let noted = ServiceStatus(id: "postgres-18", name: "PostgreSQL 18", kind: "postgres", version: "18.7.0",
+                                  displayName: "PostgreSQL", state: .running, ports: ["main": 5432], env: [], openURL: nil,
+                                  dataPath: "/d", autostart: true, mainPort: 5432,
+                                  notes: ["Includes PostGIS 3.6.4 (no raster or topology)."])
+        XCTAssertEqual(Messages.serviceTable([plain, noted]),
+                       Messages.serviceTable([plain, ServiceStatus(id: "postgres-18", name: "PostgreSQL 18", kind: "postgres",
+                                                                   version: "18.7.0", displayName: "PostgreSQL", state: .running,
+                                                                   ports: ["main": 5432], env: [], openURL: nil, dataPath: "/d",
+                                                                   autostart: true, mainPort: 5432)])
+                       + "\n\nPostgreSQL 18: Includes PostGIS 3.6.4 (no raster or topology).")
+    }
+
     func testStates() {
         XCTAssertEqual([ServiceState.running, .starting, .stopped, .crashed, .portInUse(holder: "Herd"),
                         .unavailable(reason: "no PHP")].map(Messages.serviceState),

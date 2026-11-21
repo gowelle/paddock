@@ -219,6 +219,83 @@ final class ServiceInstallerTests: XCTestCase {
         return data
     }
 
+    // MARK: - Several assets in one folder
+
+    private func asset(_ name: String, _ entries: [Entry]) throws -> RecipeAsset {
+        let file = scratch.appendingPathComponent(name)
+        try Self.tar(entries).write(to: file)
+        return RecipeAsset(artifact: Artifact(url: file, sha256: try sha256(file)), archive: "tar.gz")
+    }
+
+    private var base: [Entry] { [.file("bin/tool", "tool"), .file("lib/libtool.dylib", "lib"), .file("share/a.txt", "a")] }
+
+    /// A later asset (PostGIS over PostgreSQL) adds files beside an earlier one's.
+    func testALaterAssetAddsFilesBesideTheEarlierOnes() async throws {
+        let recipe = recipe([try asset("base.tar.gz", base),
+                             try asset("addon.tar.gz", [.file("lib/libextra.dylib", "extra"), .file("share/ext/x.sql", "x")])])
+        let bin = try await ServiceInstaller(paths: paths).install(recipe)
+        for (file, text) in [("bin/tool", "tool"), ("lib/libtool.dylib", "lib"), ("lib/libextra.dylib", "extra"),
+                             ("share/ext/x.sql", "x"), ("share/a.txt", "a")] {
+            XCTAssertEqual(try String(contentsOf: bin.appendingPathComponent(file), encoding: .utf8), text, file)
+        }
+    }
+
+    /// No asset may replace a file another asset installed: the install fails and nothing is kept.
+    func testALaterAssetMayNotOverwriteAnEarlierOnesFile() async throws {
+        let recipe = recipe([try asset("base.tar.gz", base), try asset("addon.tar.gz", [.file("bin/tool", "evil")])])
+        do {
+            try await ServiceInstaller(paths: paths).install(recipe)
+            XCTFail("installed")
+        } catch let error as ServiceInstallError {
+            guard case .unpackFailed(let reason) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(reason.contains("bin/tool"), reason)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.serviceBin(kind: "tool", version: "1.2").path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: paths.home.path)
+            .filter { $0.hasPrefix(".service-install-") }, [])
+    }
+
+    /// An earlier asset's symlink is never a way for a later one to write elsewhere.
+    func testALaterAssetCannotWriteThroughASymlink() async throws {
+        let outside = scratch.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let recipe = recipe([try asset("base.tar.gz", [.file("bin/tool", "tool"), .symlink("lib", outside.path)]),
+                             try asset("addon.tar.gz", [.file("lib/evil.dylib", "evil")])])
+        do {
+            try await ServiceInstaller(paths: paths).install(recipe)
+            XCTFail("installed")
+        } catch let error as ServiceInstallError {
+            guard case .unpackFailed = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
+    }
+
+    /// An install made before the recipe gained a later asset is completed from its own files and the new
+    /// asset alone: the earlier download isn't needed again (it may not even be reachable).
+    func testAnInstallMissingALaterAssetIsCompletedFromItsOwnFiles() async throws {
+        let first = try asset("base.tar.gz", base)
+        let installer = ServiceInstaller(paths: paths)
+        let older = recipe([first])
+        let bin = try await installer.install(older)
+        try FileManager.default.removeItem(at: first.artifact.url)
+        let newer = recipe([first, try asset("addon.tar.gz", [.file("lib/libextra.dylib", "extra")])])
+        XCTAssertFalse(installer.isInstalled(newer))
+        XCTAssertFalse(installer.isLocallyAvailable(newer), "the first download is gone")
+        XCTAssertTrue(installer.canInstallLocally(newer), "but its files are installed")
+        try installer.installLocally(newer)
+        XCTAssertTrue(installer.isInstalled(newer))
+        XCTAssertEqual(installer.installedRecipe(kind: "tool", version: "1.2"), newer)
+        XCTAssertEqual(try String(contentsOf: bin.appendingPathComponent("bin/tool"), encoding: .utf8), "tool")
+        XCTAssertEqual(try String(contentsOf: bin.appendingPathComponent("lib/libextra.dylib"), encoding: .utf8), "extra")
+        // An unrelated install (different first asset) is not "completed": it is replaced as before.
+        let other = recipe([try asset("other.tar.gz", [.file("bin/tool", "other")]), newer.assets[1]])
+        XCTAssertFalse(installer.canInstallLocally(recipe([RecipeAsset(
+            artifact: Artifact(url: URL(string: "https://example.invalid/o.tar.gz")!, sha256: "00"), archive: "tar.gz"),
+            newer.assets[1]])))
+        try await installer.install(other)
+        XCTAssertEqual(try String(contentsOf: bin.appendingPathComponent("bin/tool"), encoding: .utf8), "other")
+    }
+
     func testStaleStagingIsRemoved() throws {
         let stale = paths.home.appendingPathComponent(".service-install-\(UUID().uuidString)", isDirectory: true)
         let other = paths.home.appendingPathComponent(".service-install-notauuid", isDirectory: true)

@@ -109,6 +109,31 @@ public final class ServiceInstaller: Sendable {
         }
     }
 
+    /// How many of the recipe's assets are already installed: an install made from exactly its first assets
+    /// (before the recipe gained a later one, such as PostGIS over PostgreSQL), which can be completed from
+    /// its own files. Zero when nothing, or something else, is installed.
+    private func installedPrefix(_ recipe: ServiceRecipe) -> Int {
+        guard let installed = installedRecord(kind: recipe.kind, version: recipe.version) else { return 0 }
+        let wanted = record(of: recipe).sha256
+        guard !installed.sha256.isEmpty, installed.sha256.count < wanted.count,
+              Array(wanted.prefix(installed.sha256.count)) == installed.sha256 else { return 0 }
+        return installed.sha256.count
+    }
+
+    /// Whether the recipe can be installed without the network: every download is a file on this Mac, or
+    /// its first assets are installed already and the rest are.
+    public func canInstallLocally(_ recipe: ServiceRecipe) -> Bool {
+        if isLocallyAvailable(recipe) { return true }
+        let installed = installedPrefix(recipe)
+        guard installed > 0 else { return false }
+        return recipe.assets.dropFirst(installed).allSatisfy { asset in
+            guard let source = BuildSource.resolve(asset.artifact.url, environment: environment), source.isFileURL else {
+                return false
+            }
+            return FileManager.default.fileExists(atPath: source.path)
+        }
+    }
+
     /// The recipe's `{bin}` folder, installing it first if needed. Cancelling the calling task stops the
     /// download and throws `CancellationError`.
     @discardableResult
@@ -117,9 +142,10 @@ public final class ServiceInstaller: Sendable {
         if isInstalled(recipe) { return target }
         let staging = try makeStaging()
         defer { try? FileManager.default.removeItem(at: staging) }
+        let installed = installedPrefix(recipe)
         // Every download is verified before any is unpacked.
         var files: [URL] = []
-        for asset in recipe.assets {
+        for asset in recipe.assets.dropFirst(installed) {
             try Task.checkCancellation()
             do {
                 files.append(try await downloader.fetch(asset.artifact, into: staging, progress: nil))
@@ -128,25 +154,26 @@ public final class ServiceInstaller: Sendable {
             }
         }
         try Task.checkCancellation()
-        return try assemble(recipe, files: files, staging: staging)
+        return try assemble(recipe, files: files, staging: staging, installed: installed)
     }
 
-    /// Installs from files already on this Mac only (`isLocallyAvailable`); never touches the network.
+    /// Installs from files already on this Mac only (`canInstallLocally`); never touches the network.
     @discardableResult
     public func installLocally(_ recipe: ServiceRecipe) throws -> URL {
         let target = paths.serviceBin(kind: recipe.kind, version: recipe.version)
         if isInstalled(recipe) { return target }
         let staging = try makeStaging()
         defer { try? FileManager.default.removeItem(at: staging) }
+        let installed = installedPrefix(recipe)
         var files: [URL] = []
-        for asset in recipe.assets {
+        for asset in recipe.assets.dropFirst(installed) {
             do {
                 files.append(try downloader.fetchLocal(asset.artifact, into: staging))
             } catch let error as ArtifactError {
                 throw Self.installError(error, asset)
             }
         }
-        return try assemble(recipe, files: files, staging: staging)
+        return try assemble(recipe, files: files, staging: staging, installed: installed)
     }
 
     /// Deletes an installed version's folder (fine if it is absent).
@@ -170,15 +197,27 @@ public final class ServiceInstaller: Sendable {
     }
 
     /// Unpacks verified downloads into `staging/stage` with the record and the recipe, and moves that into
-    /// place in one step (swapping out an unfinished or different install).
-    private func assemble(_ recipe: ServiceRecipe, files: [URL], staging: URL) throws -> URL {
+    /// place in one step (swapping out an unfinished or different install). Each asset is unpacked on its own
+    /// and merged in: no asset may replace a file (or a symlink) another one put there, nor write through
+    /// one. With `installed` > 0, the stage starts as a copy (a clone, on APFS) of the install made from the
+    /// recipe's first `installed` assets, and `files` are the rest.
+    private func assemble(_ recipe: ServiceRecipe, files: [URL], staging: URL, installed: Int = 0) throws -> URL {
         let fm = FileManager.default
         let target = paths.serviceBin(kind: recipe.kind, version: recipe.version)
         let stage = staging.appendingPathComponent("stage", isDirectory: true)
-        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
-        for (asset, file) in zip(recipe.assets, files) {
-            try unpack(asset, file: file, into: stage)
+        if installed > 0 {
+            try Self.cloneTree(target, to: stage)
+            for name in [Self.recordName, Self.recipeName] { try? fm.removeItem(at: stage.appendingPathComponent(name)) }
+        } else {
+            try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        }
+        for (index, (asset, file)) in zip(recipe.assets.dropFirst(installed), files).enumerated() {
+            let unpacked = staging.appendingPathComponent("asset-\(index)", isDirectory: true)
+            try fm.createDirectory(at: unpacked, withIntermediateDirectories: true)
+            try unpack(asset, file: file, into: unpacked)
             try? fm.removeItem(at: file)
+            try Self.merge(unpacked, into: stage, relative: "")
+            try? fm.removeItem(at: unpacked)
         }
         Self.removeQuarantine(under: stage)
         try JSONEncoder().encode(record(of: recipe)).write(to: stage.appendingPathComponent(Self.recordName))
@@ -196,6 +235,41 @@ public final class ServiceInstaller: Sendable {
             try fm.moveItem(at: stage, to: target)
         }
         return target
+    }
+
+    /// Moves everything under `source` into `destination`: folders are merged (a destination folder must be
+    /// a real folder, never a symlink to one), and any other entry must not exist there yet.
+    static func merge(_ source: URL, into destination: URL, relative: String) throws {
+        let fm = FileManager.default
+        for name in try fm.contentsOfDirectory(atPath: source.path).sorted() {
+            let from = source.appendingPathComponent(name)
+            let to = destination.appendingPathComponent(name)
+            let path = relative.isEmpty ? name : "\(relative)/\(name)"
+            var fromInfo = stat()
+            guard lstat(from.path, &fromInfo) == 0 else { continue }
+            var toInfo = stat()
+            let exists = lstat(to.path, &toInfo) == 0
+            if (fromInfo.st_mode & S_IFMT) == S_IFDIR {
+                if !exists {
+                    try fm.moveItem(at: from, to: to)
+                } else if (toInfo.st_mode & S_IFMT) == S_IFDIR {
+                    try merge(from, into: to, relative: path)
+                } else {
+                    throw ServiceInstallError.unpackFailed(reason: "two downloads both provide \(path)")
+                }
+            } else {
+                guard !exists else { throw ServiceInstallError.unpackFailed(reason: "two downloads both provide \(path)") }
+                try fm.moveItem(at: from, to: to)
+            }
+        }
+    }
+
+    /// A copy of an installed tree (a clone of every file on APFS, so it costs no space or time).
+    static func cloneTree(_ source: URL, to destination: URL) throws {
+        let failed = source.withUnsafeFileSystemRepresentation { from in
+            destination.withUnsafeFileSystemRepresentation { to in clonefile(from!, to!, UInt32(CLONE_NOFOLLOW)) != 0 }
+        }
+        if failed { try FileManager.default.copyItem(at: source, to: destination) }
     }
 
     /// Deletes staging folders an interrupted install left in the home. Only call it when no install runs.

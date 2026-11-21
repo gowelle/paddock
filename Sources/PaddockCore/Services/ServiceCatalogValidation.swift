@@ -53,6 +53,11 @@ extension ServiceCatalog {
             throw fail("the \(field) \"\(value)\" must be lowercase letters, digits, dots and dashes, without \"..\"")
         }
 
+        guard recipe.notes.count <= 4, recipe.notes.allSatisfy({
+            (1...120).contains($0.count) && Messages.displayName($0, limit: 120) == $0
+        }) else {
+            throw fail("a note must be 1 to 120 printable characters, and there may be at most 4")
+        }
         if let minimum = recipe.minimumMacOS, ServiceManager.versionNumbers(minimum) == nil {
             throw fail("minimumMacOS \"\(minimum)\" must be a macOS version such as 15.0")
         }
