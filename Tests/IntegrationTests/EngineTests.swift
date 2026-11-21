@@ -338,7 +338,7 @@ final class EngineTests: XCTestCase {
         return (CertificateTrust(paths: paths, runner: runner), runner)
     }
 
-        func testSecuredSiteServesHttpsFromCaddyLocalAuthority() async throws {
+        func testSecuredSiteServesHttpsFromPaddockLocalAuthority() async throws {
         let (trust, runner) = fakeTrust()
         try startEngine(trust: trust)
         let response = await engine!.handle(.secure(site: "plain-php"))
@@ -347,7 +347,7 @@ final class EngineTests: XCTestCase {
         let https = try curlHTTPS("plain-php.test", "/")
         XCTAssertEqual(https.status, 200, https.verbose)
         XCTAssertTrue(https.body.hasPrefix("plain:8.5"), https.body)
-        XCTAssertTrue(https.verbose.contains("Caddy Local Authority"), https.verbose)
+        XCTAssertTrue(https.verbose.contains("Paddock Local Authority - Intermediate"), https.verbose)
         let sub = try curlHTTPS("api.plain-php.test", "/")
         XCTAssertEqual(sub.status, 200, sub.verbose)
         XCTAssertTrue(sub.body.hasPrefix("plain:8.5"), sub.body)
@@ -421,6 +421,85 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(response, .error(code: ErrorCode.needsTrust, message:
             "Paddock's web server hasn't created its certificate yet. Try again in a moment with: paddock trust"))
         XCTAssertTrue(runner.calls.isEmpty, "\(runner.calls)")
+    }
+
+    /// Paddock's CA has its own names, so browsers can't mistake another Caddy-based tool's root for it.
+    func testSecuredSiteChainsToPaddocksOwnNamedRoot() async throws {
+        let (trust, _) = fakeTrust()
+        try startEngine(trust: trust)
+        _ = await engine!.handle(.secure(site: "plain-php"))
+        let local = paths.caddyData.appendingPathComponent("pki/authorities/local")
+        XCTAssertEqual(try subjectAndIssuer(local.appendingPathComponent("root.crt")),
+                       "subject=CN=Paddock Local Authority - Root\nissuer=CN=Paddock Local Authority - Root")
+        XCTAssertEqual(try subjectAndIssuer(local.appendingPathComponent("intermediate.crt")),
+                       "subject=CN=Paddock Local Authority - Intermediate\nissuer=CN=Paddock Local Authority - Root")
+        let leaf = paths.caddyData.appendingPathComponent("certificates/local/plain-php.test/plain-php.test.crt")
+        XCTAssertTrue(try subjectAndIssuer(leaf).hasSuffix("issuer=CN=Paddock Local Authority - Intermediate"))
+
+        // Verified against Paddock's root alone (no -k): the served chain leads to it.
+        let verified = try curlHTTPS("plain-php.test", "/", trustingOnly: trust.rootCertificate)
+        XCTAssertEqual(verified.status, 200, verified.verbose)
+        XCTAssertTrue(verified.body.hasPrefix("plain:8.5"), verified.body)
+        XCTAssertEqual(engine!.status().needsTrust, false, "the fake keychain trusts it")
+    }
+
+    /// A home whose CA Caddy created under its default names (before Paddock named its own): the next
+    /// start removes the old root's trust, deletes the old CA and its certificates, and says so once.
+    func testStartReplacesADefaultNamedAuthorityAndAsksForTrustAgain() async throws {
+        try StateStore(paths: paths).update { $0.secured = ["plain-php"] }
+        let old = Engine.development(paths: paths, settings: settings)
+        old.namesCertificateAuthority = false
+        self.engine = old
+        try old.start()
+        XCTAssertEqual(try curlHTTPS("plain-php.test", "/").status, 200)
+        let root = CertificateTrust(paths: paths, runner: RecordingCommandRunner()).rootCertificate
+        let oldName = try XCTUnwrap(CertificateTrust.commonName(ofCertificateAt: root))
+        XCTAssertTrue(oldName.hasPrefix("Caddy Local Authority"), oldName)
+        old.shutdown()
+
+        // The old root is trusted; removing its trust is recorded with the name it had at that moment.
+        let trusted = LockedBox(true)
+        let removed = LockedBox<[String?]>([])
+        let runner = RecordingCommandRunner { _, arguments in
+            switch arguments.first {
+            case "verify-cert": return (trusted.value ? 0 : 1, "")
+            case "remove-trusted-cert":
+                removed.value.append(CertificateTrust.commonName(ofCertificateAt: URL(fileURLWithPath: arguments[1])))
+                trusted.value = false
+                return (0, "")
+            case "add-trusted-cert": trusted.value = true; return (0, "")
+            default: return (1, "unexpected")
+            }
+        }
+        let logged = LockedBox<[String]>([])
+        let engine = Engine.development(paths: paths, settings: settings,
+                                        trust: CertificateTrust(paths: paths, runner: runner),
+                                        log: { logged.value.append($0) })
+        self.engine = engine
+        try engine.start()
+        XCTAssertEqual(removed.value, [oldName], "untrust ran exactly once, for the old root")
+        XCTAssertEqual(logged.value.filter { $0.contains("renamed") },
+                       ["the certificate authority was renamed to Paddock Local Authority; "
+                        + "secured sites need trusting again (run paddock trust)"])
+
+        let verified = try curlHTTPS("plain-php.test", "/", trustingOnly: root)
+        XCTAssertEqual(verified.status, 200, verified.verbose)
+        XCTAssertEqual(CertificateTrust.commonName(ofCertificateAt: root), "Paddock Local Authority - Root")
+
+        // Until the owner trusts the new root, status says so.
+        let deadline = Date().addingTimeInterval(10)
+        while !engine.status().needsTrust && Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+        XCTAssertTrue(engine.status().needsTrust)
+        let response = await engine.handle(.trust)
+        guard case .ok(let status) = response else { return XCTFail("\(response)") }
+        XCTAssertFalse(status.needsTrust)
+        XCTAssertFalse(engine.status().needsTrust)
+
+        // Nothing to replace on the next start.
+        engine.stop()
+        try engine.start()
+        XCTAssertEqual(removed.value.count, 1)
+        XCTAssertEqual(CertificateTrust.commonName(ofCertificateAt: root), "Paddock Local Authority - Root")
     }
 
     func testSecureWithoutTrustObjectBehavesAsBefore() async throws {
@@ -512,6 +591,28 @@ final class EngineTests: XCTestCase {
             if result.status != 0 || Date() >= deadline { return result }
             Thread.sleep(forTimeInterval: 0.2)
         }
+    }
+
+    /// HTTPS verified against `root` only (curl's `--cacert`), retried like `curlHTTPS`.
+    private func curlHTTPS(_ host: String, _ path: String, trustingOnly root: URL) throws -> CurlResult {
+        let port = settings.httpsPort
+        let deadline = Date().addingTimeInterval(10)
+        while true {
+            let result = try curl(["--cacert", root.path, "--resolve", "\(host):\(port):127.0.0.1",
+                                   "https://\(host):\(port)\(path)"])
+            if result.status != 0 || Date() >= deadline { return result }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+    }
+
+    /// `openssl x509 -noout -subject -issuer` for a PEM certificate, as `subject=CN=…` lines (LibreSSL's
+    /// `subject= /CN=…` normalized).
+    private func subjectAndIssuer(_ certificate: URL) throws -> String {
+        let result = try SystemCommandRunner().run("/usr/bin/openssl",
+                                                   ["x509", "-noout", "-subject", "-issuer", "-in", certificate.path])
+        XCTAssertEqual(result.status, 0, result.output)
+        return result.output.replacingOccurrences(of: "= /", with: "=")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// A request straight to one of Caddy's Unix sockets, bypassing the port helper.

@@ -64,6 +64,25 @@ public enum Messages {
     /// `paddock status` when the engine runs but launchd's port helper isn't installed (or is outdated).
     public static let finishSetup = "Paddock needs to finish setup. Run: paddock start"
 
+    /// `paddock status`'s opening lines: whether Paddock serves (or why not), then, when secured sites
+    /// need macOS to trust Paddock's certificate (again), what to run.
+    public static func statusSummary(_ status: EngineStatus) -> [String] {
+        var lines: [String]
+        if status.running && !status.portHelperInstalled {
+            lines = [finishSetup]
+        } else if status.running {
+            lines = ["Paddock is running."]
+        } else if !status.blockedBy.isEmpty {
+            lines = [portsBlocked(status.blockedBy)]
+        } else {
+            lines = ["Paddock is stopped."]
+        }
+        if status.needsTrust { lines.append(securedSitesNeedTrust) }
+        return lines
+    }
+
+    public static let securedSitesNeedTrust = "Secured sites need your approval once: run paddock trust"
+
     /// `paddock stop` on the real system: the launchd entry keeps 80 and 443 until uninstall.
     public static let stoppedKeepingPorts =
         "Paddock stopped. Ports 80 and 443 stay reserved for Paddock until you uninstall it."

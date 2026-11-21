@@ -202,6 +202,8 @@ extension Engine {
             self.log("macOS still doesn't trust \(trust.rootCertificate.path) after add-trusted-cert")
             return .declined
         }) ?? .declined
+        // The status this request answers with already knows the outcome.
+        await blocking { self.refreshRootTrusted() }
         if outcome == .trusted { return nil }
         if outcome == .notReady { return error(ErrorCode.needsTrust, Messages.certificateNotReady) }
         return error(ErrorCode.needsTrust, site.map { Messages.needsTrust(host: "\($0).\(settings.tld)") }

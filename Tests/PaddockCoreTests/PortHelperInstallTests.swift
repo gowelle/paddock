@@ -181,6 +181,20 @@ final class PortHelperInstallTests: XCTestCase {
         XCTAssertFalse(check.value, "refreshed in the background")
     }
 
+    func testCachedCheckWithAnInitialAnswerDoesNoWorkUntilReadAndRefreshesOnRequest() throws {
+        let calls = LockedBox(0)
+        let answer = LockedBox(false)
+        let check = CachedCheck(ttl: 60, initial: true) { calls.value += 1; return answer.value }
+        XCTAssertEqual(calls.value, 0, "nothing worked out when made")
+        XCTAssertTrue(check.value, "the initial answer stands until the real one is in")
+        let deadline = Date().addingTimeInterval(2)
+        while check.value && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertFalse(check.value, "the first read started working out the real answer")
+        answer.value = true
+        check.refresh()
+        XCTAssertTrue(check.value, "refresh() replaces the answer at once, ttl or not")
+    }
+
     func testIsLoadedAsksLaunchdReadOnly() {
         let runner = RecordingCommandRunner { _, _ in (0, "") }
         XCTAssertTrue(PortHelper(source: source, user: "x", paths: paths, runner: runner).isLoaded())

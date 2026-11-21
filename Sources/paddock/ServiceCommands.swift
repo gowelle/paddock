@@ -100,15 +100,7 @@ struct Status: ParsableCommand {
             if case .error(_, let message) = response { throw CLI.failure(message) }
             return
         }
-        if status.running && !status.portHelperInstalled {
-            print(Messages.finishSetup)
-        } else if status.running {
-            print("Paddock is running.")
-        } else if !status.blockedBy.isEmpty {
-            print(Messages.portsBlocked(status.blockedBy))
-        } else {
-            print("Paddock is stopped.")
-        }
+        for line in Messages.statusSummary(status) { print(line) }
         print("Default PHP: \(status.defaultPHP.map(\.description) ?? "none installed")")
         print("")
         print(status.sites.isEmpty

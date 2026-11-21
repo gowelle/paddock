@@ -92,6 +92,11 @@ private struct StatusHeader: View {
                     .controlSize(.small)
                     .disabled(model.isBusy(.start))
             }
+            if let title = model.trustActionTitle {
+                Button(title) { Task { await model.trustCertificate() } }
+                    .controlSize(.small)
+                    .disabled(model.isBusy(.trust))
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)

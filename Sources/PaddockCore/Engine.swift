@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 2
+    public static let number = 3
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -34,10 +34,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var version: Int
     /// The daemon's own program, if it reported one.
     public var executablePath: String?
+    /// Some site is secured but macOS doesn't trust Paddock's current root (say, after the certificate
+    /// authority was renamed): the owner should run `paddock trust`. False when trust is turned off.
+    public var needsTrust: Bool
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
+                needsTrust: Bool = false,
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -49,13 +53,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.trustEnabled = trustEnabled
         self.dnsRunning = dnsRunning
         self.portHelperInstalled = portHelperInstalled
+        self.needsTrust = needsTrust
         self.version = version
         self.executablePath = executablePath
     }
 
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
-        case dnsRunning, portHelperInstalled, version, executablePath
+        case dnsRunning, portHelperInstalled, needsTrust, version, executablePath
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -72,6 +77,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         trustEnabled = try c.decodeIfPresent(Bool.self, forKey: .trustEnabled) ?? false
         dnsRunning = try c.decodeIfPresent(Bool.self, forKey: .dnsRunning) ?? false
         portHelperInstalled = try c.decodeIfPresent(Bool.self, forKey: .portHelperInstalled) ?? false
+        needsTrust = try c.decodeIfPresent(Bool.self, forKey: .needsTrust) ?? false
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -100,6 +106,11 @@ public final class Engine: @unchecked Sendable {
     public let installer: PHPInstaller
     /// Makes macOS trust Caddy's local CA when a site is secured; nil leaves trust alone.
     let trust: CertificateTrust?
+    /// Whether macOS trusts the current root, for `status().needsTrust`: kept for a few seconds and
+    /// worked out off the request path, so `status` never waits for `security`. Nil without `trust`.
+    let rootTrusted: CachedCheck?
+    /// False renders Caddy's default CA names, as homes made before Paddock named its own (tests only).
+    var namesCertificateAuthority = true
     /// The file `status().resolverInstalled` reads; `/etc/resolver/<tld>` unless a test says otherwise.
     let resolverFile: URL
     /// True in a development home: the engine checks the web ports and runs `paddock-ports` on them.
@@ -157,6 +168,8 @@ public final class Engine: @unchecked Sendable {
         self.portHelperInstalled = portHelperInstalled
         self.log = log
         self.trust = trust
+        // Assumed trusted until checked: nobody is asked to trust anything on a guess.
+        rootTrusted = trust.map { trust in CachedCheck(initial: true) { trust.isTrusted() } }
         self.resolverFile = resolverFile ?? Resolver.defaultFile(settings: settings)
         supervisor = Supervisor(backoffScale: backoffScale)
         self.paths = paths
@@ -188,6 +201,7 @@ public final class Engine: @unchecked Sendable {
             log("could not install the php and composer commands: \(error.localizedDescription)")
         }
         let state = try prepareState()
+        replaceDefaultNamedAuthority()
 
         var helper: URL?
         if managesPortHelper {
@@ -215,6 +229,41 @@ public final class Engine: @unchecked Sendable {
             stopLocked()
             throw error
         }
+        refreshRootTrusted()
+    }
+
+    /// Where Caddy keeps the local CA, and the certificates it issued, under `storage file_system`.
+    private var authorityDirectory: URL { paths.caddyData.appendingPathComponent("pki/authorities/local") }
+    private var issuedCertificatesDirectory: URL { paths.caddyData.appendingPathComponent("certificates/local") }
+    private var rootCertificate: URL { authorityDirectory.appendingPathComponent("root.crt") }
+
+    /// Caddy keeps using the root in its storage whatever the Caddyfile names, so a root made under
+    /// Caddy's default names (before Paddock named its own) is replaced: its trust is removed if macOS
+    /// trusts it, then the CA and the certificates it issued are deleted so Caddy makes new ones. Only
+    /// paths inside Paddock's Caddy storage are touched. Call while Caddy is not running.
+    private func replaceDefaultNamedAuthority() {
+        guard namesCertificateAuthority,
+              let name = CertificateTrust.commonName(ofCertificateAt: rootCertificate),
+              !name.hasPrefix(Caddyfile.authorityName) else { return }
+        if let trust, trust.isTrusted() {
+            do { try trust.untrust() } catch {
+                // Refused or failed: the old root stays trusted, but Paddock no longer uses it.
+                log("removing trust from the old certificate authority failed: \(error)")
+            }
+        }
+        for directory in [authorityDirectory, issuedCertificatesDirectory] {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        log("the certificate authority was renamed to \(Caddyfile.authorityName); "
+            + "secured sites need trusting again (run paddock trust)")
+    }
+
+    /// Works out now whether macOS trusts the current root, when that matters (trust on, a secured site,
+    /// a root on disk). Only from paths that may wait: `start` and the `trust` request.
+    func refreshRootTrusted() {
+        guard let rootTrusted, FileManager.default.fileExists(atPath: rootCertificate.path),
+              !store.load().secured.isEmpty else { return }
+        rootTrusted.refresh()
     }
 
     private var webPorts: [Int] { [settings.httpPort, settings.httpsPort] }
@@ -302,7 +351,15 @@ public final class Engine: @unchecked Sendable {
                             resolverInstalled: (try? String(contentsOf: resolverFile, encoding: .utf8))
                                 == Resolver.desiredContents(settings: settings),
                             trustEnabled: trust != nil, dnsRunning: current.dnsRunning,
-                            portHelperInstalled: managesPortHelper || portHelperInstalled())
+                            portHelperInstalled: managesPortHelper || portHelperInstalled(),
+                            needsTrust: needsTrust(sites: sites))
+    }
+
+    /// A secured site, a root on disk, and macOS (as last checked) not trusting it. Never waits.
+    private func needsTrust(sites: [Site]) -> Bool {
+        guard let rootTrusted, sites.contains(where: \.secured),
+              FileManager.default.fileExists(atPath: rootCertificate.path) else { return false }
+        return !rootTrusted.value
     }
 
     // MARK: - State and configs
@@ -336,7 +393,8 @@ public final class Engine: @unchecked Sendable {
         for v in versionsInUse(state) { try FPMConfig.write(version: v, paths: paths) }
         guard let defaultPHP = state.defaultPHP else { return }
         let sites = SiteRegistry(state: state, defaultPHP: defaultPHP, settings: settings).sites()
-        let text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings)
+        let text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
+                                    namesAuthority: namesCertificateAuthority)
         try Data(text.utf8).write(to: paths.caddyfile, options: .atomic)
     }
 

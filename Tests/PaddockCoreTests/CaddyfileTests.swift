@@ -34,6 +34,35 @@ final class CaddyfileTests: XCTestCase {
         XCTAssertTrue(out.contains("storage file_system \"/h/Paddock/caddy\""))
     }
 
+    /// Caddy's default CA names collide with other Caddy-based tools' roots in the keychain, so
+    /// Paddock names its own.
+    func testGlobalBlockNamesPaddocksCertificateAuthority() {
+        let out = render([])
+        XCTAssertTrue(out.contains("""
+                pki {
+                    ca local {
+                        name "Paddock Local Authority"
+                        root_cn "Paddock Local Authority - Root"
+                        intermediate_cn "Paddock Local Authority - Intermediate"
+                    }
+                }
+            """), out)
+        // Inside the global options block, before the first snippet.
+        let pki = try! XCTUnwrap(out.range(of: "pki {"))
+        XCTAssertLessThan(pki.lowerBound, try! XCTUnwrap(out.range(of: "(paddock_php)")).lowerBound)
+        XCTAssertEqual(Caddyfile.authorityName, "Paddock Local Authority")
+    }
+
+    func testTestHookRendersCaddysDefaultAuthority() {
+        var settings = Settings()
+        settings.httpPort = 18080
+        settings.httpsPort = 18443
+        let out = Caddyfile.render(sites: [], defaultPHP: v84, paths: paths, settings: settings,
+                                   namesAuthority: false)
+        XCTAssertFalse(out.contains("pki"))
+        XCTAssertTrue(out.contains("local_certs"))
+    }
+
     func testSnippetCarriesRouterEnvAndStaticPrefix() {
         let out = render([])
         XCTAssertTrue(out.contains("env PADDOCK_ROUTER_HOME \"/h/Paddock/config/valet\""))

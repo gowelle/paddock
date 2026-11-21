@@ -45,6 +45,22 @@ final class CertificateTrustTests: XCTestCase {
         XCTAssertEqual(runner.calls, [.init(executable: "/usr/bin/security", arguments: ["remove-trusted-cert", root])])
     }
 
+    func testCommonNameIsReadFromAPEMCertificate() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pdk-cn-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cert = dir.appendingPathComponent("root.crt")
+        let openssl = try SystemCommandRunner().run("/usr/bin/openssl", [
+            "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+            "-keyout", dir.appendingPathComponent("root.key").path, "-out", cert.path, "-days", "1",
+            "-subj", "/CN=Caddy Local Authority - 2026 ECC Root"])
+        XCTAssertEqual(openssl.status, 0, openssl.output)
+        XCTAssertEqual(CertificateTrust.commonName(ofCertificateAt: cert), "Caddy Local Authority - 2026 ECC Root")
+        XCTAssertNil(CertificateTrust.commonName(ofCertificateAt: dir.appendingPathComponent("missing.crt")))
+        try Data("not a certificate".utf8).write(to: cert)
+        XCTAssertNil(CertificateTrust.commonName(ofCertificateAt: cert))
+    }
+
     func testSystemIntegrationFollowsPaddockHome() {
         XCTAssertTrue(SystemIntegration.isEnabled(environment: [:]))
         XCTAssertTrue(SystemIntegration.isEnabled(environment: ["PADDOCK_HOME": ""]))

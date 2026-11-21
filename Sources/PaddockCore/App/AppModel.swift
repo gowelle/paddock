@@ -74,6 +74,8 @@ public final class AppModel: ObservableObject {
     public static let finishSetupTitle = "Finish Setup\u{2026}"
     /// The action offered while the web ports are held; it runs the same start path.
     public static let tryAgainTitle = "Try Again"
+    /// The action offered while secured sites need trusting; it sends the `trust` request.
+    public static let trustCertificateTitle = "Trust Certificate\u{2026}"
 
     private let client: ClientProtocol
     private let services: AppServices?
@@ -153,6 +155,12 @@ public final class AppModel: ObservableObject {
     public var blockedExplanation: String? {
         guard isBlocked else { return nil }
         return canQuitBlockingHolder ? nil : Messages.portsBlocked(heldPorts)
+    }
+
+    /// `Trust Certificate…` while secured sites need macOS to trust Paddock's certificate (again, after
+    /// the certificate authority was renamed); nil otherwise.
+    public var trustActionTitle: String? {
+        status?.needsTrust == true ? Self.trustCertificateTitle : nil
     }
 
     public var sites: [Site] { status?.sites ?? [] }
@@ -312,6 +320,11 @@ public final class AppModel: ObservableObject {
     /// password once to install what is missing.
     public func finishSetup() async {
         await start()
+    }
+
+    /// `Trust Certificate…`: the existing `trust` request; macOS shows its own confirmation.
+    public func trustCertificate() async {
+        await perform(.trust)
     }
 
     public func stop() async {

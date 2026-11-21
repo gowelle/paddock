@@ -152,4 +152,29 @@ final class MessagesTests: XCTestCase {
         XCTAssertEqual(Messages.runningAsRoot,
                        "Don't run Paddock with sudo. Run it as yourself; it asks for your password when it needs it.")
     }
+
+    // MARK: - paddock status
+
+    private func status(running: Bool = true, blockedBy: [PortHolder] = [], portHelperInstalled: Bool = true,
+                        needsTrust: Bool = false) -> EngineStatus {
+        EngineStatus(running: running, blockedBy: blockedBy, sites: [], installedPHP: [], defaultPHP: nil,
+                     processes: [:], resolverInstalled: true, trustEnabled: true, dnsRunning: true,
+                     portHelperInstalled: portHelperInstalled, needsTrust: needsTrust)
+    }
+
+    func testStatusSummaryLines() {
+        XCTAssertEqual(Messages.statusSummary(status()), ["Paddock is running."])
+        XCTAssertEqual(Messages.statusSummary(status(portHelperInstalled: false)), [Messages.finishSetup])
+        XCTAssertEqual(Messages.statusSummary(status(running: false)), ["Paddock is stopped."])
+        let holder = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false)
+        XCTAssertEqual(Messages.statusSummary(status(running: false, blockedBy: [holder])),
+                       [Messages.portsBlocked([holder])])
+    }
+
+    func testStatusSummaryAsksForTrustWhenSecuredSitesNeedIt() {
+        XCTAssertEqual(Messages.statusSummary(status(needsTrust: true)),
+                       ["Paddock is running.", "Secured sites need your approval once: run paddock trust"])
+        XCTAssertEqual(Messages.statusSummary(status(running: false, needsTrust: true)),
+                       ["Paddock is stopped.", "Secured sites need your approval once: run paddock trust"])
+    }
 }

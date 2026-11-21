@@ -1,6 +1,8 @@
 import Foundation
+import Security
 
-/// Makes macOS trust Caddy's local certificate authority, for the current user only.
+/// Makes macOS trust Paddock's local certificate authority (Caddy's, under Paddock's name), for the
+/// current user only.
 /// `trust()` makes macOS show its own confirmation; Paddock adds no prompt of its own.
 public struct CertificateTrust: Sendable {
     public let paths: Paths
@@ -40,6 +42,21 @@ public struct CertificateTrust: Sendable {
         guard result.status == 0 else {
             throw CertificateTrustError.failed(status: result.status, output: result.output)
         }
+    }
+
+    /// The subject common name of the first certificate in a PEM file, e.g.
+    /// `Paddock Local Authority - Root`; nil if the file is missing or holds no readable certificate.
+    /// Reads the file only; the keychain is not involved.
+    public static func commonName(ofCertificateAt url: URL) -> String? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let begin = text.range(of: "-----BEGIN CERTIFICATE-----"),
+              let end = text.range(of: "-----END CERTIFICATE-----", range: begin.upperBound..<text.endIndex),
+              let der = Data(base64Encoded: String(text[begin.upperBound..<end.lowerBound]),
+                             options: .ignoreUnknownCharacters),
+              let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return nil }
+        var name: CFString?
+        guard SecCertificateCopyCommonName(certificate, &name) == errSecSuccess else { return nil }
+        return name as String?
     }
 }
 

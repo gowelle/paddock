@@ -99,13 +99,14 @@ private let v84 = PHPVersion(major: 8, minor: 4)
 private let v85 = PHPVersion(major: 8, minor: 5)
 
 private func sampleStatus(running: Bool = true, blockedBy: [PortHolder] = [],
-                          sites: [Site]? = nil, portHelperInstalled: Bool = true) -> EngineStatus {
+                          sites: [Site]? = nil, portHelperInstalled: Bool = true,
+                          needsTrust: Bool = false) -> EngineStatus {
     EngineStatus(running: running, blockedBy: blockedBy,
                  sites: sites ?? [Site(name: "blog", path: "/p/blog", kind: .parked, secured: true,
                                        php: v85, pinned: false)],
                  installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
                  resolverInstalled: true, trustEnabled: true, dnsRunning: true,
-                 portHelperInstalled: portHelperInstalled)
+                 portHelperInstalled: portHelperInstalled, needsTrust: needsTrust)
 }
 
 @MainActor
@@ -610,5 +611,35 @@ final class AppModelTests: XCTestCase {
         let model = AppModel(client: FakeClient { _ in throw ClientError.daemonNotRunning }, services: services)
         await model.start()
         XCTAssertEqual(model.lastError, Messages.runningAsRoot)
+    }
+
+    // MARK: - Trusting the certificate again
+
+    func testTrustCertificateIsOfferedOnlyWhileSecuredSitesNeedTrust() async {
+        let client = FakeClient { _ in .ok(sampleStatus(needsTrust: true)) }
+        let model = AppModel(client: client)
+        XCTAssertNil(model.trustActionTitle, "nothing to offer before the first status")
+        await model.refresh()
+        XCTAssertEqual(model.trustActionTitle, "Trust Certificate\u{2026}")
+        XCTAssertEqual(AppModel.trustCertificateTitle, "Trust Certificate\u{2026}")
+
+        // The action sends the existing `trust` request; once trusted, it is no longer offered.
+        client.handler = { _ in .ok(sampleStatus(needsTrust: false)) }
+        await model.trustCertificate()
+        XCTAssertEqual(client.requests.filter { $0 == .trust }.count, 1)
+        XCTAssertNil(model.trustActionTitle)
+        XCTAssertNil(model.trustNotice)
+    }
+
+    func testTrustCertificateDeclinedShowsTheDaemonsSentence() async {
+        let client = FakeClient { r in
+            r == .trust ? .error(code: ErrorCode.needsTrust, message: Messages.stillNotTrusted)
+                        : .ok(sampleStatus(needsTrust: true))
+        }
+        let model = AppModel(client: client)
+        await model.refresh()
+        await model.trustCertificate()
+        XCTAssertEqual(model.trustNotice, Messages.stillNotTrusted)
+        XCTAssertEqual(model.trustActionTitle, "Trust Certificate\u{2026}")
     }
 }

@@ -210,7 +210,8 @@ public struct PortHelper: Sendable {
 
 /// A yes/no answer that is slow to work out (a process launch, a connection attempt), kept for `ttl`
 /// seconds. Reading never waits: a stale answer is returned while a fresh one is worked out in the
-/// background. The first answer is worked out when the check is made.
+/// background. The first answer is worked out when the check is made, unless an `initial` answer is
+/// given: that one stands until the first read starts working out the real one.
 public final class CachedCheck: @unchecked Sendable {
     private let lock = NSLock()
     private let ttl: TimeInterval
@@ -219,11 +220,25 @@ public final class CachedCheck: @unchecked Sendable {
     private var computedAt: Date
     private var refreshing = false
 
-    public init(ttl: TimeInterval = 3, compute: @escaping @Sendable () -> Bool) {
+    public init(ttl: TimeInterval = 3, initial: Bool? = nil, compute: @escaping @Sendable () -> Bool) {
         self.ttl = ttl
         self.compute = compute
-        answer = compute()
+        if let initial {
+            answer = initial
+            computedAt = .distantPast
+        } else {
+            answer = compute()
+            computedAt = Date()
+        }
+    }
+
+    /// Works out a fresh answer now, for callers that may wait.
+    public func refresh() {
+        let fresh = compute()
+        lock.lock()
+        answer = fresh
         computedAt = Date()
+        lock.unlock()
     }
 
     public var value: Bool {

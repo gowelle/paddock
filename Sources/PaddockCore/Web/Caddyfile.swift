@@ -7,18 +7,34 @@ public enum Caddyfile {
     /// (`VALET_STATIC_PREFIX` in Resources/router/server.php).
     static let valetStaticPrefix = "41c270e4-5535-4daa-b23e-c269744c2f45"
 
+    /// The name of Paddock's local certificate authority. Its root's common name starts with it; Caddy's
+    /// default ("Caddy Local Authority") is shared with other Caddy-based tools, whose roots browsers
+    /// could pick instead by name.
+    public static let authorityName = "Paddock Local Authority"
+
+    /// `namesAuthority: false` leaves Caddy's default CA names (tests only: it makes an old home).
     public static func render(sites: [Site], defaultPHP: PHPVersion, paths: Paths,
-                              settings: Settings) -> String {
+                              settings: Settings, namesAuthority: Bool = true) -> String {
         let serverPHP = Bundled.resources.appendingPathComponent("router/server.php").path
         let httpBind = quote("unix/" + paths.httpSocket.path)
         let httpsBind = quote("unix/" + paths.httpsSocket.path)
+        let pki = namesAuthority ? """
+
+                pki {
+                    ca local {
+                        name \(quote(authorityName))
+                        root_cn \(quote(authorityName + " - Root"))
+                        intermediate_cn \(quote(authorityName + " - Intermediate"))
+                    }
+                }
+            """ : ""
         var out = """
         {
             admin \(quote("unix/" + paths.caddyAdminSocket.path))
             http_port \(settings.httpPort)
             https_port \(settings.httpsPort)
             local_certs
-            skip_install_trust
+            skip_install_trust\(pki)
             auto_https disable_redirects
             storage file_system \(quote(paths.caddyData.path))
         }
