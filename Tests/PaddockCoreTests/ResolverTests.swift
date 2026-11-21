@@ -128,7 +128,7 @@ final class ResolverTests: XCTestCase {
 
     func testInstallKeepsAlreadySavedValueWhenFileChangedAgain() throws {
         try store.update { $0.previousResolver = "nameserver 10.0.0.9\n" }
-        try writeFile("someone else's\n")
+        try writeFile("nameserver 10.0.0.5\n")
         try resolver(RecordingCommandRunner()).install()
         XCTAssertEqual(store.load().previousResolver, "nameserver 10.0.0.9\n")
     }
@@ -278,7 +278,7 @@ final class ResolverTests: XCTestCase {
 
     func testRestoreRefusesSavedContentsThatAreNotAResolverFile() throws {
         let r = resolver(RecordingCommandRunner())
-        for bad in ["nameserver 127.0.0.1\nrm -rf /\n", "#!/bin/sh\n", "nameserverX 1.2.3.4\n",
+        for bad in ["nameserver 127.0.0.1\nrm -rf /\n", "#!/bin/sh\necho hi\n", "nameserverX 1.2.3.4\n",
                     "nameserver 127.0.0.1\n" + String(repeating: "search a\n", count: 120)] {
             try writeFile(r.desiredContents)
             try store.update { $0.previousResolver = bad }
@@ -295,7 +295,117 @@ final class ResolverTests: XCTestCase {
         let good = "nameserver 127.0.0.1\nport 53\n\nsearch_order 1\ntimeout 5\ndomain test\nsearch test\noptions x\n"
         XCTAssertTrue(Resolver.isSafeToRestore(good))
         XCTAssertTrue(Resolver.isSafeToRestore("  nameserver 10.0.0.1\n"))
-        XCTAssertFalse(Resolver.isSafeToRestore("# comment\n"))
+    }
+
+    func testCommentAndBlankLinesAreAcceptedOnRestore() throws {
+        XCTAssertTrue(Resolver.isSafeToRestore("# comment\n"))
+        XCTAssertTrue(Resolver.isSafeToRestore("#\n\n  # indented comment\nnameserver 10.0.0.1\n\n\n"))
+        XCTAssertFalse(Resolver.isSafeToRestore("# fine\nrm -rf /\n"))
+
+        // A saved original with comments is written back on uninstall instead of getting stuck.
+        let r = resolver(RecordingCommandRunner())
+        try writeFile(r.desiredContents)
+        let original = "# Added by another tool\n\nnameserver 10.0.0.1\n"
+        try store.update { $0.previousResolver = original }
+        let runner = RecordingCommandRunner()
+        XCTAssertEqual(try resolver(runner).restore(), .restored)
+        XCTAssertTrue(runner.calls[0].arguments[1].contains(b64(original)))
+    }
+
+    // MARK: - An original Paddock couldn't put back is never replaced
+
+    func testInstallLeavesAFileItCouldNotRestoreLaterAloneWithoutPrompting() throws {
+        try writeFile("nameserver 127.0.0.1\nsomething odd\n")
+        let runner = RecordingCommandRunner()
+        XCTAssertThrowsError(try resolver(runner).install()) {
+            XCTAssertEqual($0 as? ResolverError, .cannotRestoreLater(path: file.path))
+            XCTAssertEqual(($0 as? ResolverError)?.message,
+                           "\(file.path) has contents Paddock can't safely restore later, so Paddock left it alone.")
+        }
+        XCTAssertEqual(runner.calls, [], "no password prompt")
+        XCTAssertNil(store.load().previousResolver)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupFile.path))
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "nameserver 127.0.0.1\nsomething odd\n")
+    }
+
+    func testInstallAcceptsAnOriginalWithComments() throws {
+        try writeFile("# Herd\nnameserver 127.0.0.1\n")
+        let runner = RecordingCommandRunner()
+        try resolver(runner).install()
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertEqual(store.load().previousResolver, "# Herd\nnameserver 127.0.0.1\n")
+    }
+
+    // MARK: - One privileged call shared with the port helper
+
+    private let portStep = "echo PORT_STEP"
+
+    func testInstallRunsTheFragmentBeforeTheResolverStepInOneCall() throws {
+        try writeFile("nameserver 127.0.0.1\n")
+        let runner = RecordingCommandRunner()
+        try resolver(runner).install(preceding: portStep)
+        XCTAssertEqual(runner.calls.count, 1)
+        let script = runner.calls[0].arguments[1]
+        let port = try XCTUnwrap(script.range(of: portStep))
+        let resolverStep = try XCTUnwrap(script.range(of: b64(resolver(runner).desiredContents)))
+        XCTAssertLessThan(port.lowerBound, resolverStep.lowerBound)
+    }
+
+    func testInstallWithTheResolverInPlaceRunsOnlyTheFragment() throws {
+        let r = resolver(RecordingCommandRunner())
+        try writeFile(r.desiredContents)
+        let runner = RecordingCommandRunner()
+        try resolver(runner).install(preceding: portStep)
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertTrue(runner.calls[0].arguments[1].contains(portStep))
+        XCTAssertFalse(runner.calls[0].arguments[1].contains(b64(r.desiredContents)))
+    }
+
+    func testBusyMarkerThrowsPortsBusyAndRollsBack() throws {
+        try writeFile("nameserver 10.0.0.1\n")
+        let runner = RecordingCommandRunner { _, _ in (0, "PADDOCK_PORTS_BUSY\n") }
+        XCTAssertThrowsError(try resolver(runner).install(preceding: portStep)) {
+            XCTAssertEqual($0 as? ResolverError, .portsBusy)
+        }
+        XCTAssertNil(store.load().previousResolver)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupFile.path))
+    }
+
+    func testRestoreRunsTheResolverStepThenTheFragmentInOneCall() throws {
+        let r = resolver(RecordingCommandRunner())
+        try writeFile(r.desiredContents)
+        try store.update { $0.previousResolver = "nameserver 10.0.0.1\n" }
+        let runner = RecordingCommandRunner()
+        XCTAssertEqual(try resolver(runner).restore(then: portStep), .restored)
+        XCTAssertEqual(runner.calls.count, 1)
+        let script = runner.calls[0].arguments[1]
+        let resolverStep = try XCTUnwrap(script.range(of: b64("nameserver 10.0.0.1\n")))
+        let port = try XCTUnwrap(script.range(of: portStep))
+        XCTAssertLessThan(resolverStep.lowerBound, port.lowerBound)
+    }
+
+    func testRestoreSkippingAFileThatIsNotPaddocksStillRunsTheFragment() throws {
+        try writeFile("nameserver 8.8.8.8\n")
+        try store.update { $0.previousResolver = "nameserver 10.0.0.9\n" }
+        let runner = RecordingCommandRunner()
+        XCTAssertEqual(try resolver(runner).restore(then: portStep), .changedByAnotherProgram)
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertTrue(runner.calls[0].arguments[1].contains(portStep))
+        XCTAssertFalse(runner.calls[0].arguments[1].contains(b64("nameserver 10.0.0.9\n")))
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "nameserver 8.8.8.8\n")
+    }
+
+    func testRestoreWithNothingToDoAndNoFragmentRunsNothing() throws {
+        let runner = RecordingCommandRunner()
+        XCTAssertEqual(try resolver(runner).restore(then: nil), .notInstalled)
+        XCTAssertEqual(runner.calls, [])
+    }
+
+    func testAWriteStepLetsTheRestOfTheScriptRun() throws {
+        let script = Resolver.guardedScript(destination: tricky, expected: nil, action: .write("x\n")) + "; echo AFTER"
+        let result = try runShell(script)
+        XCTAssertEqual(result.status, 0, result.out)
+        XCTAssertTrue(result.out.contains("AFTER"), result.out)
     }
 
     // MARK: - Re-running after a partial failure (I4c)

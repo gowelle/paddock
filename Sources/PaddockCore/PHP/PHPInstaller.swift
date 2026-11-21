@@ -73,6 +73,8 @@ public final class PHPInstaller {
         return v
     }
 
+    /// Downloads, verifies and places a build. Cancelling the calling task stops the download and throws
+    /// `CancellationError`; like any failure, it leaves nothing behind.
     public func install(_ v: PHPVersion, progress: ((Double) -> Void)? = nil) async throws {
         guard let build = manifest.build(for: v) else { throw PHPInstallError.notInManifest(v) }
         let fm = FileManager.default
@@ -85,6 +87,7 @@ public final class PHPInstaller {
         progress?(0)
         for (index, (asset, name)) in assets.enumerated() {
             let archive = staging.appendingPathComponent("\(name).tar.gz")
+            try Task.checkCancellation()
             try await download(asset, to: archive, version: v)
             try verify(archive, expected: asset.sha256, version: v, file: name)
             try extract(archive, into: stage, version: v)
@@ -94,6 +97,7 @@ public final class PHPInstaller {
             }
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
             progress?(Double(index + 1) / Double(assets.count))
+            try Task.checkCancellation()
         }
 
         try place(stage, at: paths.phpDir(v))
@@ -129,6 +133,9 @@ public final class PHPInstaller {
         } catch let error as PHPInstallError {
             throw error
         } catch {
+            if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
+                throw CancellationError()
+            }
             throw PHPInstallError.downloadFailed(v, reason: error.localizedDescription)
         }
     }

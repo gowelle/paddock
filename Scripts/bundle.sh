@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds Paddock for Intel and assembles the standalone dist/Paddock.app:
-#   Contents/MacOS/{PaddockApp,paddockd,paddock}
+#   Contents/MacOS/{PaddockApp,paddockd,paddock,paddock-ports}
 # (The app's executable is not called "Paddock": on a case-insensitive disk it would be the same file
 # as the "paddock" command.)
 #   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,php-manifest.json,THIRD-PARTY-NOTICES,AppIcon.icns}
@@ -36,6 +36,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/php/$PHP_SERIES/default"
 install -m 755 "$BIN/PaddockApp" "$APP/Contents/MacOS/PaddockApp"
 install -m 755 "$BIN/paddockd" "$APP/Contents/MacOS/paddockd"
 install -m 755 "$BIN/paddock" "$APP/Contents/MacOS/paddock"
+# The port helper the setup prompt installs as /Library/PrivilegedHelperTools/app.paddock.ports.
+install -m 755 "$BIN/paddock-ports" "$APP/Contents/MacOS/paddock-ports"
 
 RES="$APP/Contents/Resources"
 install -m 755 "$VENDOR/caddy" "$RES/caddy"
@@ -57,7 +59,7 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 echo "Signing (ad hoc)…"
 # Nested executables first, then the bundle, which seals everything inside it.
 for exe in "$RES/caddy" "$RES/php/$PHP_SERIES/default/php" "$RES/php/$PHP_SERIES/default/php-fpm" \
-           "$APP/Contents/MacOS/paddockd" "$APP/Contents/MacOS/paddock"; do
+           "$APP/Contents/MacOS/paddockd" "$APP/Contents/MacOS/paddock" "$APP/Contents/MacOS/paddock-ports"; do
   codesign --force -s - "$exe"
 done
 codesign --force -s - --deep "$APP"

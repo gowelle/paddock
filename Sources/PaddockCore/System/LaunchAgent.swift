@@ -51,6 +51,7 @@ public struct LaunchAgent: Sendable {
     private var service: String { "\(domain)/\(Self.label)" }
 
     /// No `EnvironmentVariables`: a launched daemon uses the real home and the default ports.
+    /// `ExitTimeOut` gives a stopping daemon 20 seconds to stop its web stack before launchd kills it.
     public func plistContents(daemon: URL) -> String {
         let log = paths.log.appendingPathComponent("paddockd.log").path
         let dictionary: [String: Any] = [
@@ -61,6 +62,7 @@ public struct LaunchAgent: Sendable {
             "StandardOutPath": log,
             "StandardErrorPath": log,
             "ProcessType": "Interactive",
+            "ExitTimeOut": 20,
         ]
         let data = try? PropertyListSerialization.data(fromPropertyList: dictionary, format: .xml, options: 0)
         return String(decoding: data ?? Data(), as: UTF8.self)

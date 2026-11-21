@@ -108,4 +108,22 @@ final class MessagesTests: XCTestCase {
         XCTAssertEqual(Messages.normalizedSiteName("Foo.TEST", tld: "test"), "foo")
         XCTAssertNil(Messages.normalizedSiteName("!!!.test", tld: "test"))
     }
+
+    func testSetupAndStopSentences() {
+        XCTAssertEqual(Messages.finishSetup, "Paddock needs to finish setup. Run: paddock start")
+        XCTAssertEqual(Messages.stoppedKeepingPorts,
+                       "Paddock stopped. Ports 80 and 443 stay reserved for Paddock until you uninstall it.")
+        XCTAssertEqual(Messages.portHelperMissing, "Can't find paddock-ports next to paddockd.")
+    }
+
+    func testPortsHeldBeforeThePromptUseThePortsBlockedSentence() {
+        let holder = PortHolder(port: 443, pid: 5, command: "httpd", ownedByCurrentUser: true)
+        XCTAssertEqual(DaemonLaunchError.portsBlocked([holder]).message(retry: "Run paddock start"),
+                       Messages.portsBlocked([holder]))
+    }
+
+    func testAnUnrestorableResolverIsReportedAsIs() {
+        XCTAssertEqual(DaemonLaunchError.resolverUnrestorable(path: "/etc/resolver/test").message(),
+                       "/etc/resolver/test has contents Paddock can't safely restore later, so Paddock left it alone.")
+    }
 }

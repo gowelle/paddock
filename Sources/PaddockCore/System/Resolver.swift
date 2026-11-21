@@ -9,6 +9,11 @@ public enum ResolverError: Error, Equatable {
     /// The saved original (from user-writable state or the backup file) doesn't look like a resolver
     /// file, so Paddock won't write it back as root; the file was left alone.
     case savedCopyRejected
+    /// The file Paddock would replace isn't one it could safely write back on uninstall, so it was left
+    /// alone and no password was asked for.
+    case cannotRestoreLater(path: String)
+    /// The privileged script found something else answering on port 80 or 443 and changed nothing.
+    case portsBusy
 
     /// The plain sentence for this failure.
     public var message: String {
@@ -19,6 +24,9 @@ public enum ResolverError: Error, Equatable {
         case .savedCopyRejected:
             return "Paddock's saved copy of your original resolver file doesn't look like a resolver file, "
                 + "so Paddock left the file alone."
+        case .cannotRestoreLater(let path):
+            return "\(path) has contents Paddock can't safely restore later, so Paddock left it alone."
+        case .portsBusy: return "Paddock can't start: its ports are in use."
         }
     }
 }
@@ -74,9 +82,22 @@ public struct Resolver: Sendable {
     /// The owner's original is kept safe before the prompt, in two places: `previousResolver` in state
     /// and `backup/resolver-<tld>.orig` (never overwritten once it exists). If the prompt is dismissed,
     /// the script fails or the file changed meanwhile, whatever this call saved is rolled back.
-    public func install() throws {
+    ///
+    /// `fragment` (the port helper's install steps) runs first in the same privileged script, so there
+    /// is still one password prompt; it runs alone when the resolver file already is Paddock's. If it
+    /// reports the ports busy this throws `ResolverError.portsBusy` and the resolver was not touched.
+    /// An existing file that `isSafeToRestore` rejects is never replaced: this throws
+    /// `ResolverError.cannotRestoreLater` before any prompt.
+    public func install(preceding fragment: String? = nil) throws {
         let current = currentContents()
-        if current == desiredContents { return }
+        if current == desiredContents {
+            guard let fragment else { return }
+            switch try runPrivileged(fragment) {
+            case .portsBusy: throw ResolverError.portsBusy
+            case .done, .changed: return
+            }
+        }
+        if let current, !Self.isSafeToRestore(current) { throw ResolverError.cannotRestoreLater(path: file.path) }
         var savedState = false
         var savedBackup = false
         if let current {
@@ -90,8 +111,8 @@ public struct Resolver: Sendable {
             if savedState { _ = try? store.update { $0.previousResolver = nil } }
             if savedBackup { try? FileManager.default.removeItem(at: backupFile) }
         }
-        let script = Self.guardedScript(destination: file, expected: current,
-                                        action: .write(desiredContents))
+        let script = Self.joined(fragment, Self.guardedScript(destination: file, expected: current,
+                                                              action: .write(desiredContents)))
         let result: PrivilegedResult
         do {
             result = try runPrivileged(script)
@@ -99,7 +120,12 @@ public struct Resolver: Sendable {
             rollBack()
             throw error
         }
-        if result == .changed {
+        switch result {
+        case .done: return
+        case .portsBusy:
+            rollBack()
+            throw ResolverError.portsBusy
+        case .changed:
             rollBack()
             throw ResolverError.changedDuringInstall
         }
@@ -112,35 +138,42 @@ public struct Resolver: Sendable {
     /// The original comes from state, or from the backup file if state has none. It is written as root
     /// but comes from user-writable files, so it is only written if `isSafeToRestore` accepts it;
     /// otherwise this throws `ResolverError.savedCopyRejected` and leaves the file alone.
+    ///
+    /// `fragment` (the port helper's removal) runs after the resolver step in the same privileged script,
+    /// and also on its own when the resolver step is skipped because the file isn't Paddock's.
     @discardableResult
-    public func restore() throws -> ResolverRestoreOutcome {
+    public func restore(then fragment: String? = nil) throws -> ResolverRestoreOutcome {
         let saved = store.load().previousResolver ?? (try? String(contentsOf: backupFile, encoding: .utf8))
-        guard let current = currentContents() else { return .notInstalled }
-        guard current == desiredContents else {
-            // Nothing saved, or the original is already back (a re-run after a partial failure): nothing to do.
-            if saved == nil || current == saved {
-                forgetSavedCopy()
-                return .notInstalled
+        let current = currentContents()
+        guard let current, current == desiredContents else {
+            let outcome: ResolverRestoreOutcome
+            // No file, nothing saved, or the original is already back (a re-run after a partial failure).
+            if current == nil || saved == nil || current == saved {
+                outcome = .notInstalled
+            } else {
+                outcome = .changedByAnotherProgram
             }
-            return .changedByAnotherProgram
+            if let fragment { _ = try runPrivileged(fragment) }
+            if outcome == .notInstalled && current != nil { forgetSavedCopy() }
+            return outcome
         }
         if let saved, !Self.isSafeToRestore(saved) { throw ResolverError.savedCopyRejected }
-        let script = Self.guardedScript(destination: file, expected: desiredContents,
-                                        action: saved.map { .write($0) } ?? .remove)
+        let script = Self.joined(Self.guardedScript(destination: file, expected: desiredContents,
+                                                    action: saved.map { .write($0) } ?? .remove), fragment)
         if try runPrivileged(script) == .changed { return .changedByAnotherProgram }
         forgetSavedCopy()
         return saved == nil ? .removed : .restored
     }
 
     /// Only text made of resolver(5) lines (`nameserver`, `port`, `search_order`, `timeout`, `domain`,
-    /// `search`, `options`, or blank) and under 1 KB is ever written back as root.
+    /// `search`, `options`, `#` comments, or blank) and under 1 KB is ever written back as root.
     static func isSafeToRestore(_ text: String) -> Bool {
         let keywords: Set<String> = ["nameserver", "port", "search_order", "timeout", "domain", "search", "options"]
         guard text.utf8.count < 1024 else { return false }
         return text.split(whereSeparator: \.isNewline).allSatisfy { line in
             let words = line.split(whereSeparator: \.isWhitespace)
             guard let first = words.first else { return true }
-            return keywords.contains(String(first))
+            return first.hasPrefix("#") || keywords.contains(String(first))
         }
     }
 
@@ -169,11 +202,12 @@ public struct Resolver: Sendable {
         try? String(contentsOf: file, encoding: .utf8)
     }
 
-    private enum PrivilegedResult { case done, changed }
+    private enum PrivilegedResult { case done, changed, portsBusy }
 
     private func runPrivileged(_ shell: String) throws -> PrivilegedResult {
         let result = try runner.run(Self.osascript, ["-e", Self.appleScript(shell: shell)])
         guard result.status != 0 else {
+            if result.output.contains(PortHelper.busyMarker) { return .portsBusy }
             return result.output.contains(Self.changedMarker) ? .changed : .done
         }
         let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -186,6 +220,11 @@ public struct Resolver: Sendable {
     /// `'…'` with embedded single quotes written as `'\''`.
     static func shellQuote(_ text: String) -> String {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Steps of one privileged script, in order, skipping absent ones.
+    static func joined(_ steps: String?...) -> String {
+        steps.compactMap { $0 }.joined(separator: "; ")
     }
 
     /// For use inside an AppleScript string literal.
@@ -204,7 +243,8 @@ public struct Resolver: Sendable {
     /// A root shell script that acts only if `destination` still is what Paddock saw before the
     /// prompt: absent (`expected == nil`) or a regular file with exactly `expected`. Contents travel
     /// base64-encoded inside the script, so there is no staged file to swap, and writes go to a
-    /// root-made temp file in the same directory, then `mv` into place with mode 644 (atomic).
+    /// root-made temp file in the same directory, then `mv` into place with mode 644 (atomic). It exits
+    /// only on failure, so steps after it in the same script still run.
     static func guardedScript(destination: URL, expected: String?, action: Action) -> String {
         let dest = shellQuote(destination.path)
         let dir = shellQuote(destination.deletingLastPathComponent().path)
@@ -222,7 +262,7 @@ public struct Resolver: Sendable {
         case .write(let text):
             act = "T=$(/usr/bin/mktemp \"$DIR/.paddock.XXXXXX\") || exit 1; "
                 + "if printf %s \(shellQuote(base64(text))) | /usr/bin/base64 -D > \"$T\" "
-                + "&& /bin/chmod 644 \"$T\" && /bin/mv -f \"$T\" \"$D\"; then exit 0; "
+                + "&& /bin/chmod 644 \"$T\" && /bin/mv -f \"$T\" \"$D\"; then :; "
                 + "else /bin/rm -f \"$T\"; exit 1; fi"
         }
         return "D=\(dest); DIR=\(dir); /bin/mkdir -p \"$DIR\" || exit 1; "

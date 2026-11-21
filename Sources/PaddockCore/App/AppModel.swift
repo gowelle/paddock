@@ -60,6 +60,9 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var shellConfigured = true
     /// What "Restore previous setup" reported.
     @Published public private(set) var restoreMessage: String?
+    /// On the real system: who held ports 80/443 when the last start checked them before the setup prompt
+    /// (no prompt was shown). Cleared by the next start that gets past the check.
+    @Published public private(set) var setupBlockedBy: [PortHolder] = []
 
     /// Every PHP version Paddock can install.
     public let availablePHP: [PHPVersion]
@@ -67,6 +70,8 @@ public final class AppModel: ObservableObject {
     public private(set) var ownsDaemon = false
 
     public static let unavailableCaption = "Not available for this Paddock home."
+    /// The action offered while setup is unfinished; it runs the same start path.
+    public static let finishSetupTitle = "Finish Setup\u{2026}"
 
     private let client: ClientProtocol
     private let services: AppServices?
@@ -95,16 +100,34 @@ public final class AppModel: ObservableObject {
 
     public var isRunning: Bool { status?.running ?? false }
 
+    /// The engine runs but launchd's port helper isn't installed (or is outdated), so nothing answers on
+    /// ports 80/443 yet. Never true in a development home, whose engine runs its own helper.
+    public var needsSetup: Bool { isRunning && status?.portHelperInstalled == false }
+
+    /// Sites answer on the web ports.
+    public var isServing: Bool { isRunning && !needsSetup }
+
+    /// Something else holds the web ports, so Paddock can't serve.
+    public var isBlocked: Bool { !isServing && !heldPorts.isEmpty }
+
+    /// Who holds the web ports: what the engine found (a development home), else what the last start
+    /// found before the setup prompt (the real system).
+    private var heldPorts: [PortHolder] {
+        if let blocked = status?.blockedBy, !blocked.isEmpty { return blocked }
+        return setupBlockedBy
+    }
+
     public var statusLine: String {
+        if isBlocked { return Messages.cantStart(heldPorts) }
+        if needsSetup { return "Setup needed" }
         if isRunning { return "Running" }
-        if let blocked = status?.blockedBy, !blocked.isEmpty { return Messages.cantStart(blocked) }
         return "Stopped"
     }
 
     /// The listener keeping Paddock from starting: the first one inside an application, else the first.
     public var blockingHolder: PortHolder? {
-        guard !isRunning, let blocked = status?.blockedBy else { return nil }
-        return blocked.first { $0.appBundlePath != nil } ?? blocked.first
+        guard isBlocked else { return nil }
+        return heldPorts.first { $0.appBundlePath != nil } ?? heldPorts.first
     }
 
     /// A `Quit <app>` button is offered only when the holder belongs to an application that is running
@@ -118,9 +141,8 @@ public final class AppModel: ObservableObject {
 
     /// The plain explanation shown instead of a button.
     public var blockedExplanation: String? {
-        guard let status, !isRunning else { return nil }
-        if !status.blockedBy.isEmpty { return canQuitBlockingHolder ? nil : Messages.portsBlocked(status.blockedBy) }
-        return nil
+        guard isBlocked else { return nil }
+        return canQuitBlockingHolder ? nil : Messages.portsBlocked(heldPorts)
     }
 
     public var sites: [Site] { status?.sites ?? [] }
@@ -252,8 +274,15 @@ public final class AppModel: ObservableObject {
             let outcome = await Task.detached { Result { try services.startDaemon() } }.value
             switch outcome {
             case .success(let how):
+                setupBlockedBy = []
                 if how == .spawned { ownsDaemon = true }
                 if how == .viaSystem { ownsDaemon = false }
+            case .failure(DaemonLaunchError.portsBlocked(let holders)):
+                // The status line says it, with a Quit button where one applies.
+                setupBlockedBy = holders
+                lastError = nil
+                await refresh()
+                return
             case .failure(let error as DaemonLaunchError):
                 lastError = error.message()
                 await refresh()
@@ -265,6 +294,11 @@ public final class AppModel: ObservableObject {
             }
         }
         await perform(.start)
+    }
+
+    /// `Finish Setup…`: the start path, which asks for the password once to install what is missing.
+    public func finishSetup() async {
+        await start()
     }
 
     public func stop() async {
@@ -296,7 +330,7 @@ public final class AppModel: ObservableObject {
         }
         for _ in 0..<20 {
             await start()
-            guard status?.blockedBy.contains(where: { $0.appBundlePath == app }) == true else { return }
+            guard heldPorts.contains(where: { $0.appBundlePath == app }) else { return }
             try? await Task.sleep(nanoseconds: quitRetryDelay)
         }
     }

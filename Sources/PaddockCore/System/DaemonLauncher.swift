@@ -10,6 +10,10 @@ public enum DaemonLaunchError: Error, Equatable {
     case didNotStart(logPath: String)
     /// The control socket's path is longer than macOS allows for a unix socket (103 bytes).
     case socketPathTooLong(path: String)
+    /// Something other than Paddock answers on port 80 or 443, so setup didn't ask for the password.
+    case portsBlocked([PortHolder])
+    /// The resolver file isn't one Paddock could put back on uninstall, so it was left alone.
+    case resolverUnrestorable(path: String)
     case failed(String)
 
     /// The plain sentence for this failure. `retry` is how the reader tries again (e.g. `Run paddock start`).
@@ -25,6 +29,8 @@ public enum DaemonLaunchError: Error, Equatable {
         case .socketPathTooLong(let path):
             return "Paddock can't run from this folder: the path \(path) is too long for macOS. "
                 + "Use a shorter PADDOCK_HOME."
+        case .portsBlocked(let holders): return Messages.portsBlocked(holders)
+        case .resolverUnrestorable(let path): return ResolverError.cannotRestoreLater(path: path).message
         case .failed(let message): return "Couldn't start Paddock: \(message)"
         }
     }
@@ -58,8 +64,8 @@ public struct DaemonLauncher: Sendable {
     private var logPath: String { paths.log.appendingPathComponent("paddockd.log").path }
 
     /// Makes sure a daemon is answering. On the owner's system this installs the LaunchAgent if needed,
-    /// has the daemon start, and then (only if the web ports are free) installs the resolver (one
-    /// password prompt).
+    /// then, unless the port helper and the resolver are both in place, (only if the web ports are free)
+    /// installs them with one password prompt, and has the engine start.
     ///
     /// `honouringLoginSetting` (the app): when the owner turned start at login off, launch the daemon
     /// directly instead of reinstalling the LaunchAgent.
@@ -84,6 +90,14 @@ public struct DaemonLauncher: Sendable {
             throw DaemonLaunchError.resolverChangedDuringInstall(path: lifecycle.resolverPath)
         } catch ResolverError.failed(let message) {
             throw DaemonLaunchError.resolverFailed(message)
+        } catch ResolverError.cannotRestoreLater(let path) {
+            throw DaemonLaunchError.resolverUnrestorable(path: path)
+        } catch let error as ResolverError {
+            throw DaemonLaunchError.resolverFailed(error.message)
+        } catch EngineError.socketPathTooLong(let path) {
+            throw DaemonLaunchError.failed(Messages.socketPathTooLong(path))
+        } catch EngineError.portHelperMissing {
+            throw DaemonLaunchError.failed(Messages.portHelperMissing)
         } catch {
             throw DaemonLaunchError.failed("\(error)")
         }

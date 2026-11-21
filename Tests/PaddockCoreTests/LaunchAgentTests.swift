@@ -43,6 +43,7 @@ final class LaunchAgentTests: XCTestCase {
         XCTAssertEqual(dict["StandardOutPath"] as? String, log)
         XCTAssertEqual(dict["StandardErrorPath"] as? String, log)
         XCTAssertEqual(dict["ProcessType"] as? String, "Interactive")
+        XCTAssertEqual(dict["ExitTimeOut"] as? Int, 20, "time for a clean shutdown before launchd kills it")
         XCTAssertNil(dict["EnvironmentVariables"])
         XCTAssertFalse(text.contains("PADDOCK_"))
     }

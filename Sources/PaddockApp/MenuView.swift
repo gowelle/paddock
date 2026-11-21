@@ -80,6 +80,10 @@ private struct StatusHeader: View {
             if model.canQuitBlockingHolder {
                 Button(model.quitButtonTitle) { Task { await model.quitBlockingHolder() } }
                     .controlSize(.small)
+            } else if model.needsSetup && !model.isBlocked {
+                Button(AppModel.finishSetupTitle) { Task { await model.finishSetup() } }
+                    .controlSize(.small)
+                    .disabled(model.isBusy(.start))
             } else if let explanation = model.blockedExplanation {
                 Text(explanation)
                     .font(.caption)
@@ -93,8 +97,8 @@ private struct StatusHeader: View {
     }
 
     private var dotState: StatusDot.State {
-        if model.isRunning { return .running }
-        return model.status?.blockedBy.isEmpty == false ? .blocked : .stopped
+        if model.isServing { return .running }
+        return model.isBlocked ? .blocked : .stopped
     }
 }
 

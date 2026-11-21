@@ -23,6 +23,14 @@ final class StubURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+/// A download that never answers until it is cancelled.
+final class StallingURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {}
+    override func stopLoading() {}
+}
+
 final class PHPInstallerTests: XCTestCase {
     private var home: URL!
     private var scratch: URL!
@@ -219,5 +227,27 @@ final class PHPInstallerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: ini), "memory_limit=1G\n")
         XCTAssertEqual(installer.installed(), [v85])
         XCTAssertTrue(leftoverTempDirs().isEmpty)
+    }
+
+    func testCancelledInstallStopsTheDownloadAndLeavesNothing() async throws {
+        let f = try makeFixture()
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StallingURLProtocol.self]
+        let installer = PHPInstaller(paths: paths, manifest: f.manifest, session: URLSession(configuration: config))
+        let task = Task { try await installer.install(v84) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let began = Date()
+        task.cancel()
+        do {
+            try await task.value
+            XCTFail("a cancelled install should throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(began), 2)
+        XCTAssertFalse(installer.isInstalled(v84))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.phpDir(v84).path))
+        XCTAssertEqual(leftoverTempDirs(), [])
     }
 }

@@ -78,6 +78,8 @@ public final class Engine: @unchecked Sendable {
     private var blockedBy: [PortHolder] = []
     private var dnsUp = false
     private var shuttingDown = false
+    /// The PHP install in progress, if any; shutting down cancels it. Guarded by `flagsLock`.
+    private var installInProgress: Task<Void, Error>?
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
     /// Replaces the real download in `installPHP` requests; tests use it to make installs slow.
@@ -91,9 +93,13 @@ public final class Engine: @unchecked Sendable {
     private static let portHelperName = "ports"
     private static let readyTimeout: TimeInterval = 15
 
+    /// `portHelperInstalled` answers, on the real system, whether launchd's port helper is installed and
+    /// current (`PortHelper.isInstalled`); a development home runs its own helper and ignores it.
     public convenience init(paths: Paths = .current, settings: Settings = .current,
-                            trust: CertificateTrust? = nil, resolverFile: URL? = nil) {
-        self.init(paths: paths, settings: settings, installAction: nil, trust: trust, resolverFile: resolverFile)
+                            trust: CertificateTrust? = nil, resolverFile: URL? = nil,
+                            portHelperInstalled: @escaping @Sendable () -> Bool = { false }) {
+        self.init(paths: paths, settings: settings, installAction: nil, trust: trust, resolverFile: resolverFile,
+                  portHelperInstalled: portHelperInstalled)
     }
 
     /// `backoffScale` shortens the supervisor's restart delays (tests only). `managesPortHelper` defaults to
@@ -462,9 +468,23 @@ public final class Engine: @unchecked Sendable {
         return shuttingDown
     }
 
+    /// Refuses all further changes and cancels a PHP install in progress, so shutting down never waits
+    /// for a download.
     func markShuttingDown() {
         flagsLock.lock()
         shuttingDown = true
+        let install = installInProgress
         flagsLock.unlock()
+        install?.cancel()
+    }
+
+    /// Records the PHP install in progress (nil when it is over). One registered after shutting down
+    /// began is cancelled at once.
+    func setInstallInProgress(_ task: Task<Void, Error>?) {
+        flagsLock.lock()
+        installInProgress = task
+        let cancel = shuttingDown
+        flagsLock.unlock()
+        if cancel { task?.cancel() }
     }
 }

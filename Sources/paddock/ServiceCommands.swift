@@ -33,13 +33,16 @@ struct Stop: ParsableCommand {
         } catch {
             throw CLI.failure("Couldn't stop Paddock: \(error)")
         }
-        print(outcome == .stopped ? "Paddock stopped." : "Paddock isn't running.")
+        guard outcome == .stopped else { return print("Paddock isn't running.") }
+        // On the real system launchd keeps 80 and 443 for Paddock until uninstall.
+        print(CLI.lifecycle.isEnabled ? Messages.stoppedKeepingPorts : "Paddock stopped.")
     }
 }
 
 struct Uninstall: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Remove Paddock's resolver, login item and certificate trust. Keeps your sites and data.")
+        abstract: "Remove Paddock's resolver, port 80/443 entry, login item and certificate trust. "
+            + "Keeps your sites and data.")
 
     private static let stillInstalled = "Paddock is still installed. Run paddock uninstall to try again."
 
@@ -87,7 +90,9 @@ struct Status: ParsableCommand {
             if case .error(_, let message) = response { throw CLI.failure(message) }
             return
         }
-        if status.running {
+        if status.running && !status.portHelperInstalled {
+            print(Messages.finishSetup)
+        } else if status.running {
             print("Paddock is running.")
         } else if !status.blockedBy.isEmpty {
             print(Messages.portsBlocked(status.blockedBy))

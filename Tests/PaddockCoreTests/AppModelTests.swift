@@ -99,12 +99,13 @@ private let v84 = PHPVersion(major: 8, minor: 4)
 private let v85 = PHPVersion(major: 8, minor: 5)
 
 private func sampleStatus(running: Bool = true, blockedBy: [PortHolder] = [],
-                          sites: [Site]? = nil) -> EngineStatus {
+                          sites: [Site]? = nil, portHelperInstalled: Bool = true) -> EngineStatus {
     EngineStatus(running: running, blockedBy: blockedBy,
                  sites: sites ?? [Site(name: "blog", path: "/p/blog", kind: .parked, secured: true,
                                        php: v85, pinned: false)],
                  installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
-                 resolverInstalled: true, trustEnabled: true, dnsRunning: true, portHelperInstalled: true)
+                 resolverInstalled: true, trustEnabled: true, dnsRunning: true,
+                 portHelperInstalled: portHelperInstalled)
 }
 
 @MainActor
@@ -473,5 +474,76 @@ final class AppModelTests: XCTestCase {
         await model.start()
         model.shutDownOwnedDaemon()
         XCTAssertTrue(client.requests.contains(.shutdown))
+    }
+
+    // MARK: - Finishing setup on the real system
+
+    func testRunningWithoutThePortHelperNeedsSetup() async {
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) })
+        await model.refresh()
+        XCTAssertTrue(model.needsSetup)
+        XCTAssertFalse(model.isServing)
+        XCTAssertEqual(model.statusLine, "Setup needed")
+        XCTAssertEqual(AppModel.finishSetupTitle, "Finish Setup\u{2026}")
+    }
+
+    func testADevelopmentHomeOrAFinishedSetupIsJustRunning() async {
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(portHelperInstalled: true)) })
+        await model.refresh()
+        XCTAssertFalse(model.needsSetup)
+        XCTAssertTrue(model.isServing)
+        XCTAssertEqual(model.statusLine, "Running")
+    }
+
+    func testAStoppedEngineWithoutTheHelperIsStoppedNotSetupNeeded() async {
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(running: false, portHelperInstalled: false)) })
+        await model.refresh()
+        XCTAssertFalse(model.needsSetup)
+        XCTAssertEqual(model.statusLine, "Stopped")
+    }
+
+    func testFinishSetupRunsTheStartPath() async {
+        let client = FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) }
+        let services = FakeServices()
+        let model = AppModel(client: client, services: services)
+        await model.refresh()
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.finishSetup()
+        XCTAssertEqual(services.startCalls, 1)
+        XCTAssertTrue(client.requests.contains(.start))
+        XCTAssertEqual(model.statusLine, "Running")
+    }
+
+    func testPortsHeldBeforeTheSetupPromptAreShownWithAQuitButton() async {
+        let client = FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) }
+        let services = FakeServices()
+        services.startError = DaemonLaunchError.portsBlocked(herdHolders())
+        let quitter = FakeQuitter(quittable: [herdApp])
+        let model = AppModel(client: client, services: services, quitter: quitter)
+        await model.start()
+        XCTAssertNil(model.lastError, "the status line says it")
+        XCTAssertEqual(model.statusLine, "Can't start: ports 80 and 443 in use by Herd")
+        XCTAssertTrue(model.isBlocked)
+        XCTAssertTrue(model.canQuitBlockingHolder)
+        XCTAssertEqual(model.quitButtonTitle, "Quit Herd")
+        XCTAssertEqual(client.requests.filter { $0 == .start }, [], "the engine isn't asked to start")
+
+        // Herd quits; the next start finishes setup.
+        services.startError = nil
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.quitBlockingHolder()
+        XCTAssertEqual(quitter.quitRequests, [herdApp])
+        XCTAssertFalse(model.isBlocked)
+        XCTAssertEqual(model.statusLine, "Running")
+    }
+
+    func testPortsHeldBeforeThePromptByANonAppGetTheSentence() async {
+        let holder = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false)
+        let services = FakeServices()
+        services.startError = DaemonLaunchError.portsBlocked([holder])
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) },
+                             services: services, quitter: FakeQuitter())
+        await model.start()
+        XCTAssertEqual(model.blockedExplanation, Messages.portsBlocked([holder]))
     }
 }

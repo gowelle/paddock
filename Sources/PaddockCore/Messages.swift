@@ -61,6 +61,18 @@ public enum Messages {
 
     public static let portHelperMissing = "Can't find paddock-ports next to paddockd."
 
+    /// `paddock status` when the engine runs but launchd's port helper isn't installed (or is outdated).
+    public static let finishSetup = "Paddock needs to finish setup. Run: paddock start"
+
+    /// `paddock stop` on the real system: the launchd entry keeps 80 and 443 until uninstall.
+    public static let stoppedKeepingPorts =
+        "Paddock stopped. Ports 80 and 443 stay reserved for Paddock until you uninstall it."
+
+    /// A PHP install cut short because the daemon is shutting down; nothing of it was kept.
+    public static func phpInstallCancelled(_ version: PHPVersion) -> String {
+        "Installing PHP \(version) was cancelled because Paddock is shutting down."
+    }
+
     /// A Unix socket under Paddock's folder would be longer than macOS allows (103 bytes).
     public static func socketPathTooLong(_ path: String) -> String {
         "Paddock's folder path is too long for macOS sockets: \(path)"

@@ -322,10 +322,15 @@ final class EngineHandleTests: XCTestCase {
 
     /// Kills only the Caddy this engine started until the supervisor gives up (stays crashed).
     private func driveCaddyToGivenUp(_ engine: Engine) async throws {
+        try await driveToGivenUp(engine, process: "caddy")
+    }
+
+    /// Kills only the `process` child this engine started until the supervisor gives up (stays crashed).
+    private func driveToGivenUp(_ engine: Engine, process: String) async throws {
         var crashedSince: Date?
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
-            let description = engine.status().processes["caddy"] ?? ""
+            let description = engine.status().processes[process] ?? ""
             if description.hasPrefix("crashed") {
                 if let since = crashedSince, Date().timeIntervalSince(since) > 0.5 { return }
                 crashedSince = crashedSince ?? Date()
@@ -335,7 +340,7 @@ final class EngineHandleTests: XCTestCase {
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        XCTFail("Caddy was never given up on")
+        XCTFail("\(process) was never given up on")
     }
 
     func testStartRecoversAfterCaddyIsGivenUpOn() async throws {
@@ -362,5 +367,73 @@ final class EngineHandleTests: XCTestCase {
         }
         XCTAssertFalse(status.running)
         XCTAssertTrue(fast.store.load().parked.contains(extra.path))
+    }
+
+    // MARK: - The development port helper given up on, or missing
+
+    func testStartRecoversAfterThePortHelperIsGivenUpOn() async throws {
+        let fast = Engine.development(paths: home.paths, settings: home.settings, backoffScale: 0.01)
+        defer { fast.shutdown() }
+        guard case .ok(let first) = await fast.handle(.start), first.running else { return XCTFail("start should be ok") }
+        try await driveToGivenUp(fast, process: "ports")
+        XCTAssertFalse(fast.status().running, "\(fast.status().processes)")
+
+        guard case .ok(let status) = await fast.handle(.start) else { return XCTFail("start should recover") }
+        XCTAssertTrue(status.running)
+        XCTAssertTrue(status.processes["ports"]?.hasPrefix("running") == true, "\(status.processes)")
+        XCTAssertEqual(PortCheck.holders(of: [home.settings.httpPort]).count, 1, "the helper holds the port again")
+    }
+
+    func testADevelopmentHomeWithoutPaddockPortsSaysSoAndStartsNothing() async throws {
+        let bare = Engine(paths: home.paths, settings: home.settings, installAction: nil,
+                          managesPortHelper: true, portHelper: nil)
+        defer { bare.shutdown() }
+        let response = await bare.handle(.start)
+        XCTAssertEqual(response, .error(code: ErrorCode.internal, message: Messages.portHelperMissing))
+        XCTAssertEqual(Messages.portHelperMissing, "Can't find paddock-ports next to paddockd.")
+        XCTAssertFalse(bare.status().running)
+        XCTAssertNil(bare.status().processes["caddy"], "nothing of the web stack was started")
+        XCTAssertEqual(PortCheck.holders(of: [home.settings.httpPort, home.settings.httpsPort]), [])
+    }
+
+    // MARK: - Shutdown never waits for a PHP download
+
+    /// Starts the web stack, then a PHP install that would take a minute, then shuts down.
+    private func shutDownDuringSlowInstall(_ shutDown: @escaping (Engine) async -> Void) async throws {
+        let started = expectation(description: "install started")
+        let slow = Engine.development(paths: home.paths, settings: home.settings, installAction: { _ in
+            started.fulfill()
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        })
+        defer { slow.shutdown() }
+        guard case .ok(let running) = await slow.handle(.start), running.running else {
+            return XCTFail("start should be ok")
+        }
+        let pids = running.processes.values.compactMap(TestSupport.pid(from:))
+        XCTAssertGreaterThanOrEqual(pids.count, 3, "\(running.processes)")
+        let install = Task { await slow.handle(.installPHP(version: v84)) }
+        await fulfillment(of: [started], timeout: 10)
+
+        let began = Date()
+        await shutDown(slow)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 5, "shutdown waited for the download")
+        let response = await install.value
+        XCTAssertEqual(response, .error(code: ErrorCode.internal, message: Messages.phpInstallCancelled(v84)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.phpDir(v84).deletingLastPathComponent().path),
+                       "nothing in the version directory")
+        XCTAssertFalse(slow.status().running)
+        for pid in pids {
+            XCTAssertTrue(kill(pid, 0) != 0 && errno == ESRCH, "pid \(pid) of the web stack survived")
+        }
+    }
+
+    func testShutDownAfterPendingWorkCancelsAnInstallInProgress() async throws {
+        try await shutDownDuringSlowInstall { await $0.shutDownAfterPendingWork() }
+    }
+
+    func testAShutdownRequestCancelsAnInstallInProgress() async throws {
+        try await shutDownDuringSlowInstall { engine in
+            guard case .ok = await engine.handle(.shutdown) else { return XCTFail("shutdown should be ok") }
+        }
     }
 }

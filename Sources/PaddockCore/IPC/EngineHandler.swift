@@ -54,8 +54,9 @@ extension Engine {
         }
     }
 
-    /// The daemon's exit on a signal: refuses new work, waits for the request in progress, then stops
-    /// everything (web stack and DNS). The same path a `shutdown` request takes.
+    /// The daemon's exit on a signal: refuses new work, cancels a PHP install in progress (so it never
+    /// waits for a download), waits for the request in progress, then stops everything (web stack and DNS).
+    /// The same path a `shutdown` request takes.
     public func shutDownAfterPendingWork() async {
         markShuttingDown()
         await mutations.withLock { await self.blocking { self.shutdown() } }
@@ -214,12 +215,22 @@ extension Engine {
         guard installAction != nil || installer.isAvailable(version) else {
             return error(ErrorCode.phpNotAvailable, "PHP \(version) is not in the build list")
         }
-        do {
+        let installer = installer
+        let installAction = installAction
+        // Its own task, so shutting down can cancel it; the installer keeps nothing of a cancelled install.
+        let work = Task {
             if let installAction {
                 try await installAction(version)
             } else {
                 try await installer.install(version)
             }
+        }
+        setInstallInProgress(work)
+        defer { setInstallInProgress(nil) }
+        do {
+            try await work.value
+        } catch is CancellationError {
+            return error(ErrorCode.internal, Messages.phpInstallCancelled(version))
         } catch PHPInstallError.notInManifest {
             return error(ErrorCode.phpNotAvailable, "PHP \(version) is not in the build list")
         } catch {
