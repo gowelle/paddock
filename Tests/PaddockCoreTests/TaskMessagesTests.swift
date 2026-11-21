@@ -70,6 +70,20 @@ final class TaskMessagesTests: XCTestCase {
         """)
     }
 
+    func testTheTableSaysWhichTasksRestartWhenCodeChanges() {
+        let status = SiteTasksStatus(
+            approval: .approved,
+            tasks: [TaskStatus(name: "queue", run: "x", state: .running(pid: 4), restartOnChange: true, logPath: "/l", warning: nil),
+                    task("web", .running(pid: 5))],
+            pending: [], pendingHash: nil, notice: nil)
+        XCTAssertEqual(Messages.taskTable(status), """
+        TASK   STATE            COMMAND
+        queue  running (pid 4)  x
+        web    running (pid 5)  x
+        queue: restarts when code changes
+        """)
+    }
+
     func testWhatApprovingShows() {
         XCTAssertEqual(Messages.approvalLines([PendingTask(name: "queue", run: "php artisan queue:work", port: nil),
                                                PendingTask(name: "/app", run: nil, port: 8080)]),

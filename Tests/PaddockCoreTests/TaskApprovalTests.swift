@@ -218,5 +218,6 @@ final class TaskApprovalTests: XCTestCase {
     func testTheBuildNumberMovesOn() {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 9, "site tasks are in the status: the build number moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 12, "tasksStatus, forced restarts and new task states: it moves on")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 13, "restart on change and listening warnings in the status")
     }
 }

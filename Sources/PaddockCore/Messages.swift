@@ -530,6 +530,14 @@ public enum Messages {
         "\(task) keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running."
     }
 
+    /// A task listening beyond this Mac (it keeps running).
+    public static func listeningEverywhere(port: Int) -> String {
+        "Listening on all network interfaces (port \(port)). Add --host=127.0.0.1 or similar to keep it on this Mac."
+    }
+
+    /// The line in a task's log when the site's code changed.
+    public static let taskRestartingForChange = "The site's code changed; restarting."
+
     /// `paddock tasks stop` (or `off`) after a few seconds.
     public static func waitingForTask(_ task: String) -> String { "Waiting for \(task) to finish…" }
 
@@ -601,6 +609,7 @@ public enum Messages {
     public static func taskTable(_ status: SiteTasksStatus) -> String {
         var lines = [table([["TASK", "STATE", "COMMAND"]]
                            + status.tasks.map { [$0.name, taskState($0.state), $0.run] })]
+        lines += status.tasks.filter(\.restartOnChange).map { "\($0.name): restarts when code changes" }
         lines += status.tasks.compactMap { task in task.warning.map { "\(task.name): \($0)" } }
         if let notice = status.notice { lines.append(notice) }
         return lines.joined(separator: "\n")

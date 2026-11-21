@@ -25,9 +25,22 @@ public struct TaskDefinition: Codable, Equatable, Sendable {
 
     public var startsWithPaddock: Bool { autostart ?? true }
     public var stopGrace: Int { stopSeconds ?? Self.defaultStopSeconds }
-    /// Whether the task restarts when the site's code changes. Off unless the file turns it on; the default
-    /// that depends on the command comes with watching the code.
-    public var restartsOnChange: Bool { restartOnChange ?? false }
+    /// Whether the task restarts when the site's code changes: what the file says, else
+    /// `restartsOnChangeByDefault`.
+    public var restartsOnChange: Bool { restartOnChange ?? Self.restartsOnChangeByDefault(run) }
+
+    /// Artisan commands that keep a worker (and so the code it loaded) running.
+    static let longRunningArtisanCommands: Set<String> = [
+        "queue:work", "queue:listen", "horizon", "reverb:start", "octane:start", "schedule:work", "pulse:check", "pulse:work",
+    ]
+
+    /// True when the command runs `artisan` (a word, or a path ending in `/artisan`) followed, anywhere later on
+    /// the line, by one of `longRunningArtisanCommands` as a whole word.
+    public static func restartsOnChangeByDefault(_ run: String) -> Bool {
+        let words = run.split(whereSeparator: \.isWhitespace).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ";&|()")) }
+        guard let artisan = words.firstIndex(where: { $0 == "artisan" || $0.hasSuffix("/artisan") }) else { return false }
+        return words[(artisan + 1)...].contains { longRunningArtisanCommands.contains($0) }
+    }
 }
 
 /// A site's `paddock.json`: the commands Paddock keeps running for it, and the paths of the site it forwards

@@ -62,6 +62,8 @@ public final class SiteTaskManager: @unchecked Sendable {
     public static let logLimit: UInt64 = 5 * 1024 * 1024
     /// After a spawn, when the pid record is brought up to date with the program the shell handed over to.
     static let recordUpdates: [TimeInterval] = [0.5, 2, 10]
+    /// After a launch, when Paddock looks at what the task listens on.
+    static let listenerChecks: [TimeInterval] = [5, 30]
 
     /// Short-lived: held for decisions, never while a process is given its grace.
     private let operationLock = NSLock()
@@ -83,6 +85,8 @@ public final class SiteTaskManager: @unchecked Sendable {
     private var shutdownStarted: Date?
     private var timer: DispatchSourceTimer?
     private var reconcilePending = false
+    /// Site name -> the watcher of its folder, for every approved site.
+    private var watchers: [String: SiteWatcher] = [:]
     private let refreshQueue = DispatchQueue(label: "app.paddock.tasks.refresh")
 
     private struct SiteView {
@@ -115,6 +119,10 @@ public final class SiteTaskManager: @unchecked Sendable {
         var flight: Flight?
         /// What a forced restart stopped, until the task is next stopped.
         var report: String?
+        /// The code changed while it was stopping or starting: restart it once more when it is running.
+        var changePending = false
+        /// It listens beyond this Mac (the last check said so).
+        var listening: String?
     }
 
     private struct Launched {
@@ -256,8 +264,11 @@ public final class SiteTaskManager: @unchecked Sendable {
         let timer = self.timer
         self.timer = nil
         let inFlight = runtime.compactMap { name, state in state.flight.map { (name, $0) } }
+        let watching = Array(watchers.values)
+        watchers = [:]
         stateLock.unlock()
         timer?.cancel()
+        for watcher in watching { watcher.stop() }
         for (name, flight) in inFlight where flight.kind == .stop {
             DispatchQueue.global().asyncAfter(deadline: .now() + shutdownGrace) { [weak self] in
                 guard let self, !flight.isFinished else { return }
@@ -383,7 +394,99 @@ public final class SiteTaskManager: @unchecked Sendable {
         stateLock.lock()
         self.views = views
         stateLock.unlock()
+        syncWatchers(views)
         reconcileLocked(views: views)
+    }
+
+    // MARK: - Watching the code
+
+    /// The watcher of an approved site's folder, if any (tests).
+    func watcher(site: String) -> SiteWatcher? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return watchers[site]
+    }
+
+    /// One watcher per approved site (its approval runs something), on the site's folder; the others stopped.
+    private func syncWatchers(_ views: [String: SiteView]) {
+        stateLock.lock()
+        guard shutdownStarted == nil else { stateLock.unlock(); return }
+        var stale: [SiteWatcher] = []
+        var fresh: [SiteWatcher] = []
+        for (site, watcher) in watchers {
+            guard let view = views[site], view.evaluation.running != nil,
+                  watcher.folder.path == view.folder else {
+                stale.append(watcher)
+                watchers[site] = nil
+                continue
+            }
+        }
+        for view in views.values where view.evaluation.running != nil && watchers[view.name] == nil {
+            let site = view.name
+            let watcher = SiteWatcher(folder: URL(fileURLWithPath: view.folder, isDirectory: true)) { [weak self] changes in
+                // Never on the watcher's own queue: the manager may be stopping that watcher.
+                self?.refreshQueue.async { self?.siteChanged(site, changes) }
+            }
+            watchers[site] = watcher
+            fresh.append(watcher)
+        }
+        stateLock.unlock()
+        for watcher in stale { watcher.stop() }
+        for watcher in fresh { watcher.start() }
+    }
+
+    /// The site's `paddock.json` changed: read it again. Its code changed: restart (gracefully, in the
+    /// background) every task with restart-on-change that isn't stopped by the user; a task given up on runs
+    /// again (fixing the code is how it recovers); one still stopping or starting is restarted once more after.
+    private func siteChanged(_ site: String, _ changes: SiteWatcher.Changes) {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard !isShuttingDown else { return }
+        if changes.tasksFile { refreshLocked() }
+        guard changes.code else { return }
+        stateLock.lock()
+        let view = views[site]
+        stateLock.unlock()
+        guard let view, let running = view.evaluation.running else { return }
+        for (task, definition) in running.tasks where definition.restartsOnChange && !view.stopped.contains(task) {
+            let name = Self.processName(site: site, task: task)
+            if flight(name) != nil {
+                update { $0[name, default: Runtime()].changePending = true }
+                continue
+            }
+            let gaveUp: Bool
+            if case .gaveUp? = settledState(name) { gaveUp = true } else { gaveUp = supervisor.hasGivenUp(name) }
+            if gaveUp { clearSettled(name) }
+            if let launch = launched[name] {
+                if case .stopped = supervisor.status(name), !gaveUp { continue }
+                beginStopLocked(name, launch, note: Messages.taskRestartingForChange)
+            }
+        }
+        reconcileLocked(views: views)
+    }
+
+    private func settledState(_ name: String) -> Settled? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return runtime[name]?.settled
+    }
+
+    /// Five and thirty seconds after a launch (and only for that launch): whether the task listens on anything
+    /// but 127.0.0.1 or [::1]. It is warned, not stopped; a check that can't list the listeners warns nothing.
+    private func checkListeners(_ name: String, generation: Int) {
+        operationLock.lock()
+        guard launched[name]?.generation == generation, case .running(let pid) = supervisor.status(name) else {
+            operationLock.unlock()
+            return
+        }
+        operationLock.unlock()
+        let addresses = try? ServiceManager.listeningAddresses(processGroup: pid, runner: SystemCommandRunner())
+        let warning = addresses?.first { !ServiceManager.isLoopback($0) }
+            .map { Messages.listeningEverywhere(port: SiteWatcher.port(of: $0) ?? 0) }
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard launched[name]?.generation == generation else { return }
+        update { $0[name, default: Runtime()].listening = warning }
     }
 
     /// The file's last reading, read again only when its stamp changed.
@@ -516,7 +619,20 @@ public final class SiteTaskManager: @unchecked Sendable {
         do {
             try supervisor.start(spec)
             launched[name] = launch
-            update { $0[name, default: Runtime()].startFailure = nil }
+            var changedMeanwhile = false
+            update {
+                $0[name, default: Runtime()].startFailure = nil
+                $0[name]?.listening = nil
+                changedMeanwhile = $0[name]?.changePending ?? false
+                $0[name]?.changePending = false
+            }
+            for delay in Self.listenerChecks {
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.checkListeners(name, generation: generation)
+                }
+            }
+            // The code changed again while it was restarting: once more, so it runs the newest code.
+            if changedMeanwhile { beginStopLocked(name, launch, note: Messages.taskRestartingForChange) }
         } catch {
             update { $0[name, default: Runtime()].startFailure = Messages.taskCouldNotRun(shell: environment.shell) }
             log("task \(task.site)/\(task.task) could not be started: \(error)")
@@ -930,7 +1046,7 @@ public final class SiteTaskManager: @unchecked Sendable {
                     tasks.append(TaskStatus(name: name, run: Messages.shownCommand(definition.run), state: taskState,
                                             restartOnChange: definition.restartsOnChange,
                                             logPath: logFile(site: view.name, task: name).path,
-                                            warning: state.report ?? warning))
+                                            warning: state.report ?? warning ?? state.listening))
                 }
             } else if let pending = evaluation.pending {
                 tasks = pending.tasks.keys.sorted().map { name in
