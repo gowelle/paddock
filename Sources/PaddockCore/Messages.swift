@@ -37,18 +37,22 @@ public enum Messages {
 
     /// `Paddock can't start: ports 80 and 443 are in use by Herd.` One clause per distinct owner (the
     /// application if known, else the command, else the well-known system server), each listing its ports
-    /// once; a holder `lsof` can't see carries its `Server` header in brackets. A known server's stop
-    /// command follows the sentence; a `sudo kill` hint follows on its own line, once per distinct pid,
-    /// only for someone else's process that belongs to no known application. Paddock never runs either.
+    /// once; a holder `lsof` can't see carries its `Server` header in brackets, and is only "probably" a
+    /// known server when no header confirmed it. A known server's stop command follows the sentence; a
+    /// `sudo kill` hint follows on its own line, once per distinct pid, only for someone else's process that
+    /// belongs to no known application. Paddock never runs either. Text from other programs is shown only
+    /// as `printable`.
     public static func portsBlocked(_ holders: [PortHolder]) -> String {
         guard !holders.isEmpty else { return "Paddock can't start: its ports are in use." }
         let clauses = owners(holders).map { owner -> String in
             let who = owner.who + (owner.onlyPid.map { " (pid \($0))" } ?? "")
-            return "\(portList(owner.ports)) \(Set(owner.ports).count == 1 ? "is" : "are") in use by \(who)"
+            return "\(portList(owner.ports)) \(Set(owner.ports).count == 1 ? "is" : "are") "
+                + "\(owner.probable ? "probably " : "")in use by \(who)"
         }
         var text = "Paddock can't start: " + clauses.joined(separator: "; ") + "."
         var commands: [String] = []
-        for command in holders.compactMap(\.stopCommand) where !commands.contains(command) {
+        for command in holders.compactMap({ $0.stopCommand.flatMap { printable($0) } })
+        where !commands.contains(command) {
             commands.append(command)
             text += " Stop it with: \(command)"
         }
@@ -62,7 +66,7 @@ public enum Messages {
     /// The menu bar's one-line form, for the first owner: `Can't start: ports 80 and 443 in use by Herd`.
     public static func cantStart(_ holders: [PortHolder]) -> String {
         guard let first = owners(holders).first else { return "Can't start: ports in use" }
-        return "Can't start: \(portList(first.ports)) in use by \(first.who)"
+        return "Can't start: \(portList(first.ports)) \(first.probable ? "probably " : "")in use by \(first.who)"
     }
 
     public static let portHelperMissing = "Can't find paddock-ports next to paddockd."
@@ -83,11 +87,16 @@ public enum Messages {
         } else {
             lines = ["Paddock is stopped."]
         }
-        if status.needsTrust { lines.append(securedSitesNeedTrust) }
+        if status.needsTrust {
+            lines.append(securedSitesNeedTrust)
+        } else if status.hasReplacedRootsToClean {
+            lines.append(olderCertificateStillTrusted)
+        }
         return lines
     }
 
     public static let securedSitesNeedTrust = "Secured sites need your approval once: run paddock trust"
+    public static let olderCertificateStillTrusted = "An older Paddock certificate is still trusted: run paddock trust"
 
     /// `paddock stop` on the real system: the launchd entry keeps 80 and 443 until uninstall.
     public static let stoppedKeepingPorts =
@@ -130,6 +139,49 @@ public enum Messages {
         "Paddock's folder path is too long for macOS sockets: \(path)"
     }
 
+    /// The names a holder is shown by, each made `printable` (nil if nothing printable is left).
+    private struct Shown {
+        let port: Int
+        let pid: Int32?
+        let appName, command, serviceName, serverHeader: String?
+
+        init(_ holder: PortHolder) {
+            port = holder.port
+            pid = holder.pid
+            appName = holder.appName.flatMap { printable($0) }
+            command = holder.command.flatMap { printable($0) }
+            serviceName = holder.serviceName.flatMap { printable($0) }
+            serverHeader = holder.serverHeader.flatMap { printable($0) }
+        }
+    }
+
+    /// Text from another program (a `Server` header, a process or application name) as Paddock shows it:
+    /// only what comes before the first line break, terminal escape sequences removed, only printable
+    /// ASCII (0x20-0x7E) kept, runs of spaces collapsed, at most `limit` characters; nil if nothing is left.
+    public static func printable(_ text: String, limit: Int = 64) -> String? {
+        let line = text.unicodeScalars.prefix { $0 != "\n" && $0 != "\r" }
+        var kept = ""
+        var iterator = line.makeIterator()
+        while let scalar = iterator.next() {
+            if scalar == "\u{1B}" {
+                switch iterator.next() {
+                case "[":  // CSI: parameters, then one final byte in 0x40-0x7E.
+                    while let next = iterator.next(), !(0x40...0x7E).contains(next.value) {}
+                case "]":  // OSC: up to BEL or ESC \\.
+                    while let next = iterator.next(), next != "\u{07}", next != "\u{1B}" {}
+                default: break  // A two-character sequence: both dropped.
+                }
+                continue
+            }
+            guard (0x20...0x7E).contains(scalar.value) else { continue }
+            if scalar == " " && (kept.isEmpty || kept.hasSuffix(" ")) { continue }
+            kept.unicodeScalars.append(scalar)
+        }
+        let trimmed = String(kept.trimmingCharacters(in: .whitespaces).prefix(limit))
+            .trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// `port 80`, `ports 80 and 443`, `ports 80, 443 and 8080`.
     static func portList(_ ports: [Int]) -> String {
         let sorted = Array(Set(ports)).sorted().map(String.init)
@@ -139,11 +191,13 @@ public enum Messages {
     }
 
     /// Holders grouped by who they are, in first-seen order. `onlyPid` is set for an owner with no
-    /// known application and exactly one known pid.
-    private static func owners(_ holders: [PortHolder]) -> [(who: String, ports: [Int], onlyPid: Int32?)] {
+    /// known application and exactly one known pid; `probable` for a known server no header confirmed.
+    private static func owners(_ holders: [PortHolder])
+        -> [(who: String, ports: [Int], onlyPid: Int32?, probable: Bool)] {
         var order: [String] = []
-        var groups: [String: (holders: [PortHolder], ports: [Int])] = [:]
-        for holder in holders {
+        var groups: [String: (holders: [Shown], ports: [Int])] = [:]
+        for raw in holders {
+            let holder = Shown(raw)
             let key: String
             if let app = holder.appName { key = "app:" + app }
             else if let command = holder.command { key = "command:" + command }
@@ -161,10 +215,11 @@ public enum Messages {
             let pids = Set(group.holders.compactMap(\.pid))
             let onlyPid = first.appName == nil && pids.count == 1 ? pids.first : nil
             var who = first.appName ?? first.command ?? first.serviceName ?? "another program"
-            if first.pid == nil, let header = group.holders.lazy.compactMap(\.serverHeader).first {
-                who += " (\(header))"
-            }
-            return (who, group.ports, onlyPid)
+            let header = first.pid == nil ? group.holders.lazy.compactMap(\.serverHeader).first : nil
+            if let header { who += " (\(header))" }
+            let probable = first.appName == nil && first.command == nil && first.pid == nil
+                && first.serviceName != nil && header == nil
+            return (who, group.ports, onlyPid, probable)
         }
     }
 

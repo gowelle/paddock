@@ -57,7 +57,7 @@ public struct KnownServer: Equatable, Sendable {
     public let label: String
     /// The name the owner knows it by, e.g. `MacPorts nginx`.
     public let name: String
-    /// The program the job runs.
+    /// The program the job usually runs (a reference only: never reported as the holder's program).
     public let binary: String
     public let stopCommand: String
     public let kind: Kind
@@ -117,7 +117,7 @@ public enum PortCheck {
             (try? runner.run("/bin/launchctl", ["print", "system/\(label)"]))?.status == 0
         }
         return PortHolder(port: port, pid: nil, command: nil, ownedByCurrentUser: false,
-                          executablePath: server?.binary, serverHeader: header, serviceName: server?.name,
+                          serverHeader: header, serviceName: server?.name,
                           stopCommand: server?.stopCommand)
     }
 
@@ -170,7 +170,8 @@ public enum PortCheck {
         return serverHeader(inResponse: String(decoding: response, as: UTF8.self))
     }
 
-    /// The `Server` header of an HTTP response's head; nil if it is not an HTTP response or has none.
+    /// The `Server` header of an HTTP response's head, made `Messages.printable` (one line of printable
+    /// ASCII, at most 64 characters); nil if it is not an HTTP response or has no usable header.
     static func serverHeader(inResponse text: String) -> String? {
         let lines = text.components(separatedBy: "\r\n")
         guard lines.first?.hasPrefix("HTTP/") == true else { return nil }
@@ -178,8 +179,8 @@ public enum PortCheck {
             if line.isEmpty { break }
             guard let colon = line.firstIndex(of: ":"),
                   line[..<colon].trimmingCharacters(in: .whitespaces).lowercased() == "server" else { continue }
-            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            return value.isEmpty ? nil : value
+            // A bare LF or other control text inside the value goes no further than this.
+            return Messages.printable(String(line[line.index(after: colon)...]))
         }
         return nil
     }

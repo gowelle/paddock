@@ -295,6 +295,7 @@ final class IPCTests: XCTestCase {
         XCTAssertNil(status.executablePath)
         XCTAssertNil(status.defaultPHP)
         XCTAssertFalse(status.needsTrust, "an older daemon never asks for trust")
+        XCTAssertFalse(status.hasReplacedRootsToClean)
         let minimal = try JSONDecoder().decode(EngineStatus.self, from: Data("{}".utf8))
         XCTAssertFalse(minimal.running)
         XCTAssertEqual(minimal.sites, [])
@@ -303,6 +304,7 @@ final class IPCTests: XCTestCase {
     func testStatusCarriesTheBuildAndProgram() throws {
         var status = sampleStatus()
         status.needsTrust = true
+        status.hasReplacedRootsToClean = true
         XCTAssertEqual(status.version, PaddockBuild.number)
         XCTAssertEqual(status.executablePath, PaddockBuild.runningExecutable)
         let decoded = try JSONDecoder().decode(EngineStatus.self, from: JSONEncoder().encode(status))

@@ -117,8 +117,15 @@ extension Engine {
             return await change { $0.phpPins[site] = nil }
 
         case .trust:
-            guard trust != nil else { return error(ErrorCode.trustDisabled, Messages.trustDisabled) }
-            return await ensureTrusted(afterSecuring: nil) ?? .ok(status())
+            guard let trust else { return error(ErrorCode.trustDisabled, Messages.trustDisabled) }
+            let current = await ensureTrusted(afterSecuring: nil)
+            // Then roots replaced when the certificate authority was renamed: best-effort, never failing
+            // this request; a file whose trust couldn't be removed stays for the next attempt.
+            await blocking {
+                for failure in trust.cleanUpReplacedRoots() { self.log(failure) }
+                self.refreshTrustChecks()
+            }
+            return current ?? .ok(status())
 
         case .use(let version):
             guard installer.isInstalled(version) else { return notInstalled(version) }
@@ -203,7 +210,7 @@ extension Engine {
             return .declined
         }) ?? .declined
         // The status this request answers with already knows the outcome.
-        await blocking { self.refreshRootTrusted() }
+        await blocking { self.refreshTrustChecks() }
         if outcome == .trusted { return nil }
         if outcome == .notReady { return error(ErrorCode.needsTrust, Messages.certificateNotReady) }
         return error(ErrorCode.needsTrust, site.map { Messages.needsTrust(host: "\($0).\(settings.tld)") }

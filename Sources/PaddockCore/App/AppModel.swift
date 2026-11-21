@@ -149,7 +149,7 @@ public final class AppModel: ObservableObject {
         return quitter.canQuit(appBundlePath: path)
     }
 
-    public var quitButtonTitle: String { "Quit \(blockingHolder?.appName ?? "it")" }
+    public var quitButtonTitle: String { "Quit \(blockingHolder?.appName.flatMap { Messages.printable($0) } ?? "it")" }
 
     /// The plain explanation shown instead of a button.
     public var blockedExplanation: String? {
@@ -158,9 +158,9 @@ public final class AppModel: ObservableObject {
     }
 
     /// `Trust Certificate…` while secured sites need macOS to trust Paddock's certificate (again, after
-    /// the certificate authority was renamed); nil otherwise.
+    /// the certificate authority was renamed), or an older Paddock certificate is still trusted; nil otherwise.
     public var trustActionTitle: String? {
-        status?.needsTrust == true ? Self.trustCertificateTitle : nil
+        status?.needsTrust == true || status?.hasReplacedRootsToClean == true ? Self.trustCertificateTitle : nil
     }
 
     public var sites: [Site] { status?.sites ?? [] }
@@ -349,7 +349,7 @@ public final class AppModel: ObservableObject {
     /// Only ever called from the user's click on the Quit button.
     public func quitBlockingHolder() async {
         guard canQuitBlockingHolder, let app = blockingHolder?.appBundlePath, let quitter else { return }
-        let name = blockingHolder?.appName ?? "That application"
+        let name = blockingHolder?.appName.flatMap { Messages.printable($0) } ?? "That application"
         guard quitter.quit(appBundlePath: app) else {
             lastError = "\(name) didn't quit."
             return

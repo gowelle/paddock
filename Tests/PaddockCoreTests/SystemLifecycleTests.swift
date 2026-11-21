@@ -546,6 +546,38 @@ final class SystemLifecycleTests: XCTestCase {
             + "~/Library/Application Support/Paddock were left in place.")
     }
 
+    /// A root replaced when the certificate authority was renamed is untrusted too, after the current one,
+    /// best-effort: a refusal there doesn't fail uninstall.
+    func testUninstallAlsoUntrustsReplacedRootsBestEffort() throws {
+        let pki = paths.caddyData.appendingPathComponent("pki")
+        try FileManager.default.createDirectory(at: pki, withIntermediateDirectories: true)
+        let old = pki.appendingPathComponent("replaced-root.crt")
+        let refused = pki.appendingPathComponent("replaced-root-2.crt")
+        try Data("old".utf8).write(to: old)
+        try Data("old2".utf8).write(to: refused)
+        let current = CertificateTrust(paths: paths, runner: RecordingCommandRunner()).rootCertificate.path
+        let trusted = LockedBox<Set<String>>([current, old.path, refused.path])
+        let launchd = FakeLaunchd(loaded: false)
+        let fake = RecordingCommandRunner { exe, args in
+            if let answer = launchd.answer(exe, args) { return answer }
+            switch args.first {
+            case "verify-cert": return (trusted.value.contains(args[2]) ? 0 : 1, "")
+            case "remove-trusted-cert":
+                if args[1] == refused.path { return (1, "User canceled the authorization") }
+                trusted.value.remove(args[1])
+                return (0, "")
+            default: return (0, "")
+            }
+        }
+        let lines = try lifecycle(fake).uninstall()
+        XCTAssertTrue(lines.last?.hasPrefix("Paddock is uninstalled.") == true, "\(lines)")
+        let removals = fake.calls.filter { $0.arguments.first == "remove-trusted-cert" }.map { $0.arguments[1] }
+        XCTAssertEqual(removals, [current, old.path, refused.path], "the current root first")
+        XCTAssertEqual(trusted.value, [refused.path])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path), "untrusted, so no longer kept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: refused.path), "still trusted, so kept")
+    }
+
     func testUninstallSkipsResolverPromptWhenFileIsNotPaddocks() throws {
         try writeResolver("nameserver 8.8.8.8\n")
         try store.update { $0.previousResolver = "nameserver 10.0.0.1\n" }

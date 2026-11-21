@@ -22,9 +22,8 @@ final class PortHelperTests: XCTestCase {
         try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
         httpSocket = run.appendingPathComponent("http.sock").path
         httpsSocket = run.appendingPathComponent("https.sock").path
-        httpPort = TestSupport.freeTCPPort(preferred: 28080)
-        httpsPort = TestSupport.freeTCPPort(preferred: httpPort + 1)
-        if httpsPort == httpPort { httpsPort = TestSupport.freeTCPPort(preferred: httpPort + 2) }
+        httpPort = TestSupport.freeTCPPort()
+        httpsPort = TestSupport.freeTCPPort(excluding: [httpPort])
     }
 
     override func tearDown() {

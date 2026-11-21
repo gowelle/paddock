@@ -100,13 +100,14 @@ private let v85 = PHPVersion(major: 8, minor: 5)
 
 private func sampleStatus(running: Bool = true, blockedBy: [PortHolder] = [],
                           sites: [Site]? = nil, portHelperInstalled: Bool = true,
-                          needsTrust: Bool = false) -> EngineStatus {
+                          needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false) -> EngineStatus {
     EngineStatus(running: running, blockedBy: blockedBy,
                  sites: sites ?? [Site(name: "blog", path: "/p/blog", kind: .parked, secured: true,
                                        php: v85, pinned: false)],
                  installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
                  resolverInstalled: true, trustEnabled: true, dnsRunning: true,
-                 portHelperInstalled: portHelperInstalled, needsTrust: needsTrust)
+                 portHelperInstalled: portHelperInstalled, needsTrust: needsTrust,
+                 hasReplacedRootsToClean: hasReplacedRootsToClean)
 }
 
 @MainActor
@@ -550,8 +551,8 @@ final class AppModelTests: XCTestCase {
 
     func testARootServerNamedByLaunchdGetsTheSentenceAndNoQuitButton() async {
         let holder = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false,
-                                executablePath: "/opt/local/sbin/nginx", serverHeader: "nginx/1.30.6",
-                                serviceName: "MacPorts nginx", stopCommand: "sudo port unload nginx")
+                                serverHeader: "nginx/1.30.6", serviceName: "MacPorts nginx",
+                                stopCommand: "sudo port unload nginx")
         let services = FakeServices()
         services.startError = DaemonLaunchError.portsBlocked([holder])
         let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) },
@@ -656,5 +657,16 @@ final class AppModelTests: XCTestCase {
         await model.trustCertificate()
         XCTAssertEqual(model.trustNotice, Messages.stillNotTrusted)
         XCTAssertEqual(model.trustActionTitle, "Trust Certificate\u{2026}")
+    }
+
+    func testTrustCertificateIsAlsoOfferedToCleanUpAnOlderTrustedCertificate() async {
+        let client = FakeClient { _ in .ok(sampleStatus(hasReplacedRootsToClean: true)) }
+        let model = AppModel(client: client)
+        await model.refresh()
+        XCTAssertEqual(model.trustActionTitle, "Trust Certificate\u{2026}")
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.trustCertificate()
+        XCTAssertEqual(client.requests.filter { $0 == .trust }.count, 1)
+        XCTAssertNil(model.trustActionTitle)
     }
 }

@@ -443,9 +443,8 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(engine!.status().needsTrust, false, "the fake keychain trusts it")
     }
 
-    /// A home whose CA Caddy created under its default names (before Paddock named its own): the next
-    /// start removes the old root's trust, deletes the old CA and its certificates, and says so once.
-    func testStartReplacesADefaultNamedAuthorityAndAsksForTrustAgain() async throws {
+    /// A home whose CA Caddy created under its default names, and an engine for it now.
+    private func homeWithDefaultNamedAuthority() throws -> (oldName: String, root: URL) {
         try StateStore(paths: paths).update { $0.secured = ["plain-php"] }
         let old = Engine.development(paths: paths, settings: settings)
         old.namesCertificateAuthority = false
@@ -456,50 +455,97 @@ final class EngineTests: XCTestCase {
         let oldName = try XCTUnwrap(CertificateTrust.commonName(ofCertificateAt: root))
         XCTAssertTrue(oldName.hasPrefix("Caddy Local Authority"), oldName)
         old.shutdown()
+        return (oldName, root)
+    }
 
-        // The old root is trusted; removing its trust is recorded with the name it had at that moment.
-        let trusted = LockedBox(true)
-        let removed = LockedBox<[String?]>([])
-        let runner = RecordingCommandRunner { _, arguments in
+    /// A fake keychain keyed by certificate file: `verify-cert` answers from `trusted`, `add-trusted-cert`
+    /// adds, `remove-trusted-cert` removes (or fails for `refuseRemoval`). Untrust calls are recorded with
+    /// the name the file had at that moment.
+    private func keychain(trusted: LockedBox<Set<String>>, refuseRemoval: Bool = false,
+                          removed: LockedBox<[String?]>) -> RecordingCommandRunner {
+        RecordingCommandRunner { _, arguments in
             switch arguments.first {
-            case "verify-cert": return (trusted.value ? 0 : 1, "")
+            case "verify-cert": return (trusted.value.contains(arguments[2]) ? 0 : 1, "")
+            case "add-trusted-cert": trusted.value.insert(arguments.last!); return (0, "")
             case "remove-trusted-cert":
                 removed.value.append(CertificateTrust.commonName(ofCertificateAt: URL(fileURLWithPath: arguments[1])))
-                trusted.value = false
+                if refuseRemoval { return (1, "User canceled the authorization") }
+                trusted.value.remove(arguments[1])
                 return (0, "")
-            case "add-trusted-cert": trusted.value = true; return (0, "")
             default: return (1, "unexpected")
             }
         }
+    }
+
+    /// The next start sets the old root aside (no `security` call, so nothing can wait on a dialog),
+    /// deletes the old CA and its certificates, and says so once. The `trust` request then trusts the new
+    /// root and removes the old one's trust and file.
+    func testStartSetsAsideADefaultNamedAuthorityAndTrustCleansItUp() async throws {
+        let (oldName, root) = try homeWithDefaultNamedAuthority()
+        let replaced = paths.caddyData.appendingPathComponent("pki/replaced-root.crt")
+        // The old root (by path, as it will be kept) is trusted.
+        let trusted = LockedBox<Set<String>>([root.path, replaced.path])
+        let removed = LockedBox<[String?]>([])
+        let runner = keychain(trusted: trusted, removed: removed)
         let logged = LockedBox<[String]>([])
         let engine = Engine.development(paths: paths, settings: settings,
                                         trust: CertificateTrust(paths: paths, runner: runner),
                                         log: { logged.value.append($0) })
         self.engine = engine
         try engine.start()
-        XCTAssertEqual(removed.value, [oldName], "untrust ran exactly once, for the old root")
+        XCTAssertFalse(runner.calls.contains { $0.arguments.first != "verify-cert" },
+                       "start changed no trust: \(runner.calls.map(\.arguments))")
+        XCTAssertEqual(CertificateTrust.commonName(ofCertificateAt: replaced), oldName, "the old root is kept")
         XCTAssertEqual(logged.value.filter { $0.contains("renamed") },
-                       ["the certificate authority was renamed to Paddock Local Authority; "
-                        + "secured sites need trusting again (run paddock trust)"])
+                       ["the certificate authority was renamed to Paddock Local Authority; the old certificate "
+                        + "was kept at \(replaced.path) until you approve the change with paddock trust"])
 
         let verified = try curlHTTPS("plain-php.test", "/", trustingOnly: root)
         XCTAssertEqual(verified.status, 200, verified.verbose)
         XCTAssertEqual(CertificateTrust.commonName(ofCertificateAt: root), "Paddock Local Authority - Root")
+        // The fake trusts root.crt by path; the new file is a different certificate, so make it untrusted.
+        trusted.value.remove(root.path)
 
-        // Until the owner trusts the new root, status says so.
         let deadline = Date().addingTimeInterval(10)
-        while !engine.status().needsTrust && Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
+        while !(engine.status().needsTrust && engine.status().hasReplacedRootsToClean) && Date() < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
         XCTAssertTrue(engine.status().needsTrust)
+        XCTAssertTrue(engine.status().hasReplacedRootsToClean)
+
         let response = await engine.handle(.trust)
         guard case .ok(let status) = response else { return XCTFail("\(response)") }
+        XCTAssertTrue(trusted.value.contains(root.path), "the new root is trusted")
+        XCTAssertEqual(removed.value, [oldName], "exactly one untrust, for the replaced root")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replaced.path), "no longer trusted, so deleted")
         XCTAssertFalse(status.needsTrust)
-        XCTAssertFalse(engine.status().needsTrust)
+        XCTAssertFalse(status.hasReplacedRootsToClean)
 
-        // Nothing to replace on the next start.
+        // Nothing to set aside on the next start.
         engine.stop()
         try engine.start()
-        XCTAssertEqual(removed.value.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: replaced.path))
         XCTAssertEqual(CertificateTrust.commonName(ofCertificateAt: root), "Paddock Local Authority - Root")
+    }
+
+    func testARefusedUntrustOfTheReplacedRootKeepsItAndTrustStillSucceeds() async throws {
+        let (oldName, root) = try homeWithDefaultNamedAuthority()
+        let replaced = paths.caddyData.appendingPathComponent("pki/replaced-root.crt")
+        let trusted = LockedBox<Set<String>>([replaced.path])
+        let removed = LockedBox<[String?]>([])
+        let engine = Engine.development(paths: paths, settings: settings, trust: CertificateTrust(
+            paths: paths, runner: keychain(trusted: trusted, refuseRemoval: true, removed: removed)))
+        self.engine = engine
+        try engine.start()
+        XCTAssertEqual(try curlHTTPS("plain-php.test", "/", trustingOnly: root).status, 200)
+
+        let response = await engine.handle(.trust)
+        guard case .ok(let status) = response else { return XCTFail("\(response)") }
+        XCTAssertTrue(trusted.value.contains(root.path), "the current root is trusted")
+        XCTAssertFalse(status.needsTrust)
+        XCTAssertEqual(removed.value, [oldName])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: replaced.path), "kept for the next attempt")
+        XCTAssertTrue(status.hasReplacedRootsToClean)
     }
 
     func testSecureWithoutTrustObjectBehavesAsBefore() async throws {

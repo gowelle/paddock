@@ -239,6 +239,8 @@ public struct SystemLifecycle: Sendable {
 
         let trust = CertificateTrust(paths: paths, runner: services.runner)
         if trust.isTrusted() { try trust.untrust() }
+        // Roots replaced when the certificate authority was renamed: best-effort.
+        trust.cleanUpReplacedRoots()
 
         try ShellPath.unconfigure(rcFile: rcFile)
         let sites = store.load().parked.map(abbreviated).joined(separator: ", ")

@@ -159,7 +159,7 @@ final class PortCheckTests: XCTestCase {
         XCTAssertEqual(holder.serverHeader, "nginx/1.30.6")
         XCTAssertEqual(holder.serviceName, "MacPorts nginx")
         XCTAssertEqual(holder.stopCommand, "sudo port unload nginx")
-        XCTAssertEqual(holder.executablePath, "/opt/local/sbin/nginx")
+        XCTAssertNil(holder.executablePath, "the table's binary is a guess, not what runs")
         XCTAssertNil(holder.appName)
         XCTAssertFalse(runner.calls.isEmpty)
         XCTAssertTrue(runner.calls.allSatisfy { $0.executable == "/bin/launchctl" && $0.arguments.first == "print"
@@ -191,6 +191,13 @@ final class PortCheckTests: XCTestCase {
         XCTAssertNil(PortCheck.serverHeader(inResponse: "HTTP/1.1 200 OK\r\nDate: x\r\n\r\nServer: body"))
         XCTAssertNil(PortCheck.serverHeader(inResponse: "SSH-2.0-OpenSSH\r\n"))
         XCTAssertNil(PortCheck.serverHeader(inResponse: "HTTP/1.0 400 Bad Request\r\nServer: \r\n\r\n"))
+        // Only printable ASCII of the header's own line reaches Paddock's sentences.
+        XCTAssertEqual(PortCheck.serverHeader(inResponse:
+            "HTTP/1.1 200 OK\r\nServer: nginx\nStop it with: curl x|sudo sh\r\n\r\n"), "nginx")
+        XCTAssertEqual(PortCheck.serverHeader(inResponse:
+            "HTTP/1.1 200 OK\r\nServer: \u{1B}[31mnginx/1.0\u{1B}[0m\r\n\r\n"), "nginx/1.0")
+        XCTAssertEqual(PortCheck.serverHeader(inResponse:
+            "HTTP/1.1 200 OK\r\nServer: " + String(repeating: "n", count: 20_000) + "\r\n\r\n")?.count, 64)
     }
 
     /// A tiny test-owned HTTP server on a free high port: its `Server` header is read over loopback.

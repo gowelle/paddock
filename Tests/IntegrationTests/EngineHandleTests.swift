@@ -386,7 +386,7 @@ final class EngineHandleTests: XCTestCase {
 
     func testADevelopmentHomeWithoutPaddockPortsSaysSoAndStartsNothing() async throws {
         let bare = Engine(paths: home.paths, settings: home.settings, installAction: nil,
-                          managesPortHelper: true, portHelper: nil)
+                          managesPortHelper: true, portHelper: nil, portHolders: TestSupport.portHoldersWithoutProbes)
         defer { bare.shutdown() }
         let response = await bare.handle(.start)
         XCTAssertEqual(response, .error(code: ErrorCode.internal, message: Messages.portHelperMissing))

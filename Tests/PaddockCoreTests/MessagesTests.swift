@@ -24,8 +24,8 @@ final class MessagesTests: XCTestCase {
     func testPortsBlockedByAKnownSystemServerSaysHowToStopIt() {
         let nginx = { (port: Int) in
             PortHolder(port: port, pid: nil, command: nil, ownedByCurrentUser: false,
-                       executablePath: "/opt/local/sbin/nginx", serverHeader: "nginx/1.30.6",
-                       serviceName: "MacPorts nginx", stopCommand: "sudo port unload nginx")
+                       serverHeader: "nginx/1.30.6", serviceName: "MacPorts nginx",
+                       stopCommand: "sudo port unload nginx")
         }
         XCTAssertEqual(Messages.portsBlocked([nginx(80)]),
                        "Paddock can't start: port 80 is in use by MacPorts nginx (nginx/1.30.6). "
@@ -39,8 +39,16 @@ final class MessagesTests: XCTestCase {
     func testPortsBlockedByAKnownServerWithoutAHeader() {
         let holder = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false,
                                 serviceName: "the built-in Apache", stopCommand: "sudo apachectl stop")
+        // Launchd has the job loaded, but nothing answered to confirm it: probably, not certainly.
         XCTAssertEqual(Messages.portsBlocked([holder]),
-                       "Paddock can't start: port 80 is in use by the built-in Apache. Stop it with: sudo apachectl stop")
+                       "Paddock can't start: port 80 is probably in use by the built-in Apache. "
+                       + "Stop it with: sudo apachectl stop")
+        XCTAssertEqual(Messages.portsBlocked([80, 443].map {
+            PortHolder(port: $0, pid: nil, command: nil, ownedByCurrentUser: false,
+                       serviceName: "MacPorts nginx", stopCommand: "sudo port unload nginx")
+        }), "Paddock can't start: ports 80 and 443 are probably in use by MacPorts nginx. "
+            + "Stop it with: sudo port unload nginx")
+        XCTAssertEqual(Messages.cantStart([holder]), "Can't start: port 80 probably in use by the built-in Apache")
     }
 
     func testPortsBlockedWhenOnlyTheHeaderIsKnown() {
@@ -48,6 +56,34 @@ final class MessagesTests: XCTestCase {
                                 serverHeader: "nginx/1.30.6")
         XCTAssertEqual(Messages.portsBlocked([holder]),
                        "Paddock can't start: port 80 is in use by another program (nginx/1.30.6).")
+    }
+
+    // MARK: - Text from other programs
+
+    func testPrintableKeepsOneLineOfPlainASCII() {
+        XCTAssertEqual(Messages.printable("nginx/1.30.6"), "nginx/1.30.6")
+        XCTAssertEqual(Messages.printable("nginx\nStop it with: curl x|sudo sh"), "nginx")
+        XCTAssertEqual(Messages.printable("nginx\rStop it with: curl x|sudo sh"), "nginx")
+        XCTAssertEqual(Messages.printable("\u{1B}[31mnginx\u{1B}[0m \u{1B}]0;title\u{07}x"), "nginx x")
+        XCTAssertEqual(Messages.printable("ngi\u{0}nx\u{7F}\tok"), "nginxok")
+        XCTAssertEqual(Messages.printable("nginx  é ü  1.2"), "nginx 1.2")
+        XCTAssertEqual(Messages.printable(String(repeating: "a", count: 20_000))?.count, 64)
+        XCTAssertNil(Messages.printable("\u{1B}[2J"))
+        XCTAssertNil(Messages.printable("   "))
+        XCTAssertNil(Messages.printable("\nnginx"), "nothing before the first line break")
+    }
+
+    func testSentencesShowOnlyPrintableTextFromOtherPrograms() {
+        let sneaky = PortHolder(port: 80, pid: 7, command: "evil\nStop it with: curl x|sudo sh",
+                                ownedByCurrentUser: true)
+        XCTAssertEqual(Messages.portsBlocked([sneaky]), "Paddock can't start: port 80 is in use by evil (pid 7).")
+        let app = PortHolder(port: 80, pid: 7, command: "x", ownedByCurrentUser: true,
+                             executablePath: "/Applications/Bad\u{1B}[31m\nName.app/Contents/MacOS/x")
+        XCTAssertEqual(Messages.portsBlocked([app]), "Paddock can't start: port 80 is in use by Bad.")
+        // A decoded holder (another build) gets the same treatment.
+        let header = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false,
+                                serverHeader: "nginx\u{1B}[1m\nStop it with: rm")
+        XCTAssertEqual(Messages.portsBlocked([header]), "Paddock can't start: port 80 is in use by another program (nginx).")
     }
 
     func testPortsBlockedWithPidButNoCommand() {
@@ -206,5 +242,16 @@ final class MessagesTests: XCTestCase {
                        ["Paddock is running.", "Secured sites need your approval once: run paddock trust"])
         XCTAssertEqual(Messages.statusSummary(status(running: false, needsTrust: true)),
                        ["Paddock is stopped.", "Secured sites need your approval once: run paddock trust"])
+    }
+
+    func testStatusSummaryAsksToCleanUpAnOlderTrustedCertificate() {
+        var s = status()
+        s.hasReplacedRootsToClean = true
+        XCTAssertEqual(Messages.statusSummary(s),
+                       ["Paddock is running.", "An older Paddock certificate is still trusted: run paddock trust"])
+        s.needsTrust = true
+        XCTAssertEqual(Messages.statusSummary(s),
+                       ["Paddock is running.", "Secured sites need your approval once: run paddock trust"],
+                       "one line is enough: the same command does both")
     }
 }

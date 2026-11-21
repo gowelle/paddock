@@ -63,13 +63,29 @@ enum TestSupport {
         return true
     }
 
-    static func freeTCPPort(preferred: Int) -> Int {
-        if PortCheck.holders(of: [preferred]).isEmpty { return preferred }
-        for _ in 0..<50 {
+    /// A TCP port in 20000...40000, chosen afresh each time (never a fixed one, whose connections from an
+    /// earlier test may still be in TIME_WAIT), that nothing accepts on and that binds without
+    /// SO_REUSEADDR right now. Never one of `excluding`.
+    static func freeTCPPort(excluding: Set<Int> = []) -> Int {
+        while true {
             let port = Int.random(in: 20000...40000)
-            if PortCheck.holders(of: [port]).isEmpty { return port }
+            guard !excluding.contains(port), !PortCheck.accepts(port: port),
+                  let fd = bindSocket(type: SOCK_STREAM, port: port) else { continue }
+            close(fd)
+            return port
         }
-        return preferred
+    }
+
+    /// `PortCheck.holders` for engines under test: `lsof` still names visible listeners, but a hidden holder
+    /// is never probed over HTTP and launchd is never asked.
+    static let portHoldersWithoutProbes: @Sendable ([Int]) -> [PortHolder] = { ports in
+        PortCheck.holders(of: ports, runner: NoCommands(), serverHeader: { _ in nil })
+    }
+
+    /// Runs nothing: every command "fails".
+    private struct NoCommands: CommandRunner {
+        func run(_ executable: String, _ arguments: [String],
+                 environment: [String: String]?) throws -> (status: Int32, output: String) { (1, "") }
     }
 
     static func freeUDPPort(preferred: Int) -> Int {
@@ -145,7 +161,8 @@ extension Engine {
                             log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) })
         -> Engine {
         Engine(paths: paths, settings: settings, installAction: installAction, trust: trust,
-               backoffScale: backoffScale, managesPortHelper: true, portHelper: TestSupport.portHelper, log: log)
+               backoffScale: backoffScale, managesPortHelper: true, portHelper: TestSupport.portHelper,
+               portHolders: TestSupport.portHoldersWithoutProbes, log: log)
     }
 }
 
@@ -169,8 +186,8 @@ final class TestHome {
         let parkedPath = parked.path
         try StateStore(paths: paths).update { $0 = State(parked: [parkedPath]) }
 
-        settings.httpPort = TestSupport.freeTCPPort(preferred: 18080)
-        settings.httpsPort = TestSupport.freeTCPPort(preferred: 18443)
+        settings.httpPort = TestSupport.freeTCPPort()
+        settings.httpsPort = TestSupport.freeTCPPort(excluding: [settings.httpPort])
         settings.dnsPort = TestSupport.freeUDPPort(preferred: 53598)
     }
 

@@ -18,6 +18,7 @@ public final class RecordingCommandRunner: CommandRunner, @unchecked Sendable {
 
     private let lock = NSLock()
     private var recorded: [Call] = []
+    private var recordedTimeouts: [TimeInterval?] = []
     private let handler: @Sendable (String, [String]) -> (status: Int32, output: String)
 
     public init(handler: @escaping @Sendable (String, [String]) -> (status: Int32, output: String) = { _, _ in (0, "") }) {
@@ -30,10 +31,23 @@ public final class RecordingCommandRunner: CommandRunner, @unchecked Sendable {
         return recorded
     }
 
+    /// The time limit each call was given, in order (nil: none).
+    public var timeouts: [TimeInterval?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedTimeouts
+    }
+
     public func run(_ executable: String, _ arguments: [String],
                     environment: [String: String]?) throws -> (status: Int32, output: String) {
+        try run(executable, arguments, environment: environment, timeout: nil)
+    }
+
+    public func run(_ executable: String, _ arguments: [String], environment: [String: String]?,
+                    timeout: TimeInterval?) throws -> (status: Int32, output: String) {
         lock.lock()
         recorded.append(Call(executable: executable, arguments: arguments, environment: environment))
+        recordedTimeouts.append(timeout)
         lock.unlock()
         return handler(executable, arguments)
     }

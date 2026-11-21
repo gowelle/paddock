@@ -37,11 +37,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     /// Some site is secured but macOS doesn't trust Paddock's current root (say, after the certificate
     /// authority was renamed): the owner should run `paddock trust`. False when trust is turned off.
     public var needsTrust: Bool
+    /// A root set aside when the certificate authority was renamed is still trusted: `paddock trust`
+    /// removes that trust. False when trust is turned off.
+    public var hasReplacedRootsToClean: Bool
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
-                needsTrust: Bool = false,
+                needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false,
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -54,13 +57,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.dnsRunning = dnsRunning
         self.portHelperInstalled = portHelperInstalled
         self.needsTrust = needsTrust
+        self.hasReplacedRootsToClean = hasReplacedRootsToClean
         self.version = version
         self.executablePath = executablePath
     }
 
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
-        case dnsRunning, portHelperInstalled, needsTrust, version, executablePath
+        case dnsRunning, portHelperInstalled, needsTrust, hasReplacedRootsToClean, version, executablePath
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -78,6 +82,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         dnsRunning = try c.decodeIfPresent(Bool.self, forKey: .dnsRunning) ?? false
         portHelperInstalled = try c.decodeIfPresent(Bool.self, forKey: .portHelperInstalled) ?? false
         needsTrust = try c.decodeIfPresent(Bool.self, forKey: .needsTrust) ?? false
+        hasReplacedRootsToClean = try c.decodeIfPresent(Bool.self, forKey: .hasReplacedRootsToClean) ?? false
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -109,6 +114,10 @@ public final class Engine: @unchecked Sendable {
     /// Whether macOS trusts the current root, for `status().needsTrust`: kept for a few seconds and
     /// worked out off the request path, so `status` never waits for `security`. Nil without `trust`.
     let rootTrusted: CachedCheck?
+    /// Whether a replaced root is still trusted, for `status().hasReplacedRootsToClean`; cached the same way.
+    let replacedRootsTrusted: CachedCheck?
+    /// Who holds the web ports (`PortCheck.holders`); tests substitute one that probes nothing.
+    private let portHolders: @Sendable ([Int]) -> [PortHolder]
     /// False renders Caddy's default CA names, as homes made before Paddock named its own (tests only).
     var namesCertificateAuthority = true
     /// The file `status().resolverInstalled` reads; `/etc/resolver/<tld>` unless a test says otherwise.
@@ -161,15 +170,18 @@ public final class Engine: @unchecked Sendable {
          managesPortHelper: Bool = !SystemIntegration.isEnabled(environment: ProcessInfo.processInfo.environment),
          portHelper: URL? = PortHelperLocator.binary(),
          portHelperInstalled: @escaping @Sendable () -> Bool = { false },
+         portHolders: @escaping @Sendable ([Int]) -> [PortHolder] = { PortCheck.holders(of: $0) },
          log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
         self.managesPortHelper = managesPortHelper
         self.portHelper = portHelper
         self.portHelperInstalled = portHelperInstalled
+        self.portHolders = portHolders
         self.log = log
         self.trust = trust
         // Assumed trusted until checked: nobody is asked to trust anything on a guess.
         rootTrusted = trust.map { trust in CachedCheck(initial: true) { trust.isTrusted() } }
+        replacedRootsTrusted = trust.map { trust in CachedCheck(initial: false) { trust.hasTrustedReplacedRoots() } }
         self.resolverFile = resolverFile ?? Resolver.defaultFile(settings: settings)
         supervisor = Supervisor(backoffScale: backoffScale)
         self.paths = paths
@@ -205,7 +217,7 @@ public final class Engine: @unchecked Sendable {
 
         var helper: URL?
         if managesPortHelper {
-            let holders = PortCheck.holders(of: webPorts)
+            let holders = portHolders(webPorts)
             setFlags(blockedBy: holders)
             guard holders.isEmpty else { return }
             guard let portHelper else { throw EngineError.portHelperMissing }
@@ -229,7 +241,7 @@ public final class Engine: @unchecked Sendable {
             stopLocked()
             throw error
         }
-        refreshRootTrusted()
+        refreshTrustChecks()
     }
 
     /// Where Caddy keeps the local CA, and the certificates it issued, under `storage file_system`.
@@ -238,29 +250,33 @@ public final class Engine: @unchecked Sendable {
     private var rootCertificate: URL { authorityDirectory.appendingPathComponent("root.crt") }
 
     /// Caddy keeps using the root in its storage whatever the Caddyfile names, so a root made under
-    /// Caddy's default names (before Paddock named its own) is replaced: its trust is removed if macOS
-    /// trusts it, then the CA and the certificates it issued are deleted so Caddy makes new ones. Only
-    /// paths inside Paddock's Caddy storage are touched. Call while Caddy is not running.
+    /// Caddy's default names (before Paddock named its own) is replaced: it is moved aside to a
+    /// replaced-root file (whose trust the owner's next `paddock trust` removes), then the CA and the
+    /// certificates it issued are deleted so Caddy makes new ones. Runs no `security` command, so start
+    /// never waits on a dialog. Only paths inside Paddock's Caddy storage are touched. Call while Caddy is
+    /// not running.
     private func replaceDefaultNamedAuthority() {
         guard namesCertificateAuthority,
               let name = CertificateTrust.commonName(ofCertificateAt: rootCertificate),
               !name.hasPrefix(Caddyfile.authorityName) else { return }
-        if let trust, trust.isTrusted() {
-            do { try trust.untrust() } catch {
-                // Refused or failed: the old root stays trusted, but Paddock no longer uses it.
-                log("removing trust from the old certificate authority failed: \(error)")
-            }
+        let kept: URL
+        do { kept = try CertificateTrust.keepReplacedRoot(rootCertificate, paths: paths) } catch {
+            // Without the old root kept, its trust could never be removed: leave the CA as it is.
+            log("could not set aside the old certificate authority's root: \(error.localizedDescription)")
+            return
         }
         for directory in [authorityDirectory, issuedCertificatesDirectory] {
             try? FileManager.default.removeItem(at: directory)
         }
-        log("the certificate authority was renamed to \(Caddyfile.authorityName); "
-            + "secured sites need trusting again (run paddock trust)")
+        log("the certificate authority was renamed to \(Caddyfile.authorityName); the old certificate was "
+            + "kept at \(kept.path) until you approve the change with paddock trust")
     }
 
     /// Works out now whether macOS trusts the current root, when that matters (trust on, a secured site,
-    /// a root on disk). Only from paths that may wait: `start` and the `trust` request.
-    func refreshRootTrusted() {
+    /// a root on disk), and whether a replaced root is still trusted. Only from paths that may wait:
+    /// `start` and the trust attempts of `secure` and `trust`.
+    func refreshTrustChecks() {
+        if let replacedRootsTrusted, trust?.replacedRoots().isEmpty == false { replacedRootsTrusted.refresh() }
         guard let rootTrusted, FileManager.default.fileExists(atPath: rootCertificate.path),
               !store.load().secured.isEmpty else { return }
         rootTrusted.refresh()
@@ -352,7 +368,14 @@ public final class Engine: @unchecked Sendable {
                                 == Resolver.desiredContents(settings: settings),
                             trustEnabled: trust != nil, dnsRunning: current.dnsRunning,
                             portHelperInstalled: managesPortHelper || portHelperInstalled(),
-                            needsTrust: needsTrust(sites: sites))
+                            needsTrust: needsTrust(sites: sites),
+                            hasReplacedRootsToClean: hasReplacedRootsToClean)
+    }
+
+    /// A replaced root on disk that macOS (as last checked) still trusts. Never waits.
+    private var hasReplacedRootsToClean: Bool {
+        guard let trust, let replacedRootsTrusted, !trust.replacedRoots().isEmpty else { return false }
+        return replacedRootsTrusted.value
     }
 
     /// A secured site, a root on disk, and macOS (as last checked) not trusting it. Never waits.
@@ -473,7 +496,7 @@ public final class Engine: @unchecked Sendable {
         while !webPorts.allSatisfy(PortCheck.accepts(port:)) {
             guard case .running = supervisor.status(Self.portHelperName), Date() < deadline else {
                 stopLocked()
-                let holders = PortCheck.holders(of: webPorts)
+                let holders = portHolders(webPorts)
                 guard holders.isEmpty else {
                     setFlags(blockedBy: holders)
                     return false
