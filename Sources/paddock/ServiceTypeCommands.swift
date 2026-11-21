@@ -10,7 +10,8 @@ struct ServiceGroup: ParsableCommand {
         abstract: "Add and run services such as mail, databases and caches.",
         subcommands: [
             ServiceList.self, ServiceAdd.self, ServiceStart.self, ServiceStop.self, ServiceRestart.self,
-            ServiceRemove.self, ServiceEnv.self, ServiceLogs.self, ServiceOpen.self, ServiceAvailable.self,
+            ServiceRemove.self, ServiceUpdate.self, ServiceEnv.self, ServiceLogs.self, ServiceOpen.self,
+            ServiceAvailable.self,
         ],
         defaultSubcommand: ServiceList.self
     )
@@ -71,7 +72,7 @@ struct ServiceAdd: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "add", abstract: "Download, set up and start a service, and print its .env lines.")
     @Argument(help: "The kind of service, such as mail (see: paddock service available).") var kind: String
-    @Argument(help: "A version (default: the newest).") var version: String?
+    @Argument(help: "A series such as 18, or an exact version (default: the newest).") var version: String?
 
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
@@ -81,7 +82,7 @@ struct ServiceAdd: ParsableCommand {
         }
         let before = Set(try CLI.send(.status, timeout: 30).services.map(\.id))
         // The daemon reports no progress while it downloads, so this line is the progress.
-        print("Downloading \(entry.displayName)…")
+        print("\(entry.series(matching: version)?.needsDownload ?? true ? "Downloading" : "Starting") \(entry.displayName)…")
         fflush(stdout)
         let status = try CLI.send(.serviceAdd(kind: entry.kind, version: version), timeout: 3600)
         guard let added = status.services.first(where: { !before.contains($0.id) }) else {
@@ -148,6 +149,24 @@ struct ServiceRemove: ParsableCommand {
         case .ok, .catalog:
             throw CLI.unexpectedAnswer()
         }
+    }
+}
+
+struct ServiceUpdate: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "update", abstract: "Download the newest version of a service's series and switch to it.")
+    @Argument(help: "The service's name, such as mail.") var name: String
+
+    func run() throws {
+        try CLI.refuseChangesFromDevelopmentBuild()
+        let before = try CLI.service(named: name, in: try CLI.send(.status, timeout: 30))
+        if let version = before.updateAvailable {
+            print("Downloading \(before.displayName) \(version)…")
+            fflush(stdout)
+        }
+        let after = try CLI.service(named: before.id, in: try CLI.send(.serviceUpdate(name: before.id), timeout: 3600))
+        print(after.version == before.version ? "\(after.name) is up to date (\(after.version))."
+                                              : "\(after.name) now runs \(after.version).")
     }
 }
 

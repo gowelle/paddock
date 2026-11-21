@@ -40,7 +40,7 @@ final class ServiceCLITests: XCTestCase {
 
     func testServiceCommands() throws {
         try launchDaemon()
-        let port = home.portBase + 100
+        let port = home.fakePort
         let socket = home.paths.serviceRun("fake").appendingPathComponent("fake.sock").path
         let env = "FAKE_HOST=127.0.0.1\nFAKE_PORT=\(port)\nFAKE_SOCKET=\(socket)\n"
 
@@ -51,7 +51,8 @@ final class ServiceCLITests: XCTestCase {
 
         let available = try run(["service", "available"])
         XCTAssertEqual(available.status, 0, available.err)
-        XCTAssertEqual(available.out, "KIND  SERVICE  VERSIONS  LICENCE  DOWNLOAD\nfake  Fake     1.0       MIT      none\n")
+        let size = "\(max(1, Int((Double(try FileManager.default.attributesOfItem(atPath: FakeService.binary.path)[.size] as! Int) / 1_000_000).rounded()))) MB"
+        XCTAssertEqual(available.out, "KIND  SERVICE  SERIES  LICENCE  DOWNLOAD\nfake  Fake     1       MIT      \(size)\n")
 
         let unknown = try run(["service", "add", "nope"])
         XCTAssertEqual(unknown.status, 1)
@@ -60,7 +61,7 @@ final class ServiceCLITests: XCTestCase {
 
         let added = try run(["service", "add", "fake"])
         XCTAssertEqual(added.status, 0, added.err)
-        XCTAssertEqual(added.out, "Downloading Fake…\nFake is running on port \(port).\n\n" + env)
+        XCTAssertEqual(added.out, "Starting Fake…\nFake is running on port \(port).\n\n" + env)
 
         let list = try run(["service", "list"])
         XCTAssertEqual(list.out, "SERVICE  STATE    PORTS\nFake     running  \(port) (main)\n")
@@ -68,6 +69,7 @@ final class ServiceCLITests: XCTestCase {
         XCTAssertTrue(status.out.hasSuffix("\n\nSERVICE  STATE    PORTS\nFake     running  \(port) (main)\n"), status.out)
 
         XCTAssertEqual(try run(["service", "env", "FAKE"]).out, env)
+        XCTAssertEqual(try run(["service", "update", "fake"]).out, "Fake is up to date (1.0).\n")
         XCTAssertEqual(try run(["service", "stop", "fake"]).out, "Fake stopped.\n")
         XCTAssertTrue(try run(["service", "list"]).out.contains("Fake     stopped"))
         XCTAssertEqual(try run(["service", "start", "Fake"]).out, "Fake is running on port \(port).\n")
@@ -94,7 +96,7 @@ final class ServiceCLITests: XCTestCase {
         let removed = try run(["service", "remove", "fake"])
         XCTAssertEqual(removed.out, "Removed Fake. Its data is still at \(home.paths.serviceData("fake").path).\n")
         let again = try run(["service", "add", "fake"])
-        XCTAssertEqual(again.out, "Downloading Fake…\nFound existing data for Fake; using it.\n"
+        XCTAssertEqual(again.out, "Starting Fake…\nFound existing data for Fake; using it.\n"
                        + "Fake is running on port \(port).\n\n" + env)
         let deleted = try run(["service", "remove", "fake", "--delete-data"])
         XCTAssertEqual(deleted.out, "Removed Fake and deleted its data.\n")

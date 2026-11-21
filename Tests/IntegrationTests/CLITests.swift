@@ -173,7 +173,7 @@ final class CLITests: XCTestCase {
         let env = TestSupport.realSystemEnvironment(scratchHome: scratch, settings: home.settings)
         for args in [["park", home.parked.path], ["forget", home.parked.path], ["stop"], ["restart"], ["trust"],
                      ["service", "add", "mail"], ["service", "remove", "mail"], ["service", "start", "mail"],
-                     ["service", "stop", "mail"], ["service", "restart", "mail"]] {
+                     ["service", "stop", "mail"], ["service", "restart", "mail"], ["service", "update", "mail"]] {
             let result = try run(args, environment: env)
             XCTAssertEqual(result.status, 1, "\(args): \(result.out)")
             XCTAssertTrue(result.err.contains(Messages.developmentBuild), "\(args): \(result.err)")
