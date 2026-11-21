@@ -10,16 +10,35 @@ public struct State: Codable, Equatable, Sendable {
     public var phpPins: [String: PHPVersion]
     public var defaultPHP: PHPVersion?
     public var previousResolver: String?
+    /// Added services, in the order they were added.
+    public var services: [ServiceInstance]
 
     public init(parked: [String] = [], links: [String: String] = [:], secured: Set<String> = [],
                 phpPins: [String: PHPVersion] = [:], defaultPHP: PHPVersion? = nil,
-                previousResolver: String? = nil) {
+                previousResolver: String? = nil, services: [ServiceInstance] = []) {
         self.parked = parked
         self.links = links
         self.secured = secured
         self.phpPins = phpPins
         self.defaultPHP = defaultPHP
         self.previousResolver = previousResolver
+        self.services = services
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case parked, links, secured, phpPins, defaultPHP, previousResolver, services
+    }
+
+    /// As before services existed, plus `services` (absent in older files: none).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        parked = try c.decode([String].self, forKey: .parked)
+        links = try c.decode([String: String].self, forKey: .links)
+        secured = try c.decode(Set<String>.self, forKey: .secured)
+        phpPins = try c.decode([String: PHPVersion].self, forKey: .phpPins)
+        defaultPHP = try c.decodeIfPresent(PHPVersion.self, forKey: .defaultPHP)
+        previousResolver = try c.decodeIfPresent(String.self, forKey: .previousResolver)
+        services = try c.decodeIfPresent([ServiceInstance].self, forKey: .services) ?? []
     }
 
     /// First-run state: `~/Paddock` parked, expanded to an absolute path.

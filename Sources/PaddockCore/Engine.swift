@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 3
+    public static let number = 4
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -40,11 +40,13 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     /// A root set aside when the certificate authority was renamed is still trusted: `paddock trust`
     /// removes that trust. False when trust is turned off.
     public var hasReplacedRootsToClean: Bool
+    /// Added services and what each is doing.
+    public var services: [ServiceStatus]
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
-                needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false,
+                needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false, services: [ServiceStatus] = [],
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -58,6 +60,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.portHelperInstalled = portHelperInstalled
         self.needsTrust = needsTrust
         self.hasReplacedRootsToClean = hasReplacedRootsToClean
+        self.services = services
         self.version = version
         self.executablePath = executablePath
     }
@@ -65,6 +68,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
         case dnsRunning, portHelperInstalled, needsTrust, hasReplacedRootsToClean, version, executablePath
+        case services
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -83,6 +87,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         portHelperInstalled = try c.decodeIfPresent(Bool.self, forKey: .portHelperInstalled) ?? false
         needsTrust = try c.decodeIfPresent(Bool.self, forKey: .needsTrust) ?? false
         hasReplacedRootsToClean = try c.decodeIfPresent(Bool.self, forKey: .hasReplacedRootsToClean) ?? false
+        services = try c.decodeIfPresent([ServiceStatus].self, forKey: .services) ?? []
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }

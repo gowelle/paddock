@@ -50,6 +50,29 @@ public struct Paths: Sendable {
         [httpSocket, httpsSocket, caddyAdminSocket].map(\.path).first { Wire.socketAddress($0) == nil }
     }
 
+    /// Added services: shared binaries in `bin/`, and one folder per instance.
+    public var services: URL { home.appendingPathComponent("services", isDirectory: true) }
+
+    /// A recipe's unpacked binaries, shared by every instance of that version.
+    public func serviceBin(kind: String, version: String) -> URL {
+        services.appendingPathComponent("bin", isDirectory: true)
+            .appendingPathComponent(kind, isDirectory: true).appendingPathComponent(version, isDirectory: true)
+    }
+
+    /// An instance's folder, holding `data/` (kept on remove) and `config/` (regenerated).
+    public func serviceHome(_ id: String) -> URL { services.appendingPathComponent(id, isDirectory: true) }
+    public func serviceData(_ id: String) -> URL { serviceHome(id).appendingPathComponent("data", isDirectory: true) }
+    public func serviceConfig(_ id: String) -> URL {
+        serviceHome(id).appendingPathComponent("config", isDirectory: true)
+    }
+
+    /// An instance's sockets and pid files: short, so Unix socket paths fit.
+    public func serviceRun(_ id: String) -> URL {
+        run.appendingPathComponent("svc", isDirectory: true).appendingPathComponent(id, isDirectory: true)
+    }
+
+    public func serviceLog(_ id: String) -> URL { log.appendingPathComponent("service-\(id).log") }
+
     /// User-edited PHP settings; unlike `config/`, never regenerated.
     public var userPHP: URL { home.appendingPathComponent("php", isDirectory: true) }
 
