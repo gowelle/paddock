@@ -119,6 +119,8 @@ public final class ServiceManager: @unchecked Sendable {
     private var cancelled = false
     /// Problems already logged (one line each): invalid saved instances, invalid stored recipes.
     private var reported: Set<String> = []
+    /// Called (tests) right after a service's process was started, before its readiness is checked.
+    var processStartedForTesting: (@Sendable (String) -> Void)?
     /// Actions running now, by instance id (`runtimeLock`).
     private var inFlight: [String: [ActionFlight]] = [:]
 
@@ -1002,8 +1004,11 @@ public final class ServiceManager: @unchecked Sendable {
                     if spawns.next() > 1 { self?.checkAfterRestart(instance, recipe, probe, processGroup: pid) }
                 })
             spec.workingDirectory = paths.serviceHome(id)
-            try supervisor.start(spec)
+            // Starting from before the process exists, so status never says running before readiness was checked.
+            let previous = runtimeState(id)
             setRuntime(.starting, for: id)
+            do { try supervisor.start(spec) } catch { setRuntime(previous, for: id); throw error }
+            processStartedForTesting?(id)
             guard waitUntilReady(Self.processName(id), probe, timeout: readyTimeout ?? recipe.readyTimeout,
                                  isCancelled: { [weak self] in self?.isCancelled ?? true }) else {
                 stopProcess(id)
@@ -1503,7 +1508,13 @@ public final class ServiceManager: @unchecked Sendable {
         try ensureRunFolder(id)
     }
 
-    private func setRuntime(_ state: ServiceState, for id: String) {
+    private func runtimeState(_ id: String) -> ServiceState? {
+        runtimeLock.lock()
+        defer { runtimeLock.unlock() }
+        return runtime[id]
+    }
+
+    private func setRuntime(_ state: ServiceState?, for id: String) {
         runtimeLock.lock()
         runtime[id] = state
         runtimeLock.unlock()

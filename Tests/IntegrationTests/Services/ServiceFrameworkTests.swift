@@ -292,6 +292,23 @@ final class ServiceFrameworkTests: XCTestCase {
         manager.stopAll()
     }
 
+    /// Status never says running before the service passed its readiness check: from the moment its process
+    /// starts, it is starting.
+    func testStatusNeverSaysRunningBeforeReadiness() async throws {
+        let manager = makeManager([FakeService.recipe(extraArguments: ["--delay", "1500"])])
+        let seen = LockedBox<[ServiceState]>([])
+        manager.processStartedForTesting = { [weak manager] id in
+            let state = manager?.statuses().first { $0.id == id }?.state
+            seen.value = seen.value + [state ?? .stopped]
+        }
+        _ = try await manager.add(kind: "fake", version: nil)
+        XCTAssertEqual(seen.value, [.starting], "starting from the moment the process exists")
+        manager.stop("fake")
+        try manager.start("fake")
+        XCTAssertEqual(seen.value, [.starting, .starting], "a later start too")
+        XCTAssertEqual(status(manager, "fake")?.state, .running, "running once ready")
+    }
+
     // MARK: - Through the engine
 
     private func makeEngine(_ recipes: [ServiceRecipe] = [FakeService.recipe()],
