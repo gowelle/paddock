@@ -7,4 +7,4 @@ composer	https://getcomposer.org/download/2.11.2/composer.phar	dd158c0afd41d15fa
 postgis-pg18	paddock-builds://postgis-3.6.4-pg18-macos-x86_64.tar.gz	4a6f7956d86ea2b34bed0e310470dd524d1e251a3c21699b67d8ef979b544cd4
 postgis-pg17	paddock-builds://postgis-3.6.4-pg17-macos-x86_64.tar.gz	d3da6e51565721d108273bec99c7ef6a4acee4189da737d1c439d42f15a27dda
 postgis-pg16	paddock-builds://postgis-3.6.4-pg16-macos-x86_64.tar.gz	bfa660f8c2472c4d04f30f0b7ef32ff790dd60fa2315aa8ff704078586f3f010
-valkey	paddock-builds://valkey-9.2.0-macos-x86_64.tar.gz	4231250197fa568a4699a171afc5617135ea6691e4adf4b92b7277a66e2b6b6e
+valkey	paddock-builds://valkey-9.1.4-macos-x86_64.tar.gz	13befce77e8d06c85f0980643f51738695af0c04d9771032b48ffc6a9d047d19

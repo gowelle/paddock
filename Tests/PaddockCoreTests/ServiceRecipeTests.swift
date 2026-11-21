@@ -235,14 +235,14 @@ final class ServiceRecipeTests: XCTestCase {
     /// Redis is Valkey, built by Paddock (Scripts/build-valkey.sh) and shipped in the app; one line, id redis.
     func testBundledCatalogHasRedisAsValkey() throws {
         let recipes = try ServiceCatalog.bundled().recipes(of: "redis")
-        XCTAssertEqual(recipes.map(\.version), ["9.2.0"])
+        XCTAssertEqual(recipes.map(\.version), ["9.1.4"], "not 9.2: its RDB format 81 can never go back to 9.1")
         let redis = try XCTUnwrap(recipes.first)
         XCTAssertEqual(redis.displayName, "Redis (Valkey)")
         XCTAssertEqual(redis.series, "9", "data files are compatible within a Valkey major")
         XCTAssertFalse(redis.seriesInID, "its id stays redis")
         XCTAssertEqual(redis.licence, "BSD-3-Clause")
         XCTAssertEqual(redis.minimumMacOS, "13.0", "LC_BUILD_VERSION minos of valkey-server and valkey-cli")
-        XCTAssertEqual(redis.assets.map(\.artifact.url.absoluteString), ["paddock-builds://valkey-9.2.0-macos-x86_64.tar.gz"])
+        XCTAssertEqual(redis.assets.map(\.artifact.url.absoluteString), ["paddock-builds://valkey-9.1.4-macos-x86_64.tar.gz"])
         XCTAssertEqual(redis.assets.map(\.archive), ["tar.gz"])
         XCTAssertEqual(redis.assets.map(\.stripComponents), [0])
         XCTAssertEqual(redis.initialise, [])
@@ -258,13 +258,17 @@ final class ServiceRecipeTests: XCTestCase {
         XCTAssertEqual(redis.env, ["REDIS_CLIENT=phpredis", "REDIS_HOST=127.0.0.1", "REDIS_PORT={port.main}",
                                    "REDIS_PASSWORD=null"])
         XCTAssertNil(redis.openURL)
-        XCTAssertEqual(redis.notes, ["Valkey 9.2.0, a Redis-compatible server."])
+        XCTAssertEqual(redis.notes, ["Valkey 9.1.4, a Redis-compatible server."])
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 10, "recipes gained logHints: the build number moves on")
+        XCTAssertEqual(redis.logHints, [RecipeLogHint(contains: "Can't handle RDB format version",
+                                                      hint: "Its data was written by a newer Valkey, which this version "
+                                                          + "can't read; Paddock left the data as it is.")])
         XCTAssertEqual(redis.configFiles.map(\.path), ["{config}/valkey.conf"])
         let lines = redis.configFiles[0].contents.split(separator: "\n").map(String.init).filter { !$0.hasPrefix("#") }
         for line in ["bind 127.0.0.1 -::1", "port {port.main}", "protected-mode yes", "daemonize no",
                      "dir \"{data}\"", "appendonly yes", "appendfsync everysec", "dbfilename \"dump.rdb\"",
                      "appenddirname \"appendonlydir\"", "pidfile \"{run}/valkey.pid\"", "unixsocket \"{socket}\"",
-                     "unixsocketperm 700", "logfile \"\""] {
+                     "unixsocketperm 700", "logfile \"\"", "shutdown-on-sigterm force"] {
             XCTAssertTrue(lines.contains(line), "valkey.conf has \(line)")
         }
         XCTAssertFalse(lines.contains { $0.hasPrefix("requirepass") || $0.hasPrefix("include") })

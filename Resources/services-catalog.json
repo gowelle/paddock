@@ -336,7 +336,7 @@
     {
       "kind": "redis",
       "displayName": "Redis (Valkey)",
-      "version": "9.2.0",
+      "version": "9.1.4",
       "series": "9",
       "seriesInID": false,
       "licence": "BSD-3-Clause",
@@ -344,9 +344,9 @@
       "assets": [
         {
           "artifact": {
-            "url": "paddock-builds://valkey-9.2.0-macos-x86_64.tar.gz",
-            "sha256": "4231250197fa568a4699a171afc5617135ea6691e4adf4b92b7277a66e2b6b6e",
-            "size": 2094063
+            "url": "paddock-builds://valkey-9.1.4-macos-x86_64.tar.gz",
+            "sha256": "13befce77e8d06c85f0980643f51738695af0c04d9771032b48ffc6a9d047d19",
+            "size": 1799360
           },
           "archive": "tar.gz",
           "stripComponents": 0
@@ -389,12 +389,18 @@
       ],
       "needsPHP": false,
       "notes": [
-        "Valkey 9.2.0, a Redis-compatible server."
+        "Valkey 9.1.4, a Redis-compatible server."
+      ],
+      "logHints": [
+        {
+          "contains": "Can't handle RDB format version",
+          "hint": "Its data was written by a newer Valkey, which this version can't read; Paddock left the data as it is."
+        }
       ],
       "configFiles": [
         {
           "path": "{config}/valkey.conf",
-          "contents": "# Written by Paddock on every start: changes here are replaced.\n# This Mac only: loopback (IPv6 loopback where the Mac has it) and the instance's own Unix socket.\nbind 127.0.0.1 -::1\nport {port.main}\nprotected-mode yes\ntcp-backlog 128\nunixsocket \"{socket}\"\nunixsocketperm 700\ndaemonize no\nsupervised no\npidfile \"{run}/valkey.pid\"\nlogfile \"\"\nalways-show-logo no\ndir \"{data}\"\ndbfilename \"dump.rdb\"\nappendonly yes\nappendfsync everysec\nappenddirname \"appendonlydir\"\nenable-protected-configs no\nenable-debug-command no\nenable-module-command no\n"
+          "contents": "# Written by Paddock on every start: changes here are replaced.\n# This Mac only: loopback (IPv6 loopback where the Mac has it) and the instance's own Unix socket.\nbind 127.0.0.1 -::1\nport {port.main}\nprotected-mode yes\ntcp-backlog 128\nunixsocket \"{socket}\"\nunixsocketperm 700\ndaemonize no\nsupervised no\npidfile \"{run}/valkey.pid\"\nlogfile \"\"\nalways-show-logo no\ndir \"{data}\"\ndbfilename \"dump.rdb\"\nappendonly yes\nappendfsync everysec\nappenddirname \"appendonlydir\"\n# Stop even when the final snapshot can't be saved: the append-only file keeps the data.\nshutdown-on-sigterm force\nenable-protected-configs no\nenable-debug-command no\nenable-module-command no\n"
         }
       ],
       "readyTimeoutSeconds": 60

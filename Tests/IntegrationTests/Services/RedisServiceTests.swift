@@ -160,7 +160,7 @@ final class RedisServiceTests: XCTestCase {
     /// The installed valkey-cli asked `arguments` directly (to see what the readiness probe sees).
     private func valkeyCLI(_ manager: ServiceManager, _ arguments: [String]) throws -> (status: Int32, output: String) {
         let process = Process()
-        process.executableURL = home.paths.serviceBin(kind: "redis", version: "9.2.0").appendingPathComponent("valkey-cli")
+        process.executableURL = home.paths.serviceBin(kind: "redis", version: "9.1.4").appendingPathComponent("valkey-cli")
         process.arguments = arguments
         process.environment = ["PATH": "/usr/bin:/bin"]
         let output = Pipe()
@@ -182,7 +182,7 @@ final class RedisServiceTests: XCTestCase {
         let added = try await manager.add(kind: "redis", version: nil)
         XCTAssertEqual(added.id, "redis")
         XCTAssertEqual(added.name, "Redis (Valkey)")
-        XCTAssertEqual(added.version, "9.2.0")
+        XCTAssertEqual(added.version, "9.1.4")
         let port = try XCTUnwrap(added.ports["main"])
         XCTAssertNotEqual(port, 6379, "never the Mac's own Redis port")
         XCTAssertGreaterThanOrEqual(port, home.portBase + 6379)
@@ -192,7 +192,7 @@ final class RedisServiceTests: XCTestCase {
         XCTAssertNil(running.openURL)
         XCTAssertEqual(running.env, ["REDIS_CLIENT=phpredis", "REDIS_HOST=127.0.0.1", "REDIS_PORT=\(port)",
                                      "REDIS_PASSWORD=null"])
-        XCTAssertEqual(running.notes, ["Valkey 9.2.0, a Redis-compatible server."])
+        XCTAssertEqual(running.notes, ["Valkey 9.1.4, a Redis-compatible server."])
         let config = try configText()
         XCTAssertTrue(config.contains("unixsocket \"\(socketPath())\"\n"), config)
         XCTAssertTrue(config.contains("dir \"\(home.paths.serviceData("redis").path)\"\n"), config)
@@ -236,6 +236,87 @@ final class RedisServiceTests: XCTestCase {
         XCTAssertEqual(try phpredis("tcp:\(portAgain)", "get", "greeting"), "over TCP")
         _ = try server(manager)
         manager.stopAll()
+    }
+
+    // MARK: - Data from a newer Valkey
+
+    /// Data written by a newer Valkey (RDB format 81, Valkey 9.2) can't be read by 9.1: the start fails
+    /// promptly with the log tail and a sentence saying why, the service is crashed, and its data files are
+    /// left exactly as they were.
+    func testDataFromANewerValkeyIsRefusedAndLeftAlone() async throws {
+        try requirePHP()
+        let manager = makeManager([try redis()])
+        let added = try await manager.add(kind: "redis", version: nil)
+        let port = try XCTUnwrap(added.ports["main"])
+        XCTAssertEqual(try phpredis("tcp:\(port)", "set", "kept=as it was"), "ok")
+        manager.stop("redis")
+        // The append-only file's base snapshot, as 9.2 writes it: VALKEY081.
+        let folder = home.paths.serviceData("redis").appendingPathComponent("appendonlydir")
+        let base = try XCTUnwrap(try FileManager.default.contentsOfDirectory(atPath: folder.path)
+            .first { $0.hasSuffix(".base.rdb") })
+        let file = folder.appendingPathComponent(base)
+        var bytes = try Data(contentsOf: file)
+        XCTAssertEqual(String(decoding: bytes.prefix(9), as: UTF8.self), "VALKEY080", "9.1 writes RDB format 80")
+        bytes.replaceSubrange(6..<9, with: Data("081".utf8))
+        try bytes.write(to: file)
+        let before = try dataFingerprint()
+
+        let started = Date()
+        XCTAssertThrowsError(try manager.start("redis")) { error in
+            guard case .notReady(let name, let log)? = error as? ServiceError else { return XCTFail("\(error)") }
+            XCTAssertEqual(name, "Redis (Valkey)")
+            XCTAssertTrue(log.contains("Can't handle RDB format version 81"), log)
+            XCTAssertTrue(log.hasSuffix("\n\n" + Self.newerDataHint), log)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 30, "it gives up without waiting the whole deadline")
+        XCTAssertEqual(status(manager)?.state, .crashed)
+        XCTAssertEqual(status(manager)?.notice, Self.newerDataHint)
+        XCTAssertEqual(try dataFingerprint(), before, "the data is untouched")
+        XCTAssertFalse(PortCheck.acceptsIPv4(port: port))
+    }
+
+    /// When Valkey can't save its final snapshot (its data folder unwritable), it still stops at once on
+    /// SIGTERM rather than refusing until the grace ends in SIGKILL; the append-only file keeps the data.
+    func testAStopIsPromptEvenWhenTheFinalSnapshotCantBeSaved() async throws {
+        try requirePHP()
+        let manager = makeManager([try redis()])
+        let added = try await manager.add(kind: "redis", version: nil)
+        let port = try XCTUnwrap(added.ports["main"])
+        let pid = try server(manager)
+        XCTAssertEqual(try phpredis("tcp:\(port)", "set", "durable=in the append-only file"), "ok")
+        try await Task.sleep(nanoseconds: 1_500_000_000) // appendfsync everysec
+        let data = home.paths.serviceData("redis")
+        XCTAssertEqual(chmod(data.path, 0o500), 0)
+        defer { chmod(data.path, 0o700) }
+        let started = Date()
+        manager.stop("redis")
+        let took = Date().timeIntervalSince(started)
+        XCTAssertLessThan(took, 10, "stopped in \(took) s, not after the 30 s grace")
+        XCTAssertEqual(kill(pid, 0), -1)
+        XCTAssertTrue(manager.logTail("redis").contains("Error trying to save the DB. Exit anyway."),
+                      manager.logTail("redis"))
+        XCTAssertEqual(chmod(data.path, 0o700), 0)
+        try manager.start("redis")
+        XCTAssertEqual(try phpredis("tcp:\(port)", "get", "durable"), "in the append-only file")
+        _ = try server(manager)
+        manager.stopAll()
+    }
+
+    static let newerDataHint = "Its data was written by a newer Valkey, which this version can't read; Paddock left the "
+        + "data as it is."
+
+    /// Every data file's path and contents.
+    private func dataFingerprint() throws -> [String: Data] {
+        let data = home.paths.serviceData("redis")
+        var files: [String: Data] = [:]
+        for path in FileManager.default.enumerator(atPath: data.path)?.allObjects as? [String] ?? [] {
+            var isFolder: ObjCBool = false
+            let url = data.appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), !isFolder.boolValue {
+                files[path] = try Data(contentsOf: url)
+            }
+        }
+        return files
     }
 
     // MARK: - A long home
@@ -284,7 +365,7 @@ final class RedisServiceTests: XCTestCase {
                 RecipeFile(path: $0.path, contents: $0.contents + "key-load-delay 100\nloading-process-events-interval-bytes 1024\n")
             },
             readyTimeoutSeconds: bundled.readyTimeoutSeconds, initialiseTimeoutSeconds: bundled.initialiseTimeoutSeconds,
-            actions: bundled.actions, lockFiles: bundled.lockFiles, notes: bundled.notes)
+            actions: bundled.actions, lockFiles: bundled.lockFiles, notes: bundled.notes, logHints: bundled.logHints)
         let manager = makeManager([slow])
         let added = try await manager.add(kind: "redis", version: nil)
         let port = try XCTUnwrap(added.ports["main"])
