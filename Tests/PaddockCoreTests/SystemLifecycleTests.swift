@@ -120,7 +120,7 @@ final class SystemLifecycleTests: XCTestCase {
             if exe == "/usr/bin/osascript" { return (osascriptStatus, osascriptOutput) }
             if exe == "/bin/launchctl" && args.last == portsJob { return (portsJobLoaded ? 0 : 113, "") }
             if let answer = launchd.answer(exe, args) { return answer }
-            if args.first == "verify-cert" { return (trusted ? 0 : 1, "") }
+            if args.first == "verify-cert" { return trusted ? (0, "") : notTrusted }
             return (0, "")
         }
     }
@@ -397,6 +397,89 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertFalse(try lifecycle(runner(), client: FakeDaemon(running: false)).shouldReplaceDaemon(with: daemon))
     }
 
+    // MARK: - A second copy of Paddock
+
+    /// A LaunchAgent plist that runs `daemon` (written as an agent install would write it).
+    private func writeAgentPlist(for program: URL) throws {
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        let agent = LaunchAgent(runner: RecordingCommandRunner(), plist: plist, paths: paths)
+        try agent.plistContents(daemon: program).write(to: plist, atomically: true, encoding: .utf8)
+    }
+
+    private func otherInstall(present: Bool) throws -> URL {
+        let program = dir.appendingPathComponent("Other Place/Paddock.app/Contents/MacOS/paddockd")
+        if present {
+            try FileManager.default.createDirectory(at: program.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("daemon".utf8).write(to: program)
+        }
+        return program
+    }
+
+    func testAnotherInstallThatIsPresentAndRunningIsNotReplaced() throws {
+        try placeEverything()
+        let other = try otherInstall(present: true)
+        try writeAgentPlist(for: other)
+        let running = FakeDaemon(running: true, status: status(version: PaddockBuild.number, executable: other.path))
+        let fake = runner(loaded: true)
+        let lc = lifecycle(fake, client: running)
+        let expected = DaemonLaunchError.anotherCopyInstalled(path: "~/Other Place/Paddock.app")
+        for (name, action) in [("start", { _ = try lc.startViaSystem(daemon: self.daemon) { self.engineStatus() } }),
+                               ("setup", { try lc.completeSetup(daemon: self.daemon) }),
+                               ("login on", { try lc.setStartsAtLogin(true, daemon: self.daemon) }),
+                               ("login off", { try lc.setStartsAtLogin(false, daemon: self.daemon) })]
+            as [(String, () throws -> Void)] {
+            XCTAssertThrowsError(try action(), name) { XCTAssertEqual($0 as? DaemonLaunchError, expected, name) }
+        }
+        XCTAssertEqual(expected.message(), "Another copy of Paddock is installed at ~/Other Place/Paddock.app. "
+                       + "Open that copy, or run paddock uninstall from it first.")
+        XCTAssertEqual(fake.calls, [], "no command at all")
+        XCTAssertFalse(running.requests.contains { $0 != .status })
+        XCTAssertTrue(try String(contentsOf: plist, encoding: .utf8).contains(other.path), "its plist is untouched")
+    }
+
+    func testAnotherInstallThatIsPresentButStoppedIsNotReplaced() throws {
+        try placeEverything()
+        let other = try otherInstall(present: true)
+        try writeAgentPlist(for: other)
+        let fake = runner(loaded: false)
+        XCTAssertThrowsError(try start(lifecycle(fake, daemonRunning: false))) {
+            XCTAssertEqual($0 as? DaemonLaunchError, .anotherCopyInstalled(path: "~/Other Place/Paddock.app"))
+        }
+        XCTAssertEqual(fake.calls, [])
+    }
+
+    /// The other copy was moved or deleted and nothing of it answers: this install takes the agent over.
+    func testAnInstallWhoseFilesAreGoneIsTakenOver() throws {
+        try placeEverything()
+        let gone = try otherInstall(present: false)
+        try writeAgentPlist(for: gone)
+        let fake = runner(loaded: false)
+        XCTAssertTrue(try start(lifecycle(fake, daemonRunning: false)))
+        XCTAssertTrue(try String(contentsOf: plist, encoding: .utf8).contains(daemon.path), "now runs this install")
+        XCTAssertTrue(fake.calls.contains { $0.arguments.first == "bootstrap" })
+    }
+
+    // MARK: - Uninstall when trust removal doesn't complete
+
+    func testUninstallFinishesWhenRemovingTrustFails() throws {
+        try ShellPath.configure(rcFile: rcFile)
+        XCTAssertTrue(ShellPath.isConfigured(rcFile: rcFile))
+        let launchd = FakeLaunchd(loaded: false)
+        let fake = RecordingCommandRunner { exe, args in
+            if let answer = launchd.answer(exe, args) { return answer }
+            switch args.first {
+            case "verify-cert": return (0, "")
+            case "remove-trusted-cert": return (1, "security didn't finish within 120 seconds")
+            default: return (0, "")
+            }
+        }
+        let lines = try lifecycle(fake).uninstall()
+        XCTAssertFalse(ShellPath.isConfigured(rcFile: rcFile), "the PATH line was still removed")
+        XCTAssertTrue(lines.dropLast().last?.hasPrefix("Paddock is uninstalled. Your sites") == true, "\(lines)")
+        XCTAssertEqual(lines.last, "Paddock is uninstalled, but its certificate is still trusted in your keychain. "
+                       + "Remove \"Paddock Local Authority - Root\" in Keychain Access if you want it gone.")
+    }
+
     // MARK: - An unchanged agent
 
     /// A loaded agent whose plist is current is never rewritten or reloaded while its daemon answers.
@@ -664,7 +747,7 @@ final class SystemLifecycleTests: XCTestCase {
         let fake = RecordingCommandRunner { exe, args in
             if let answer = launchd.answer(exe, args) { return answer }
             switch args.first {
-            case "verify-cert": return (trusted.value.contains(args[2]) ? 0 : 1, "")
+            case "verify-cert": return trusted.value.contains(args[2]) ? (0, "") : notTrusted
             case "remove-trusted-cert":
                 if args[1] == refused.path { return (1, "User canceled the authorization") }
                 trusted.value.remove(args[1])
@@ -673,7 +756,7 @@ final class SystemLifecycleTests: XCTestCase {
             }
         }
         let lines = try lifecycle(fake).uninstall()
-        XCTAssertTrue(lines.last?.hasPrefix("Paddock is uninstalled.") == true, "\(lines)")
+        XCTAssertEqual(lines.last, Messages.uninstalledButStillTrusted, "the refused one is still trusted")
         let removals = fake.calls.filter { $0.arguments.first == "remove-trusted-cert" }.map { $0.arguments[1] }
         XCTAssertEqual(removals, [current, old.path, refused.path], "the current root first")
         XCTAssertEqual(trusted.value, [refused.path])

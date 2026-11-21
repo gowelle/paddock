@@ -127,6 +127,15 @@ public enum Messages {
         + "installed Paddock or this Mac's setup. Run the app from /Applications, or set PADDOCK_HOME to use "
         + "a test folder."
 
+    /// The LaunchAgent belongs to another install of Paddock that is still there.
+    public static func anotherCopyInstalled(path: String) -> String {
+        "Another copy of Paddock is installed at \(path). Open that copy, or run paddock uninstall from it first."
+    }
+
+    /// Uninstall finished, but removing the certificate's trust did not complete.
+    public static let uninstalledButStillTrusted = "Paddock is uninstalled, but its certificate is still trusted "
+        + "in your keychain. Remove \"Paddock Local Authority - Root\" in Keychain Access if you want it gone."
+
     /// The daemon answering runs from another install of Paddock, so this one doesn't restart it.
     public static func anotherCopyRunning(path: String?) -> String {
         "Another copy of Paddock is running" + (path.map { " from \($0)" } ?? "")
@@ -156,31 +165,66 @@ public enum Messages {
         init(_ holder: PortHolder) {
             port = holder.port
             pid = holder.pid
-            appName = holder.appName.flatMap { printable($0) }
-            command = holder.command.flatMap { printable($0) }
-            serviceName = holder.serviceName.flatMap { printable($0) }
+            appName = holder.appName.flatMap { displayName($0) }
+            command = holder.command.flatMap { displayName($0) }
+            serviceName = holder.serviceName.flatMap { displayName($0) }
             serverHeader = holder.serverHeader.flatMap { printable($0) }
         }
     }
 
-    /// Text from another program (a `Server` header, a process or application name) as Paddock shows it:
+    /// A name from another program (an application or process name, a path) as Paddock shows it: the
+    /// first line only (up to any line or paragraph break), terminal escape sequences removed, Unicode
+    /// control, format (bidirectional overrides among them), separator, private-use and unassigned
+    /// characters dropped, whitespace collapsed to single spaces, at most `limit` characters (grapheme
+    /// clusters); nil if nothing is left. Legitimate names such as `Café` are kept as they are.
+    public static func displayName(_ text: String, limit: Int = 64) -> String? {
+        let breaks: Set<Unicode.Scalar> = ["\n", "\r", "\u{0B}", "\u{0C}", "\u{85}", "\u{2028}", "\u{2029}"]
+        let line = text.unicodeScalars.prefix { !breaks.contains($0) }
+        var kept = String.UnicodeScalarView()
+        var iterator = withoutEscapeSequences(line).makeIterator()
+        while let scalar = iterator.next() {
+            let properties = scalar.properties
+            if properties.isWhitespace {
+                if let last = kept.last, last != " " { kept.append(" ") }
+                continue
+            }
+            switch properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator, .privateUse, .surrogate, .unassigned:
+                continue
+            default:
+                kept.append(scalar)
+            }
+        }
+        let trimmed = String(String(kept).trimmingCharacters(in: .whitespaces).prefix(limit))
+            .trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The scalars with terminal escape sequences (CSI, OSC, two-character ones) taken out.
+    private static func withoutEscapeSequences<S: Sequence>(_ scalars: S) -> [Unicode.Scalar]
+        where S.Element == Unicode.Scalar {
+        var out: [Unicode.Scalar] = []
+        var iterator = scalars.makeIterator()
+        while let scalar = iterator.next() {
+            guard scalar == "\u{1B}" else { out.append(scalar); continue }
+            switch iterator.next() {
+            case "[":  // CSI: parameters, then one final byte in 0x40-0x7E.
+                while let next = iterator.next(), !(0x40...0x7E).contains(next.value) {}
+            case "]":  // OSC: up to BEL or ESC.
+                while let next = iterator.next(), next != "\u{07}", next != "\u{1B}" {}
+            default: break  // A two-character sequence: both dropped.
+            }
+        }
+        return out
+    }
+
+    /// Text from another program that must be plain ASCII (a `Server` header, a command) as Paddock shows it:
     /// only what comes before the first line break, terminal escape sequences removed, only printable
     /// ASCII (0x20-0x7E) kept, runs of spaces collapsed, at most `limit` characters; nil if nothing is left.
     public static func printable(_ text: String, limit: Int = 64) -> String? {
         let line = text.unicodeScalars.prefix { $0 != "\n" && $0 != "\r" }
         var kept = ""
-        var iterator = line.makeIterator()
-        while let scalar = iterator.next() {
-            if scalar == "\u{1B}" {
-                switch iterator.next() {
-                case "[":  // CSI: parameters, then one final byte in 0x40-0x7E.
-                    while let next = iterator.next(), !(0x40...0x7E).contains(next.value) {}
-                case "]":  // OSC: up to BEL or ESC \\.
-                    while let next = iterator.next(), next != "\u{07}", next != "\u{1B}" {}
-                default: break  // A two-character sequence: both dropped.
-                }
-                continue
-            }
+        for scalar in withoutEscapeSequences(line) {
             guard (0x20...0x7E).contains(scalar.value) else { continue }
             if scalar == " " && (kept.isEmpty || kept.hasSuffix(" ")) { continue }
             kept.unicodeScalars.append(scalar)

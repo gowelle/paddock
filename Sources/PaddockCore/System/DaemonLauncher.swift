@@ -20,6 +20,8 @@ public enum DaemonLaunchError: Error, Equatable {
     case developmentBuild
     /// Run as root (`sudo`).
     case runningAsRoot
+    /// The LaunchAgent belongs to another, still-present install of Paddock (at `path`).
+    case anotherCopyInstalled(path: String)
     /// The daemon answering belongs to another install of Paddock (at `path`, nil if unknown), so this
     /// one leaves it alone.
     case anotherCopyRunning(path: String?)
@@ -44,6 +46,7 @@ public enum DaemonLaunchError: Error, Equatable {
         case .developmentBuild: return Messages.developmentBuild
         case .runningAsRoot: return Messages.runningAsRoot
         case .anotherCopyRunning(let path): return Messages.anotherCopyRunning(path: path)
+        case .anotherCopyInstalled(let path): return Messages.anotherCopyInstalled(path: path)
         case .failed(let message): return "Couldn't start Paddock: \(message)"
         }
     }
@@ -88,7 +91,7 @@ public struct DaemonLauncher: Sendable {
             throw DaemonLaunchError.socketPathTooLong(path: paths.daemonSocket.path)
         }
         if honouringLoginSetting && lifecycle.runsWithoutAgent {
-            try Self.plainErrors(resolverPath: lifecycle.resolverPath) { try lifecycle.completeSetup() }
+            try Self.plainErrors(resolverPath: lifecycle.resolverPath) { try lifecycle.completeSetup(daemon: daemon) }
             if client.daemonIsRunning {
                 guard try lifecycle.shouldReplaceDaemon(with: daemon) else { return .alreadyRunning }
                 _ = try? client.send(.shutdown, timeout: 60)

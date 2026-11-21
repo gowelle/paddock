@@ -433,13 +433,13 @@ final class EngineTests: XCTestCase {
                        "subject=CN=Paddock Local Authority - Root\nissuer=CN=Paddock Local Authority - Root")
         XCTAssertEqual(try subjectAndIssuer(local.appendingPathComponent("intermediate.crt")),
                        "subject=CN=Paddock Local Authority - Intermediate\nissuer=CN=Paddock Local Authority - Root")
-        let leaf = paths.caddyData.appendingPathComponent("certificates/local/plain-php.test/plain-php.test.crt")
-        XCTAssertTrue(try subjectAndIssuer(leaf).hasSuffix("issuer=CN=Paddock Local Authority - Intermediate"))
-
-        // Verified against Paddock's root alone (no -k): the served chain leads to it.
+        // Verified against Paddock's root alone (no -k): the served chain leads to it. (This also waits for
+        // Caddy to have issued the site's certificate, which it does in the background.)
         let verified = try curlHTTPS("plain-php.test", "/", trustingOnly: trust.rootCertificate)
         XCTAssertEqual(verified.status, 200, verified.verbose)
         XCTAssertTrue(verified.body.hasPrefix("plain:8.5"), verified.body)
+        let leaf = paths.caddyData.appendingPathComponent("certificates/local/plain-php.test/plain-php.test.crt")
+        XCTAssertTrue(try subjectAndIssuer(leaf).hasSuffix("issuer=CN=Paddock Local Authority - Intermediate"))
         XCTAssertEqual(engine!.status().needsTrust, false, "the fake keychain trusts it")
     }
 
@@ -461,12 +461,15 @@ final class EngineTests: XCTestCase {
     /// A fake keychain keyed by certificate file: `verify-cert` answers from `trusted`, `add-trusted-cert`
     /// adds, `remove-trusted-cert` removes (or fails for `refuseRemoval`). Untrust calls are recorded with
     /// the name the file had at that moment.
-    private func keychain(trusted: LockedBox<Set<String>>, refuseRemoval: Bool = false,
+    private func keychain(trusted: LockedBox<Set<String>>, refuseRemoval: Bool = false, refuseAdding: Bool = false,
                           removed: LockedBox<[String?]>) -> RecordingCommandRunner {
         RecordingCommandRunner { _, arguments in
             switch arguments.first {
-            case "verify-cert": return (trusted.value.contains(arguments[2]) ? 0 : 1, "")
-            case "add-trusted-cert": trusted.value.insert(arguments.last!); return (0, "")
+            case "verify-cert": return trusted.value.contains(arguments[2]) ? (0, "") : notTrusted
+            case "add-trusted-cert":
+                if refuseAdding { return (1, "User canceled the authorization") }
+                trusted.value.insert(arguments.last!)
+                return (0, "")
             case "remove-trusted-cert":
                 removed.value.append(CertificateTrust.commonName(ofCertificateAt: URL(fileURLWithPath: arguments[1])))
                 if refuseRemoval { return (1, "User canceled the authorization") }
@@ -526,6 +529,25 @@ final class EngineTests: XCTestCase {
         try engine.start()
         XCTAssertFalse(FileManager.default.fileExists(atPath: replaced.path))
         XCTAssertEqual(CertificateTrust.commonName(ofCertificateAt: root), "Paddock Local Authority - Root")
+    }
+
+    /// The owner declined the new root: no second dialog for the old one in the same request.
+    func testADeclinedCurrentRootIsNotFollowedByAPromptForTheReplacedRoot() async throws {
+        let (_, _) = try homeWithDefaultNamedAuthority()
+        let replaced = paths.caddyData.appendingPathComponent("pki/replaced-root.crt")
+        let trusted = LockedBox<Set<String>>([replaced.path])
+        let removed = LockedBox<[String?]>([])
+        let runner = keychain(trusted: trusted, refuseAdding: true, removed: removed)
+        let engine = Engine.development(paths: paths, settings: settings,
+                                        trust: CertificateTrust(paths: paths, runner: runner))
+        self.engine = engine
+        try engine.start()
+        XCTAssertEqual(try curlHTTPS("plain-php.test", "/").status, 200)
+        let response = await engine.handle(.trust)
+        guard case .error(let code, _) = response else { return XCTFail("\(response)") }
+        XCTAssertEqual(code, ErrorCode.needsTrust)
+        XCTAssertEqual(removed.value, [], "no remove-trusted-cert after a declined add")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: replaced.path))
     }
 
     func testARefusedUntrustOfTheReplacedRootKeepsItAndTrustStillSucceeds() async throws {

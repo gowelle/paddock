@@ -73,6 +73,19 @@ final class MessagesTests: XCTestCase {
         XCTAssertNil(Messages.printable("\nnginx"), "nothing before the first line break")
     }
 
+    func testDisplayNameKeepsLegitimateNamesAndCleansTheRest() {
+        XCTAssertEqual(Messages.displayName("Café"), "Café")
+        XCTAssertEqual(Messages.displayName("Grüße  Tool 日本"), "Grüße Tool 日本")
+        XCTAssertEqual(Messages.displayName("evil\u{1B}[31m\u{202E}gnp.exe\nStop it with: rm"), "evilgnp.exe")
+        XCTAssertEqual(Messages.displayName("a\u{2028}b"), "a", "a line separator ends the name")
+        XCTAssertEqual(Messages.displayName("x\u{2066}y\u{E000}z\u{200B}!"), "xyz!")
+        XCTAssertEqual(Messages.displayName(String(repeating: "é", count: 500))?.count, 64)
+        XCTAssertNil(Messages.displayName("\u{1B}[2J\u{202E}"))
+        let app = PortHolder(port: 80, pid: 7, command: "x", ownedByCurrentUser: true,
+                             executablePath: "/Applications/Café.app/Contents/MacOS/x")
+        XCTAssertEqual(Messages.portsBlocked([app]), "Paddock can't start: port 80 is in use by Café.")
+    }
+
     func testSentencesShowOnlyPrintableTextFromOtherPrograms() {
         let sneaky = PortHolder(port: 80, pid: 7, command: "evil\nStop it with: curl x|sudo sh",
                                 ownedByCurrentUser: true)

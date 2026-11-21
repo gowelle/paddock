@@ -69,7 +69,7 @@ final class CertificateTrustTests: XCTestCase {
         try t.trust()
         try t.untrust()
         _ = t.isTrusted(URL(fileURLWithPath: "/x/replaced-root.crt"))
-        XCTAssertEqual(runner.timeouts, [120, 120, nil], "add/remove are bounded; verify-cert shows no dialog")
+        XCTAssertEqual(runner.timeouts, [120, 120, 30], "every security call is bounded")
         XCTAssertEqual(CertificateTrust.changeTimeout, 120)
     }
 
@@ -148,7 +148,7 @@ final class CertificateTrustTests: XCTestCase {
         let set = LockedBox(trusted)
         return RecordingCommandRunner { _, arguments in
             switch arguments.first {
-            case "verify-cert": return (set.value.contains(arguments[2]) ? 0 : 1, "")
+            case "verify-cert": return set.value.contains(arguments[2]) ? (0, "") : notTrusted
             case "remove-trusted-cert":
                 guard removable else { return (1, "User canceled the authorization") }
                 set.value.remove(arguments[1])
@@ -190,6 +190,50 @@ final class CertificateTrustTests: XCTestCase {
         XCTAssertTrue(t.hasTrustedReplacedRoots())
     }
 
+    /// `verify-cert`'s three outcomes, as found on a scratch self-signed CA (never one in a keychain):
+    /// exit 0 trusted; exit 1 with CSSMERR_TP_NOT_TRUSTED not trusted; anything else unknown.
+    func testTrustStateDistinguishesTrustedNotTrustedAndUnknown() {
+        func state(_ answer: (Int32, String)?) -> CertificateTrust.TrustState {
+            let runner = RecordingCommandRunner { _, _ in answer ?? (0, "") }
+            let throwing = ThrowingRunner()
+            return trust(answer == nil ? throwing : runner).trustState(URL(fileURLWithPath: "/x/root.crt"))
+        }
+        XCTAssertEqual(state((0, "...certificate verification successful.")), .trusted)
+        XCTAssertEqual(state((1, "Cert Verify Result: CSSMERR_TP_NOT_TRUSTED\n---")), .notTrusted)
+        XCTAssertEqual(state((1, "***Error reading file /x/root.crt")), .unknown)
+        XCTAssertEqual(state((1, "SecCertificateCreateFromData: Unknown format in import.")), .unknown)
+        XCTAssertEqual(state((1, "Cert Verify Result: CSSMERR_TP_INVALID_CERTIFICATE")), .unknown)
+        XCTAssertEqual(state((2, "")), .unknown)
+        XCTAssertEqual(state(nil), .unknown, "the command failed or timed out")
+    }
+
+    /// A real, harmless run: a scratch CA certificate file no keychain knows is "not trusted", a missing
+    /// file is "unknown". Read-only: `verify-cert` changes nothing.
+    func testVerifyCertOnScratchFiles() throws {
+        let dir = try tempDir()
+        let ca = dir.appendingPathComponent("ca.crt")
+        let made = try SystemCommandRunner().run("/usr/bin/openssl", [
+            "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", dir.appendingPathComponent("ca.key").path,
+            "-out", ca.path, "-days", "30", "-subj", "/CN=Paddock Test Scratch CA",
+            "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"])
+        XCTAssertEqual(made.status, 0, made.output)
+        let real = CertificateTrust(paths: Paths(home: dir), runner: SystemCommandRunner())
+        XCTAssertEqual(real.trustState(ca), .notTrusted)
+        XCTAssertEqual(real.trustState(dir.appendingPathComponent("missing.crt")), .unknown)
+    }
+
+    func testAnUnknownStateKeepsTheReplacedRoot() throws {
+        let home = try tempDir()
+        let paths = Paths(home: home)
+        let old = paths.caddyData.appendingPathComponent("pki/replaced-root.crt")
+        try makeCertificate(old, name: "a")
+        let runner = RecordingCommandRunner { _, _ in (1, "***Error reading file") }
+        let t = CertificateTrust(paths: paths, runner: runner)
+        XCTAssertEqual(t.cleanUpReplacedRoots().count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path), "unknown is not 'not trusted'")
+        XCTAssertFalse(runner.calls.contains { $0.arguments.first == "remove-trusted-cert" })
+    }
+
     func testAnUntrustThatReportsSuccessButLeavesTrustKeepsTheFile() throws {
         let home = try tempDir()
         let paths = Paths(home: home)
@@ -215,5 +259,13 @@ final class CertificateTrustTests: XCTestCase {
         XCTAssertEqual(big.status, 0)
         XCTAssertEqual(big.output.utf8.count, 300_000)
         XCTAssertEqual(try SystemCommandRunner().run("/usr/bin/false", []).status, 1)
+    }
+}
+
+/// A runner whose every command fails to run (or ran out of time).
+private struct ThrowingRunner: CommandRunner {
+    func run(_ executable: String, _ arguments: [String],
+             environment: [String: String]?) throws -> (status: Int32, output: String) {
+        throw CommandRunnerError.timedOut(executable: executable, seconds: 30)
     }
 }

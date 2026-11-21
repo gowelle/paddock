@@ -76,6 +76,26 @@ enum TestSupport {
         }
     }
 
+    /// The environment of a program run "on the real system" (no PADDOCK_HOME) whose home directory is
+    /// nevertheless `scratchHome`: HOME and CFFIXED_USER_HOME (which Foundation's home directory follows)
+    /// both point there, so even a bug can't reach the owner's real home. High ports only.
+    static func realSystemEnvironment(scratchHome: URL, settings: Settings) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env["PADDOCK_HOME"] = nil
+        env["HOME"] = scratchHome.path
+        env["CFFIXED_USER_HOME"] = scratchHome.path
+        env["PADDOCK_HTTP_PORT"] = "\(settings.httpPort)"
+        env["PADDOCK_HTTPS_PORT"] = "\(settings.httpsPort)"
+        env["PADDOCK_DNS_PORT"] = "\(settings.dnsPort)"
+        env["PADDOCK_RESOURCES"] = repoVendor.path
+        return env
+    }
+
+    /// Every file and folder under `directory`, relative to it.
+    static func contents(of directory: URL) -> [String] {
+        (FileManager.default.enumerator(atPath: directory.path)?.allObjects as? [String] ?? []).sorted()
+    }
+
     /// `PortCheck.holders` for engines under test: `lsof` still names visible listeners, but a hidden holder
     /// is never probed over HTTP and launchd is never asked.
     static let portHoldersWithoutProbes: @Sendable ([Int]) -> [PortHolder] = { ports in

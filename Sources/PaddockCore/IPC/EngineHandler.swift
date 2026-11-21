@@ -120,9 +120,14 @@ extension Engine {
             guard let trust else { return error(ErrorCode.trustDisabled, Messages.trustDisabled) }
             let current = await ensureTrusted(afterSecuring: nil)
             // Then roots replaced when the certificate authority was renamed: best-effort, never failing
-            // this request; a file whose trust couldn't be removed stays for the next attempt.
+            // this request; a file whose trust couldn't be removed stays for the next attempt. Not after the
+            // owner just declined (or the change failed for) the current root: no second prompt then.
+            let currentDeclined = current != nil
+                && current != error(ErrorCode.needsTrust, Messages.certificateNotReady)
             await blocking {
-                for failure in trust.cleanUpReplacedRoots() { self.log(failure) }
+                if !currentDeclined {
+                    for failure in trust.cleanUpReplacedRoots() { self.log(failure) }
+                }
                 self.refreshTrustChecks()
             }
             return current ?? .ok(status())

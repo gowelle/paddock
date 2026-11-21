@@ -7,17 +7,27 @@ public enum ClientError: Error, Equatable {
     case timedOut
     case badResponse(String)
     case io(String)
+    /// A development build may only read from the real home's daemon (`Request.isReadOnly`).
+    case developmentBuild
 }
 
 /// Sends one request to `paddockd` over its Unix socket and waits for the reply.
 public struct PaddockClient: Sendable {
     private let socketPath: String
+    /// Only read-only requests leave this client: a development build talking to the real home's daemon.
+    let readOnly: Bool
 
-    public init(paths: Paths = .current) {
+    /// `readOnly` defaults to: this process is a development build (`SystemIntegration`) and `paths` is the
+    /// owner's real home.
+    public init(paths: Paths = .current, readOnly: Bool? = nil) {
         socketPath = paths.daemonSocket.path
+        self.readOnly = readOnly ?? (paths.isSystemHome && SystemIntegration.thisProcessIsDevelopmentBuild)
     }
 
+    /// Throws `ClientError.developmentBuild`, sending nothing, for a request that isn't read-only from a
+    /// read-only client.
     public func send(_ request: Request, timeout: TimeInterval = 600) throws -> Response {
+        if readOnly && !request.isReadOnly { throw ClientError.developmentBuild }
         guard let fd = Wire.connect(to: socketPath) else {
             if errno == ENOENT || errno == ECONNREFUSED || errno == ENOTSOCK || errno == ENAMETOOLONG {
                 throw ClientError.daemonNotRunning

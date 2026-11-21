@@ -35,7 +35,30 @@ public struct CertificateTrust: Sendable {
 
     /// Whether macOS trusts `certificate` (a file) for SSL.
     public func isTrusted(_ certificate: URL) -> Bool {
-        (try? runner.run(Self.security, ["verify-cert", "-c", certificate.path, "-p", "ssl"]))?.status == 0
+        trustState(certificate) == .trusted
+    }
+
+    /// What `security verify-cert` says about `certificate`, as one of three outcomes.
+    public enum TrustState: Equatable, Sendable {
+        /// Exit 0: macOS trusts it for SSL.
+        case trusted
+        /// The specific "not trusted" answer (`CSSMERR_TP_NOT_TRUSTED`) for a certificate it could read.
+        case notTrusted
+        /// Anything else: the command failed, timed out, couldn't read the file, or gave another answer.
+        case unknown
+    }
+
+    /// How long a trust check may take before its answer counts as unknown.
+    public static let checkTimeout: TimeInterval = 30
+
+    /// `verify-cert -c <file> -p ssl` for a root nobody trusts exits 1 printing
+    /// `Cert Verify Result: CSSMERR_TP_NOT_TRUSTED`; a missing or unreadable file also exits 1, with
+    /// another message (`Error reading file`, `Unknown format in import`), so only that answer is "not trusted".
+    public func trustState(_ certificate: URL) -> TrustState {
+        guard let result = try? runner.run(Self.security, ["verify-cert", "-c", certificate.path, "-p", "ssl"],
+                                           environment: nil, timeout: Self.checkTimeout) else { return .unknown }
+        if result.status == 0 { return .trusted }
+        return result.output.contains("CSSMERR_TP_NOT_TRUSTED") ? .notTrusted : .unknown
     }
 
     /// Trusts the root for SSL only (`-p ssl`), not for code signing, mail or anything else.
@@ -111,26 +134,32 @@ public struct CertificateTrust: Sendable {
 
     /// Whether any replaced root is still trusted.
     public func hasTrustedReplacedRoots() -> Bool {
-        replacedRoots().contains(where: isTrusted)
+        replacedRoots().contains { trustState($0) == .trusted }
     }
 
-    /// Removes trust from every replaced root that still has it, then deletes each replaced root that is
-    /// no longer trusted (or never was). A file whose trust could not be removed stays for the next
-    /// attempt. Returns one line per failure, for the log.
+    /// Removes trust from every replaced root that still has it, then deletes each replaced root macOS
+    /// positively reports as not trusted (`TrustState.notTrusted`). A file whose trust could not be
+    /// removed, or whose state is unknown, stays for the next attempt: a file is never deleted while it
+    /// may still be trusted. Returns one line per file kept, for the log.
     @discardableResult
     public func cleanUpReplacedRoots() -> [String] {
         var failures: [String] = []
         for root in replacedRoots() {
-            if isTrusted(root) {
+            switch trustState(root) {
+            case .unknown:
+                failures.append("couldn't tell whether macOS trusts \(root.path); kept it")
+                continue
+            case .trusted:
                 do { try untrust(root) } catch {
                     failures.append("removing trust from \(root.path) failed: \(error)")
                     continue
                 }
-                // Never delete a file macOS still trusts: it would then be impossible to clean up.
-                if isTrusted(root) {
-                    failures.append("macOS still trusts \(root.path) after remove-trusted-cert")
+                guard trustState(root) == .notTrusted else {
+                    failures.append("macOS may still trust \(root.path) after remove-trusted-cert; kept it")
                     continue
                 }
+            case .notTrusted:
+                break
             }
             try? FileManager.default.removeItem(at: root)
         }

@@ -58,7 +58,7 @@ public final class RecordingCommandRunner: CommandRunner, @unchecked Sendable {
         let trusted = LockedFlag(initiallyTrusted)
         return RecordingCommandRunner { _, arguments in
             switch arguments.first {
-            case "verify-cert": return (trusted.value ? 0 : 1, "")
+            case "verify-cert": return trusted.value ? (0, "") : notTrusted
             case "add-trusted-cert":
                 if accepts { trusted.value = true; return (0, "") }
                 return (1, "User canceled the authorization")
@@ -68,6 +68,9 @@ public final class RecordingCommandRunner: CommandRunner, @unchecked Sendable {
         }
     }
 }
+
+/// What `security verify-cert` answers for a root macOS doesn't trust.
+public let notTrusted: (status: Int32, output: String) = (1, "Cert Verify Result: CSSMERR_TP_NOT_TRUSTED")
 
 final class LockedFlag: @unchecked Sendable {
     private let lock = NSLock()

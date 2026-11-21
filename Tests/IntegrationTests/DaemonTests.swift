@@ -196,6 +196,29 @@ final class DaemonTests: XCTestCase {
         return binary
     }
 
+    /// A repository-built paddockd on the real system (no PADDOCK_HOME) refuses to run before it opens or
+    /// creates anything. Its home directory is a scratch folder, so even a bug can't reach the real home.
+    func testADevelopmentBuildDaemonRefusesTheRealSystem() throws {
+        let scratch = try home.makeDirectory("scratch-home")
+        let process = Process()
+        process.executableURL = try daemonBinary()
+        process.environment = TestSupport.realSystemEnvironment(scratchHome: scratch, settings: home.settings)
+        let errors = Pipe()
+        process.standardError = errors
+        process.standardOutput = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        if !waitForExit(process, timeout: 10) {
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+            XCTFail("paddockd kept running")
+        }
+        let text = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(process.terminationStatus, 78, text)
+        XCTAssertEqual(text, "paddockd: \(Messages.developmentBuild)\n")
+        XCTAssertEqual(TestSupport.contents(of: scratch), [], "nothing created under the home directory")
+    }
+
     private func makeDaemonProcess(log: String) throws -> Process {
         let process = Process()
         process.executableURL = try daemonBinary()

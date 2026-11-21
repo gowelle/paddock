@@ -56,6 +56,8 @@ enum CLI {
             throw failure(Messages.daemonNotRunning)
         } catch ClientError.timedOut {
             throw failure(Messages.didNotAnswer)
+        } catch ClientError.developmentBuild {
+            throw failure(Messages.developmentBuild)
         } catch {
             throw failure(Messages.unexpectedAnswer(error))
         }

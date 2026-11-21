@@ -12,9 +12,18 @@ public struct Paths: Sendable {
         if let h = ProcessInfo.processInfo.environment["PADDOCK_HOME"], !h.isEmpty {
             return Paths(home: URL(fileURLWithPath: h, isDirectory: true))
         }
-        let support = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Paddock", isDirectory: true)
-        return Paths(home: support)
+        return system
+    }
+
+    /// The owner's real home: ~/Library/Application Support/Paddock.
+    public static var system: Paths {
+        Paths(home: FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Paddock", isDirectory: true))
+    }
+
+    /// Whether this is the owner's real home.
+    public var isSystemHome: Bool {
+        home.standardizedFileURL.path == Paths.system.home.standardizedFileURL.path
     }
 
     public var bin: URL { home.appendingPathComponent("bin", isDirectory: true) }

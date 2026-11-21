@@ -158,6 +158,21 @@ final class CLITests: XCTestCase {
         XCTAssertTrue(status.out.contains("Paddock can't start: port \(home.settings.httpPort)"), status.out)
     }
 
+    /// A repository-built `paddock` on the real system (no PADDOCK_HOME; home directory a scratch folder)
+    /// reads, but changes nothing: a mutating request and `stop` are refused with the one sentence.
+    func testADevelopmentBuildOnTheRealSystemOnlyReads() throws {
+        let scratch = try home.makeDirectory("scratch-home")
+        let env = TestSupport.realSystemEnvironment(scratchHome: scratch, settings: home.settings)
+        for args in [["park", home.parked.path], ["forget", home.parked.path], ["stop"], ["restart"], ["trust"]] {
+            let result = try run(args, environment: env)
+            XCTAssertEqual(result.status, 1, "\(args): \(result.out)")
+            XCTAssertTrue(result.err.contains(Messages.developmentBuild), "\(args): \(result.err)")
+        }
+        let status = try run(["status"], environment: env)
+        XCTAssertEqual(status.out, Messages.daemonNotRunning + "\n", "reads still work")
+        XCTAssertEqual(TestSupport.contents(of: scratch), [])
+    }
+
     // MARK: - Helpers
 
     private struct Result { let status: Int32; let out: String; let err: String }
@@ -176,6 +191,7 @@ final class CLITests: XCTestCase {
     }
 
     private func run(_ args: [String], cwd: URL? = nil, extraEnv: [String: String] = [:],
+                     environment fullEnvironment: [String: String]? = nil,
                      timeout: TimeInterval = 60) throws -> Result {
         let binary = products.appendingPathComponent("paddock")
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
@@ -185,7 +201,7 @@ final class CLITests: XCTestCase {
         let process = Process()
         process.executableURL = binary
         process.arguments = args
-        process.environment = environment(extra: extraEnv)
+        process.environment = fullEnvironment ?? environment(extra: extraEnv)
         process.currentDirectoryURL = cwd ?? home.root
         let outFile = home.root.appendingPathComponent("out-\(TestSupport.token())")
         let errFile = home.root.appendingPathComponent("err-\(TestSupport.token())")

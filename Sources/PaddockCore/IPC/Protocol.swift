@@ -13,6 +13,20 @@ public enum Request: Codable, Equatable, Sendable {
     case shutdown
 }
 
+extension Request {
+    /// True for requests that only read (and so may be sent even from a development build to the real
+    /// home's daemon). Every case must be classified here: no `default`.
+    public var isReadOnly: Bool {
+        switch self {
+        case .status:
+            return true
+        case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
+             .isolate, .unisolate, .use, .installPHP, .removePHP, .trust:
+            return false
+        }
+    }
+}
+
 public enum Response: Codable, Equatable, Sendable {
     case ok(EngineStatus)
     case error(code: String, message: String)

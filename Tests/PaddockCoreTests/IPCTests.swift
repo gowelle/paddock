@@ -50,6 +50,67 @@ final class IPCTests: XCTestCase {
         }
     }
 
+    // MARK: - What a development build may send
+
+    /// One instance of every `Request` case. `caseName` has no `default`, so a new case fails to compile
+    /// until it is named there, and the count check fails until it is added here.
+    private var everyRequest: [Request] {
+        [.status, .start, .stop, .restart, .shutdown,
+         .park(path: "/p"), .forget(path: "/p"), .link(name: "blog", path: "/p"), .unlink(name: "blog"),
+         .secure(site: "blog"), .unsecure(site: "blog"), .isolate(site: "blog", version: v84),
+         .unisolate(site: "blog"), .use(version: v84), .installPHP(version: v84), .removePHP(version: v84),
+         .trust]
+    }
+
+    private func caseName(_ r: Request) -> String {
+        switch r {
+        case .status: return "status"
+        case .start: return "start"
+        case .stop: return "stop"
+        case .restart: return "restart"
+        case .shutdown: return "shutdown"
+        case .park: return "park"
+        case .forget: return "forget"
+        case .link: return "link"
+        case .unlink: return "unlink"
+        case .secure: return "secure"
+        case .unsecure: return "unsecure"
+        case .isolate: return "isolate"
+        case .unisolate: return "unisolate"
+        case .use: return "use"
+        case .installPHP: return "installPHP"
+        case .removePHP: return "removePHP"
+        case .trust: return "trust"
+        }
+    }
+
+    func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 17, "one instance of every case")
+        let seen = Locked<[Request]>([])
+        let server = IPCServer(socket: paths.daemonSocket) { request in
+            seen.withValue { $0.append(request) }
+            return .ok(self.sampleStatus())
+        }
+        try server.start()
+        self.server = server
+        let readOnly = PaddockClient(paths: paths, readOnly: true)
+        for request in everyRequest {
+            if request.isReadOnly {
+                XCTAssertEqual(try readOnly.send(request), .ok(sampleStatus()), caseName(request))
+            } else {
+                XCTAssertThrowsError(try readOnly.send(request), caseName(request)) {
+                    XCTAssertEqual($0 as? ClientError, .developmentBuild)
+                }
+            }
+        }
+        XCTAssertEqual(seen.value.map(caseName), ["status"], "exactly the read-only requests were sent")
+        XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status"])
+
+        // A client of any other home, or of an installed build, sends everything.
+        XCTAssertFalse(PaddockClient(paths: paths).readOnly, "not the real home")
+        XCTAssertEqual(try PaddockClient(paths: paths, readOnly: false).send(.trust), .ok(sampleStatus()))
+    }
+
     func testResponseRoundTrips() throws {
         let responses: [Response] = [
             .ok(sampleStatus()),

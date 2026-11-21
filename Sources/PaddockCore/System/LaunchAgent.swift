@@ -76,12 +76,17 @@ public struct LaunchAgent: Sendable {
     /// The daemon a plist on disk runs, if that plist is exactly what `install(daemon:)` would write
     /// for it and the daemon is still there. Lets `paddock start` work without a `paddockd` of its own.
     public func installedDaemon() -> URL? {
+        guard let daemon = plannedDaemon() else { return nil }
+        guard isCurrent(daemon: daemon), FileManager.default.isExecutableFile(atPath: daemon.path) else { return nil }
+        return daemon
+    }
+
+    /// The program the plist on disk runs, whatever else it says; nil without a readable plist.
+    public func plannedDaemon() -> URL? {
         guard let data = try? Data(contentsOf: plist),
               let dictionary = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let program = (dictionary["ProgramArguments"] as? [String])?.first else { return nil }
-        let daemon = URL(fileURLWithPath: program)
-        guard isCurrent(daemon: daemon), FileManager.default.isExecutableFile(atPath: daemon.path) else { return nil }
-        return daemon
+        return URL(fileURLWithPath: program)
     }
 
     /// Writes the plist (unless it already says exactly this) and loads it, replacing a loaded copy.

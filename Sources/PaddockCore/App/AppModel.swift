@@ -89,9 +89,14 @@ public final class AppModel: ObservableObject {
     /// Pause between start attempts while a quit application lets go of its port.
     var quitRetryDelay: UInt64 = 500_000_000
 
+    /// This app's own program, to tell its daemon from another copy's.
+    private let ownExecutable: String?
+
     public init(client: ClientProtocol, services: AppServices? = nil, quitter: ApplicationQuitter? = nil,
-                availablePHP: [PHPVersion] = [], paths: Paths? = nil) {
+                availablePHP: [PHPVersion] = [], paths: Paths? = nil,
+                ownExecutable: String? = PaddockBuild.runningExecutable) {
         self.client = client
+        self.ownExecutable = ownExecutable
         self.paths = paths
         self.services = services
         self.quitter = quitter
@@ -132,9 +137,22 @@ public final class AppModel: ObservableObject {
         return nil
     }
 
+    /// Where the daemon answering runs from, when that is another install of Paddock than this app's
+    /// (its outermost `.app`, else its program, with the home folder as `~`); nil otherwise.
+    public var anotherCopyLocation: String? {
+        guard isRunning, let running = status?.executablePath, let own = ownExecutable,
+              SystemIntegration.installLocation(of: running) != SystemIntegration.installLocation(of: own)
+        else { return nil }
+        var path = PortHolder.enclosingApp(ofExecutable: running)?.path ?? running
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path.hasPrefix(home + "/") { path = "~" + path.dropFirst(home.count) }
+        return Messages.displayName(path, limit: 256)
+    }
+
     public var statusLine: String {
         if isBlocked { return Messages.cantStart(heldPorts) }
         if needsSetup { return "Setup needed" }
+        if let other = anotherCopyLocation { return "Running from another copy at \(other)" }
         if isRunning { return "Running" }
         return "Stopped"
     }
@@ -152,7 +170,7 @@ public final class AppModel: ObservableObject {
         return quitter.canQuit(appBundlePath: path)
     }
 
-    public var quitButtonTitle: String { "Quit \(blockingHolder?.appName.flatMap { Messages.printable($0) } ?? "it")" }
+    public var quitButtonTitle: String { "Quit \(blockingHolder?.appName.flatMap { Messages.displayName($0) } ?? "it")" }
 
     /// The plain explanation shown instead of a button.
     public var blockedExplanation: String? {
@@ -245,18 +263,10 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Requests whose effect reaches beyond Paddock's own state: restarting the daemon, and trust
-    /// (`secure` trusts the certificate too).
-    private static func changesSystem(_ r: Request) -> Bool {
-        switch r {
-        case .start, .stop, .restart, .shutdown, .trust, .secure: return true
-        default: return false
-        }
-    }
-
     /// Sends one request, marking it busy while it is in flight, then refreshes.
     public func perform(_ r: Request) async {
-        guard !Self.changesSystem(r) || mayChangeSystem() else { return }
+        // From a development build on the real system only reads leave (the client refuses the rest too).
+        guard r.isReadOnly || mayChangeSystem() else { return }
         let key = Self.busyKey(r)
         busy.insert(key)
         defer { busy.remove(key) }
@@ -294,6 +304,7 @@ public final class AppModel: ObservableObject {
         switch error {
         case ClientError.daemonNotRunning: return Messages.notRunning
         case ClientError.timedOut: return Messages.didNotAnswer
+        case ClientError.developmentBuild: return Messages.developmentBuild
         case let launch as DaemonLaunchError: return launch.message()
         case let resolver as ResolverError: return resolver.message
         default:
@@ -376,7 +387,7 @@ public final class AppModel: ObservableObject {
     /// Only ever called from the user's click on the Quit button.
     public func quitBlockingHolder() async {
         guard canQuitBlockingHolder, let app = blockingHolder?.appBundlePath, let quitter else { return }
-        let name = blockingHolder?.appName.flatMap { Messages.printable($0) } ?? "That application"
+        let name = blockingHolder?.appName.flatMap { Messages.displayName($0) } ?? "That application"
         guard quitter.quit(appBundlePath: app) else {
             lastError = "\(name) didn't quit."
             return

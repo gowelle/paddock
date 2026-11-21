@@ -9,6 +9,12 @@ import PaddockCore
 setvbuf(stdout, nil, _IOLBF, 0)
 setvbuf(stderr, nil, _IOLBF, 0)
 
+// A development build never runs on the owner's real home: before anything is opened or created.
+if SystemIntegration.thisProcessIsDevelopmentBuild {
+    fputs("paddockd: \(Messages.developmentBuild)\n", stderr)
+    exit(78) // EX_CONFIG
+}
+
 let paths = Paths.current
 let settings = Settings.current
 

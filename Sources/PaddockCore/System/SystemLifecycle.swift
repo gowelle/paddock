@@ -114,6 +114,7 @@ public struct SystemLifecycle: Sendable {
     public func startViaSystem(daemon: URL?, startEngine: () throws -> EngineStatus) throws -> Bool {
         guard isEnabled else { return false }
         try checkMayChangeSystem()
+        try checkNoOtherInstall(daemon: daemon)
         let agent = agent
         var installedAgent = false
         // The plist is current if it runs this daemon (or, with none of our own, any daemon still there).
@@ -148,9 +149,10 @@ public struct SystemLifecycle: Sendable {
     /// Installs whatever of the port helper and the resolver is missing, outdated or (for the helper)
     /// not loaded by launchd, with one password prompt, without touching the LaunchAgent: the app's start
     /// path when the owner turned start at login off. Does nothing for a development home.
-    public func completeSetup() throws {
+    public func completeSetup(daemon: URL? = nil) throws {
         guard isEnabled else { return }
         try checkMayChangeSystem()
+        try checkNoOtherInstall(daemon: daemon)
         try installSystemPieces()
     }
 
@@ -178,15 +180,38 @@ public struct SystemLifecycle: Sendable {
         guard let running = status.executablePath else { throw DaemonLaunchError.anotherCopyRunning(path: nil) }
         guard let daemon, Self.installLocation(of: running) == Self.installLocation(of: daemon.resolvingSymlinksInPath().path) else {
             // Named by its app if it is in one, else by its program.
-            throw DaemonLaunchError.anotherCopyRunning(path: PortHolder.enclosingApp(ofExecutable: running)?.path ?? running)
+            throw DaemonLaunchError.anotherCopyRunning(
+                path: abbreviated(PortHolder.enclosingApp(ofExecutable: running)?.path ?? running))
         }
         return true
     }
 
     /// The install a program belongs to: its outermost `.app`, else the folder it is in.
     static func installLocation(of executable: String) -> String {
-        PortHolder.enclosingApp(ofExecutable: executable)?.path
-            ?? URL(fileURLWithPath: executable).deletingLastPathComponent().standardizedFileURL.path
+        SystemIntegration.installLocation(of: executable)
+    }
+
+    /// Refuses to touch the LaunchAgent or the privileged setup while another install of Paddock owns them:
+    /// the agent's plist runs a `paddockd` of another install that is still there (or answering), or a
+    /// daemon from another install answers. Taking over is allowed only when the other install's daemon
+    /// is gone and nothing of it answers (the app was moved or deleted). Runs no command; asks the daemon
+    /// for `status` only. Nothing to compare without a `paddockd` of this program's own.
+    func checkNoOtherInstall(daemon: URL?) throws {
+        guard let daemon else { return }
+        let mine = Self.installLocation(of: daemon.resolvingSymlinksInPath().path)
+        var answering: String?
+        if case .ok(let status)? = try? client.send(.status, timeout: 10) { answering = status.executablePath }
+        if let theirs = agent.plannedDaemon()?.path, Self.installLocation(of: theirs) != mine {
+            let present = FileManager.default.fileExists(atPath: theirs)
+            let theirsAnswers = answering.map { Self.installLocation(of: $0) == Self.installLocation(of: theirs) } ?? false
+            if present || theirsAnswers {
+                throw DaemonLaunchError.anotherCopyInstalled(path: abbreviated(Self.installLocation(of: theirs)))
+            }
+        }
+        if let answering, Self.installLocation(of: answering) != mine {
+            throw DaemonLaunchError.anotherCopyRunning(
+                path: abbreviated(PortHolder.enclosingApp(ofExecutable: answering)?.path ?? answering))
+        }
     }
 
     /// The one gate for every action that changes the owner's system or installed Paddock (the LaunchAgent,
@@ -196,7 +221,9 @@ public struct SystemLifecycle: Sendable {
     public func checkMayChangeSystem() throws {
         guard isEnabled else { return }
         if effectiveUID == 0 { throw DaemonLaunchError.runningAsRoot }
-        if services.portHelperSource == nil { throw DaemonLaunchError.developmentBuild }
+        if SystemIntegration.isDevelopmentBuild(environment: environment, bundledHelper: services.portHelperSource) {
+            throw DaemonLaunchError.developmentBuild
+        }
     }
 
     /// The one privileged call of `startViaSystem` and `completeSetup`, if anything needs it.
@@ -237,6 +264,7 @@ public struct SystemLifecycle: Sendable {
     public func setStartsAtLogin(_ on: Bool, daemon: URL) throws {
         guard isEnabled else { return }
         try checkMayChangeSystem()
+        try checkNoOtherInstall(daemon: daemon)
         let agent = agent
         if on {
             if !(agent.isCurrent(daemon: daemon) && agent.isLoaded()) { try agent.install(daemon: daemon) }
@@ -277,15 +305,20 @@ public struct SystemLifecycle: Sendable {
         try agent.uninstall()
         shutDownRemainingDaemon()
 
+        // Trust removal is best-effort (a dialog may be declined or time out): it never stops the rest.
         let trust = CertificateTrust(paths: paths, runner: services.runner)
-        if trust.isTrusted() { try trust.untrust() }
-        // Roots replaced when the certificate authority was renamed: best-effort.
-        trust.cleanUpReplacedRoots()
+        var trustLeft = false
+        if trust.isTrusted() {
+            do { try trust.untrust() } catch { trustLeft = true }
+        }
+        // Roots replaced when the certificate authority was renamed.
+        if !trust.cleanUpReplacedRoots().isEmpty { trustLeft = true }
 
         try ShellPath.unconfigure(rcFile: rcFile)
         let sites = store.load().parked.map(abbreviated).joined(separator: ", ")
         lines.append("Paddock is uninstalled. Your sites in \(sites.isEmpty ? "~/Paddock" : sites) "
             + "and Paddock's data in \(abbreviated(paths.home.path)) were left in place.")
+        if trustLeft { lines.append(Messages.uninstalledButStillTrusted) }
         return lines
     }
 

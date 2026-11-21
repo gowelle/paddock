@@ -717,4 +717,25 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.lastError, Messages.developmentBuild)
         XCTAssertEqual(services.startCalls, 0)
     }
+
+    // MARK: - Another copy
+
+    func testADaemonFromAnotherCopySaysWhereItRunsFrom() async {
+        var elsewhere = sampleStatus()
+        elsewhere.executablePath = "/Volumes/Work/Paddock.app/Contents/MacOS/paddockd"
+        let other = elsewhere
+        let client = FakeClient { _ in .ok(other) }
+        let model = AppModel(client: client, ownExecutable: "/Applications/Paddock.app/Contents/MacOS/PaddockApp")
+        await model.refresh()
+        XCTAssertEqual(model.anotherCopyLocation, "/Volumes/Work/Paddock.app")
+        XCTAssertEqual(model.statusLine, "Running from another copy at /Volumes/Work/Paddock.app")
+
+        var own = sampleStatus()
+        own.executablePath = "/Applications/Paddock.app/Contents/MacOS/paddockd"
+        let mine = own
+        client.handler = { _ in .ok(mine) }
+        await model.refresh()
+        XCTAssertNil(model.anotherCopyLocation, "its own app's daemon")
+        XCTAssertEqual(model.statusLine, "Running")
+    }
 }
