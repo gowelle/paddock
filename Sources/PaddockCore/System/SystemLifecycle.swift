@@ -334,7 +334,8 @@ public struct SystemLifecycle: Sendable {
     /// still answering after the bootout: ask it to shut down and give it a moment to go.
     private func shutDownRemainingDaemon() {
         guard daemonIsRunning() else { return }
-        _ = try? client.send(.shutdown, timeout: 5)
+        // As long as the daemon may need to stop its services.
+        _ = try? client.send(.shutdown, timeout: TimeInterval(LaunchAgent.exitTimeOut))
         let deadline = Date().addingTimeInterval(5)
         while daemonIsRunning() && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
     }

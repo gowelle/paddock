@@ -91,13 +91,18 @@ public final class FakeLaunchd: @unchecked Sendable {
     private var failuresLeft: Int
     private let bootoutStatus: Int32
     private let bootoutUnloads: Bool
+    /// How many `print`s after a bootout still find the job loaded (a daemon slow to stop its services).
+    private var loadedPrintsLeft: Int
+    private let loadedAfterBootout: Int
 
     public init(loaded: Bool = false, bootstrapFailures: Int = 0, bootoutStatus: Int32 = 0,
-                bootoutUnloads: Bool = true) {
+                bootoutUnloads: Bool = true, loadedAfterBootout: Int = 0) {
         isLoaded = loaded
         failuresLeft = bootstrapFailures
         self.bootoutStatus = bootoutStatus
         self.bootoutUnloads = bootoutUnloads
+        self.loadedAfterBootout = loadedAfterBootout
+        loadedPrintsLeft = 0
     }
 
     public var loaded: Bool {
@@ -110,9 +115,19 @@ public final class FakeLaunchd: @unchecked Sendable {
         guard executable == "/bin/launchctl" else { return nil }
         lock.lock(); defer { lock.unlock() }
         switch arguments.first {
-        case "print": return (isLoaded ? 0 : 113, "")
+        case "print":
+            if loadedPrintsLeft > 0 {
+                loadedPrintsLeft -= 1
+                if loadedPrintsLeft == 0 && bootoutUnloads { isLoaded = false }
+                return (0, "")
+            }
+            return (isLoaded ? 0 : 113, "")
         case "bootout":
-            if bootoutUnloads { isLoaded = false }
+            if loadedAfterBootout > 0 {
+                loadedPrintsLeft = loadedAfterBootout
+            } else if bootoutUnloads {
+                isLoaded = false
+            }
             return (bootoutStatus, bootoutStatus == 0 ? "" : "Boot-out failed: 5: Input/output error")
         case "bootstrap":
             if failuresLeft > 0 {

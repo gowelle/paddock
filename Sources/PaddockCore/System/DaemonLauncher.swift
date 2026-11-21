@@ -94,7 +94,7 @@ public struct DaemonLauncher: Sendable {
             try Self.plainErrors(resolverPath: lifecycle.resolverPath) { try lifecycle.completeSetup(daemon: daemon) }
             if client.daemonIsRunning {
                 guard try lifecycle.shouldReplaceDaemon(with: daemon) else { return .alreadyRunning }
-                _ = try? client.send(.shutdown, timeout: 60)
+                _ = try? client.send(.shutdown, timeout: TimeInterval(LaunchAgent.exitTimeOut))
                 waitForDaemonToExit()
             }
             guard let daemon else { throw DaemonLaunchError.noDaemonBinary }
@@ -164,7 +164,7 @@ public struct DaemonLauncher: Sendable {
             return .stopped
         }
         guard client.daemonIsRunning else { return .notRunning }
-        if case .error(_, let message) = try client.send(.shutdown, timeout: 60) {
+        if case .error(_, let message) = try client.send(.shutdown, timeout: TimeInterval(LaunchAgent.exitTimeOut)) {
             throw DaemonLaunchError.failed(message)
         }
         waitForDaemonToExit()

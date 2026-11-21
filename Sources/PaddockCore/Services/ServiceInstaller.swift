@@ -25,11 +25,16 @@ public final class ServiceInstaller: Sendable {
     static let recipeName = ".paddock-recipe.json"
     static let stagingPrefix = ".service-install-"
 
+    /// Called with the target folder just before an install is moved into place (tests).
+    private let willSwap: (@Sendable (URL) -> Void)?
+
     public init(paths: Paths, downloader: ArtifactDownloader = ArtifactDownloader(),
-                environment: [String: String] = ProcessInfo.processInfo.environment) {
+                environment: [String: String] = ProcessInfo.processInfo.environment,
+                willSwap: (@Sendable (URL) -> Void)? = nil) {
         self.paths = paths
         self.downloader = downloader
         self.environment = environment
+        self.willSwap = willSwap
     }
 
     /// What a finished install was made from: the SHA-256 of each asset, in order.
@@ -96,6 +101,14 @@ public final class ServiceInstaller: Sendable {
         guard isInstalled(recipe) else { return }
         let file = paths.serviceBin(kind: recipe.kind, version: recipe.version).appendingPathComponent(Self.recipeName)
         try JSONEncoder().encode(recipe).write(to: file, options: .atomic)
+    }
+
+    /// Whether an asset is a file on this Mac (one of Paddock's own builds, or a local copy).
+    public func isLocal(_ asset: RecipeAsset) -> Bool {
+        guard let source = BuildSource.resolve(asset.artifact.url, environment: environment), source.isFileURL else {
+            return false
+        }
+        return FileManager.default.fileExists(atPath: source.path)
     }
 
     /// Whether every download of the recipe is already a file on this Mac (Paddock's own builds, or a
@@ -224,6 +237,7 @@ public final class ServiceInstaller: Sendable {
         try JSONEncoder().encode(recipe).write(to: stage.appendingPathComponent(Self.recipeName))
 
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        willSwap?(target)
         if fm.fileExists(atPath: target.path) {
             let failure: Int32 = stage.withUnsafeFileSystemRepresentation { from in
                 target.withUnsafeFileSystemRepresentation { to in

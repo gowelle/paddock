@@ -30,7 +30,7 @@ struct Stop: ParsableCommand {
 
     func run() throws {
         let outcome: DaemonLauncher.StopOutcome
-        do { outcome = try CLI.launcher.stop() } catch DaemonLaunchError.failed(let message) {
+        do { outcome = try CLI.whileWaitingForServices { try CLI.launcher.stop() } } catch DaemonLaunchError.failed(let message) {
             throw CLI.failure(message)
         } catch let error as DaemonLaunchError {
             throw CLI.failure(error.message())

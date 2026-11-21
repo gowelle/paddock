@@ -149,7 +149,10 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
 
     /// Every kind, alphabetically, with its versions and series newest first. `needsDownload` says whether
     /// the series' newest version has anything to download (`ServiceManager` refines it with what's installed).
-    public func kinds(needsDownload: (ServiceRecipe) -> Bool = { !$0.assets.isEmpty }) -> [CatalogEntry] {
+    /// `downloadBytes` is what adding a recipe downloads (every asset's size, unless the caller knows some
+    /// are on this Mac already).
+    public func kinds(needsDownload: (ServiceRecipe) -> Bool = { !$0.assets.isEmpty },
+                      downloadBytes: (ServiceRecipe) -> Int? = { ServiceCatalog.downloadBytes($0.assets) }) -> [CatalogEntry] {
         var seen: [String] = []
         for recipe in recipes where !seen.contains(recipe.kind) { seen.append(recipe.kind) }
         return seen.sorted().compactMap { kind in
@@ -158,16 +161,17 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
             var series: [CatalogSeries] = []
             for recipe in versions where !series.contains(where: { $0.series == recipe.series }) {
                 series.append(CatalogSeries(series: recipe.series, version: recipe.version,
-                                            downloadBytes: Self.downloadBytes(recipe), needsDownload: needsDownload(recipe)))
+                                            downloadBytes: downloadBytes(recipe), needsDownload: needsDownload(recipe)))
             }
             return CatalogEntry(kind: kind, displayName: newest.displayName, licence: newest.licence,
-                                versions: versions.map(\.version), downloadBytes: Self.downloadBytes(newest),
+                                versions: versions.map(\.version), downloadBytes: downloadBytes(newest),
                                 series: series)
         }
     }
 
-    private static func downloadBytes(_ recipe: ServiceRecipe) -> Int? {
-        let sizes = recipe.assets.map(\.artifact.size)
+    /// The assets' sizes added up, when every one is known.
+    public static func downloadBytes(_ assets: [RecipeAsset]) -> Int? {
+        let sizes = assets.map(\.artifact.size)
         return sizes.contains { $0 == nil } ? nil : sizes.compactMap { $0 }.reduce(0, +)
     }
 

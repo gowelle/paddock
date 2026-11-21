@@ -101,6 +101,8 @@ public final class ServiceManager: @unchecked Sendable {
     private let lateLoopbackChecks: [TimeInterval]
     /// The macOS this runs on (tests pretend to be older).
     private let macOSVersion: OperatingSystemVersion
+    /// What a lock file's process is (tests pretend macOS won't say).
+    private let processInspector: ServiceProcessInspector
     private let log: @Sendable (String) -> Void
 
     private let operationLock = NSLock()
@@ -134,6 +136,8 @@ public final class ServiceManager: @unchecked Sendable {
                 environment: [String: String] = ProcessInfo.processInfo.environment,
                 lateLoopbackChecks: [TimeInterval] = [5, 30],
                 macOSVersion: OperatingSystemVersion = ProcessInfo.processInfo.operatingSystemVersion,
+                processInspector: ServiceProcessInspector = .live,
+                installerWillSwap: (@Sendable (URL) -> Void)? = nil,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.paths = paths
         self.log = log
@@ -146,7 +150,8 @@ public final class ServiceManager: @unchecked Sendable {
         }
         self.store = store
         self.supervisor = supervisor
-        installer = ServiceInstaller(paths: paths, downloader: downloader, environment: environment)
+        installer = ServiceInstaller(paths: paths, downloader: downloader, environment: environment,
+                                     willSwap: installerWillSwap)
         self.portCheck = portCheck
         self.phpBinary = phpBinary
         self.portBase = portBase
@@ -155,6 +160,7 @@ public final class ServiceManager: @unchecked Sendable {
         self.runner = runner
         self.lateLoopbackChecks = lateLoopbackChecks
         self.macOSVersion = macOSVersion
+        self.processInspector = processInspector
     }
 
     // MARK: - Actions
@@ -377,12 +383,11 @@ public final class ServiceManager: @unchecked Sendable {
 
     /// The recipe the instance's installed binaries run with. The catalog's recipe of exactly that version
     /// comes first when its downloads are exactly the installed ones (the same build, described anew: lock
-    /// files, readiness, notes); it is stored in place of the old description. Otherwise the stored one,
-    /// validated. An invalid stored recipe is never used (and logged once); a missing or invalid one is
-    /// replaced by the catalog's recipe of exactly that version when its binaries are installed (installs made
-    /// before recipes were stored), so later catalog changes don't strand the instance. Nil when there is
-    /// nothing safe to run.
-    private func installedRecipe(_ instance: ServiceInstance) -> ServiceRecipe? {
+    /// files, readiness, notes; or an install made before recipes were stored), so later catalog changes
+    /// don't strand the instance. Otherwise the stored one, validated; an invalid stored recipe is never
+    /// used (and logged once). Nil when there is nothing safe to run. Reading (status, env) only computes it;
+    /// a start, holding the change lock, passes `storing` to keep the stored description up to date.
+    private func installedRecipe(_ instance: ServiceInstance, storing: Bool = false) -> ServiceRecipe? {
         let stored = installer.storedRecipe(kind: instance.kind, version: instance.version)
         if case .invalid(let reason) = stored {
             reportOnce("recipe:\(instance.kind)/\(instance.version)",
@@ -390,7 +395,7 @@ public final class ServiceManager: @unchecked Sendable {
         }
         if let recipe = catalog.recipes(of: instance.kind).first(where: { $0.version == instance.version }),
            installer.isInstalled(recipe) {
-            if stored != .valid(recipe) {
+            if storing, stored != .valid(recipe) {
                 do { try installer.storeRecipe(recipe) } catch {
                     log("could not store the recipe of \(recipe.kind) \(recipe.version): \(error.localizedDescription)")
                 }
@@ -398,12 +403,7 @@ public final class ServiceManager: @unchecked Sendable {
             return recipe
         }
         if case .valid(let recipe) = stored { return recipe }
-        guard let recipe = catalog.recipes(of: instance.kind).first(where: { $0.version == instance.version }),
-              installer.isInstalled(recipe) else { return nil }
-        do { try installer.storeRecipe(recipe) } catch {
-            log("could not store the recipe of \(recipe.kind) \(recipe.version): \(error.localizedDescription)")
-        }
-        return recipe
+        return nil
     }
 
     /// Why an instance has nothing to run.
@@ -686,12 +686,34 @@ public final class ServiceManager: @unchecked Sendable {
            latest.version != instance.version || installer.isInstalled(latest) {
             return instance
         }
+        // The same version gaining a download is installed into the folder the service runs from: stop it
+        // first, so its binaries are never swapped under a running server (a new version installs beside).
+        let sameVersion = latest.version == instance.version
+        let wasRunning: Bool = sameVersion ? try await Self.offPool {
+            self.operationLock.lock()
+            defer { self.operationLock.unlock() }
+            guard let current = self.instance(named: instance.id) else { return false }
+            let running: Bool
+            if case .running = self.supervisor.status(Self.processName(current.id)) { running = true } else { running = false }
+            self.stopLocked(current.id)
+            return running
+        } : false
         do {
             try await installer.install(latest)
-        } catch is CancellationError {
-            throw ServiceError.cancelled(name: instance.name)
-        } catch let error as ServiceInstallError {
-            throw ServiceError.installFailed(name: instance.name, reason: error)
+        } catch {
+            // Nothing was swapped: the old install runs again as it was.
+            if wasRunning {
+                _ = try? await Self.offPool {
+                    self.operationLock.lock()
+                    defer { self.operationLock.unlock() }
+                    if let current = self.instance(named: instance.id), let failure = self.startOne(current) {
+                        self.log("\(current.name) did not start again: \(Messages.serviceError(failure))")
+                    }
+                }
+            }
+            if error is CancellationError { throw ServiceError.cancelled(name: instance.name) }
+            if let error = error as? ServiceInstallError { throw ServiceError.installFailed(name: instance.name, reason: error) }
+            throw error
         }
         if Task.isCancelled { throw ServiceError.cancelled(name: instance.name) }
         return try await Self.offPool {
@@ -841,7 +863,7 @@ public final class ServiceManager: @unchecked Sendable {
             return nil
         }
         reclaimOrphan(instance)
-        let current = installedRecipe(instance)
+        let current = installedRecipe(instance, storing: true)
         var target = forcing ?? current
         if forcing == nil, let latest = latest(instance), latest.version != instance.skippedVersion,
            current == nil || ServiceCatalog.isNewer(latest.version, than: instance.version)
@@ -1072,15 +1094,20 @@ public final class ServiceManager: @unchecked Sendable {
 
     // MARK: - Lock files
 
-    /// Before a start (after any orphan was reclaimed): each of the recipe's lock files that names a process
-    /// which is not a live program from this kind's installed binaries is stale (a crash, and its pid reused
-    /// since) and is removed: only a regular file, never through a symlink, only inside the instance's own
-    /// data and run folders. One naming such a live program is left alone and the start refused: another copy
-    /// runs on this data. A lock file that is not a regular file is left alone and the start refused.
+    /// Before a start (after any orphan was reclaimed): the recipe's lock files (a pid on the first line,
+    /// like PostgreSQL's `postmaster.pid`). Paddock removes one only when its pid is a live process that is
+    /// provably not this instance's server: another user's (services run as this user), or one whose
+    /// program is outside this kind's installed binaries, or one running them in another folder than this
+    /// instance's (a server runs in its instance's folder, PostgreSQL in its data folder). Anything else
+    /// is left alone: a dead, empty or unreadable lock for the service itself to handle (PostgreSQL removes
+    /// it, and checks its shared memory too); this instance's own server, or a process macOS won't describe,
+    /// refuses the start. Only a regular file is ever removed, never through a symlink, and only inside the
+    /// instance's own data and run folders; a lock that is not a regular file refuses the start.
     private func removeStaleLocks(_ instance: ServiceInstance, _ recipe: ServiceRecipe,
                                   context: ServiceTemplateContext) throws {
         let own = [paths.serviceData(instance.id), paths.serviceRun(instance.id)]
         let binaries = paths.serviceBin(kind: instance.kind, version: "-").deletingLastPathComponent()
+        let instanceFolder = Self.realPath(paths.serviceHome(instance.id).path) ?? paths.serviceHome(instance.id).path
         for template in recipe.lockFiles {
             let path = URL(fileURLWithPath: try ServiceTemplate.render(template, context: context)).standardizedFileURL
             guard own.contains(where: { Self.isUnder(path.path, folder: $0) }) else {
@@ -1099,16 +1126,35 @@ public final class ServiceManager: @unchecked Sendable {
                 throw ServiceError.unavailable(name: instance.name, reason: "its lock file \(path.lastPathComponent) is "
                                                + "not a plain file, so Paddock left it alone (\(path.path))")
             }
-            if let pid = Self.lockOwner(path.path), Self.isAlive(pid),
-               let program = PortCheck.executablePath(pid: pid), Self.resolves(program, inside: binaries) {
-                throw ServiceError.unavailable(name: instance.name, reason: "another copy of it is already running "
-                                               + "(process \(pid)) on its data; Paddock left it alone")
+            // Dead, empty, not a pid, unreadable: the service's own business.
+            guard let pid = Self.lockOwner(path.path) else { continue }
+            if kill(pid, 0) != 0 {
+                guard errno == EPERM else { continue }
+                // Another user's process: not a service of this user's.
+            } else {
+                guard let program = processInspector.executable(pid) else {
+                    throw ServiceError.unavailable(name: instance.name, reason: "its lock file \(path.lastPathComponent) "
+                                                   + "names process \(pid), and macOS won't say what it runs; remove "
+                                                   + "\(path.path) if that isn't \(instance.name)")
+                }
+                if Self.resolves(program, inside: binaries) {
+                    guard let directory = processInspector.workingDirectory(pid) else {
+                        throw ServiceError.unavailable(name: instance.name, reason: "its lock file "
+                                                       + "\(path.lastPathComponent) names process \(pid), and macOS won't "
+                                                       + "say where it runs; remove \(path.path) if that isn't \(instance.name)")
+                    }
+                    let resolved = Self.realPath(directory) ?? directory
+                    if resolved == instanceFolder || resolved.hasPrefix(instanceFolder + "/") {
+                        throw ServiceError.unavailable(name: instance.name, reason: "another copy of it is already "
+                                                       + "running (process \(pid)) on its data; Paddock left it alone")
+                    }
+                }
             }
             guard unlink(path.path) == 0 || errno == ENOENT else {
                 throw ServiceError.unavailable(name: instance.name,
                                                reason: "its stale lock file \(path.path) couldn't be removed")
             }
-            log("removed the stale lock file \(path.lastPathComponent) of \(instance.name)")
+            log("removed the stale lock file \(path.lastPathComponent) of \(instance.name) (process \(pid) is not it)")
         }
     }
 
@@ -1123,8 +1169,6 @@ public final class ServiceManager: @unchecked Sendable {
         let first = String(decoding: buffer[0..<n], as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false).first
         return first.flatMap { Int32($0.trimmingCharacters(in: .whitespaces)) }.flatMap { $0 > 0 ? $0 : nil }
     }
-
-    static func isAlive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 || errno == EPERM }
 
     /// The first TCP listener of the process group that isn't on 127.0.0.1 or [::1] (`lsof`, at most 5
     /// seconds). A recipe can forget a bind flag (MySQL and Redis listen everywhere by default); this catches
@@ -1266,6 +1310,9 @@ public final class ServiceManager: @unchecked Sendable {
     public func catalogEntries() -> [CatalogEntry] {
         catalog.kinds(needsDownload: { [installer] recipe in
             !recipe.assets.isEmpty && !installer.isInstalled(recipe) && !installer.canInstallLocally(recipe)
+        }, downloadBytes: { [installer] recipe in
+            // Only what would be fetched: not an asset that is a file on this Mac (Paddock's own builds).
+            ServiceCatalog.downloadBytes(recipe.assets.filter { !installer.isLocal($0) })
         })
     }
 

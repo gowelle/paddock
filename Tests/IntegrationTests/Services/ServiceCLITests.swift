@@ -53,8 +53,8 @@ final class ServiceCLITests: XCTestCase {
 
         let available = try run(["service", "available"])
         XCTAssertEqual(available.status, 0, available.err)
-        let size = "\(max(1, Int((Double(try FileManager.default.attributesOfItem(atPath: FakeService.binary.path)[.size] as! Int) / 1_000_000).rounded()))) MB"
-        XCTAssertEqual(available.out, "KIND  SERVICE  SERIES  LICENCE  DOWNLOAD\nfake  Fake     1       MIT      \(size)\n")
+        // The fake is a file on this Mac: adding it downloads nothing.
+        XCTAssertEqual(available.out, "KIND  SERVICE  SERIES  LICENCE  DOWNLOAD\nfake  Fake     1       MIT      none\n")
 
         let unknown = try run(["service", "add", "nope"])
         XCTAssertEqual(unknown.status, 1)
@@ -114,6 +114,22 @@ final class ServiceCLITests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.serviceHome("fake").path))
         XCTAssertEqual(try run(["service", "list"]).out,
                        "No services yet. See what you can add with: paddock service available\n")
+    }
+
+    /// A daemon whose services take a while to stop (here one that ignores SIGTERM, with five seconds'
+    /// grace): `paddock stop` says what it is waiting for.
+    func testStopSaysWhenItIsWaitingForServices() throws {
+        let catalog = home.root.appendingPathComponent("catalog.json")
+        try JSONEncoder().encode(ServiceCatalog(recipes: [
+            FakeService.recipe(extraArguments: ["--ignore-term"], stopGraceSeconds: 5),
+        ])).write(to: catalog)
+        try launchDaemon()
+        let added = try run(["service", "add", "fake"])
+        XCTAssertEqual(added.status, 0, added.err)
+        let stopped = try run(["stop"], timeout: 120)
+        XCTAssertEqual(stopped.status, 0, stopped.err)
+        XCTAssertEqual(stopped.out, "Waiting for services to stop…\nPaddock stopped.\n")
+        XCTAssertFalse(PortCheck.acceptsIPv4(port: home.fakePort))
     }
 
     // MARK: - Helpers

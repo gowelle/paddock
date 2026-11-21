@@ -42,6 +42,15 @@ extension CLI {
         if client.readOnly { throw failure(Messages.developmentBuild) }
     }
 
+    /// Runs `work` (stopping Paddock); if it takes more than three seconds, says what it is waiting for:
+    /// services may need up to a minute to stop cleanly (PostgreSQL's final checkpoint).
+    static func whileWaitingForServices<T>(_ work: () throws -> T) rethrows -> T {
+        let notice = SlowNotice()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { notice.show("Waiting for services to stop…") }
+        defer { notice.finish() }
+        return try work()
+    }
+
     /// `Mail is running on port 1025.`
     static func runningLine(_ service: ServiceStatus) -> String {
         service.mainPort.map { "\(service.name) is running on port \($0)." } ?? "\(service.name) is running."
@@ -234,5 +243,25 @@ struct ServiceOpen: ParsableCommand {
         }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw CLI.failure("Couldn't open \(url).") }
+    }
+}
+
+/// A line printed only while the work it describes is still going (never after it finished).
+private final class SlowNotice: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+
+    func show(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        print(line)
+        fflush(stdout)
+    }
+
+    func finish() {
+        lock.lock()
+        finished = true
+        lock.unlock()
     }
 }

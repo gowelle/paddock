@@ -108,3 +108,29 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
         while groupAlive() && Date() < end { Thread.sleep(forTimeInterval: 0.05) }
     }
 }
+
+/// What macOS says about a live process: its program and its working folder (nil when it won't say).
+public struct ServiceProcessInspector: Sendable {
+    public var executable: @Sendable (Int32) -> String?
+    public var workingDirectory: @Sendable (Int32) -> String?
+
+    public init(executable: @escaping @Sendable (Int32) -> String?,
+                workingDirectory: @escaping @Sendable (Int32) -> String?) {
+        self.executable = executable
+        self.workingDirectory = workingDirectory
+    }
+
+    public static let live = ServiceProcessInspector(executable: { PortCheck.executablePath(pid: $0) },
+                                                     workingDirectory: { currentDirectory(of: $0) })
+
+    /// A process's working folder (`proc_pidinfo` `PROC_PIDVNODEPATHINFO`), if macOS says.
+    static func currentDirectory(of pid: Int32) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard pid > 0, proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
+        let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+        }
+        return path.isEmpty ? nil : path
+    }
+}

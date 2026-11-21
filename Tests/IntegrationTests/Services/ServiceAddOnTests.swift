@@ -1,5 +1,6 @@
 import CryptoKit
 import Darwin
+import PaddockTestSupport
 import XCTest
 @testable import PaddockCore
 
@@ -21,10 +22,11 @@ final class ServiceAddOnTests: XCTestCase {
         home?.cleanUp()
     }
 
-    private func makeManager(_ recipes: [ServiceRecipe]) -> ServiceManager {
+    private func makeManager(_ recipes: [ServiceRecipe],
+                             willSwap: (@Sendable (URL) -> Void)? = nil) -> ServiceManager {
         let manager = ServiceManager(paths: home.paths, catalog: ServiceCatalog(recipes: recipes),
                                      store: StateStore(paths: home.paths), supervisor: Supervisor(backoffScale: 0.05),
-                                     portCheck: .withoutProbes, portBase: home.portBase)
+                                     portCheck: .withoutProbes, portBase: home.portBase, installerWillSwap: willSwap)
         managers.append(manager)
         return manager
     }
@@ -71,6 +73,64 @@ final class ServiceAddOnTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "data", "its data is untouched")
         XCTAssertEqual(second.installer.installedRecipe(kind: "fake", version: "1.0"), recipe)
         XCTAssertEqual(FakeService.arguments(paths: home.paths, id: "fake").first, FakeService.installed(paths: home.paths))
+    }
+
+    /// Completing a running instance's install swaps its binaries folder: `update` stops it first, swaps, and
+    /// starts it again; the server is never running while its folder is swapped.
+    func testUpdateStopsARunningServiceBeforeSwappingItsBinaries() async throws {
+        let first = makeManager([FakeService.recipe()])
+        _ = try await first.add(kind: "fake", version: nil)
+        first.stopAll()
+        // Keep the next start from completing the install by itself, so update has a running service to handle.
+        try StateStore(paths: home.paths).update { state in
+            state.services = state.services.map { var saved = $0; saved.skippedVersion = "1.0"; return saved }
+        }
+        let recipe = try withAddOn()
+        let observed = LockedBox<[String]>([])
+        let box = LockedBox<ServiceManager?>(nil)
+        let second = makeManager([recipe], willSwap: { _ in
+            observed.value.append(box.value?.processes["service-fake"] ?? "none")
+        })
+        box.value = second
+        try second.start("fake")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: addOnFile.path))
+        let before = try XCTUnwrap(second.processes["service-fake"].flatMap(TestSupport.pid(from:)))
+        _ = try await second.update("fake")
+        XCTAssertEqual(observed.value.count, 1)
+        XCTAssertFalse(observed.value.first?.hasPrefix("running") ?? true, "swapped while \(observed.value)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: addOnFile.path))
+        XCTAssertEqual(second.statuses().first?.state, .running)
+        XCTAssertNotEqual(second.processes["service-fake"].flatMap(TestSupport.pid(from:)), before, "started again")
+    }
+
+    /// Reading (status, env) never writes the stored recipe; starting does.
+    func testReadingNeverWritesTheStoredRecipe() async throws {
+        let first = makeManager([FakeService.recipe()])
+        _ = try await first.add(kind: "fake", version: nil)
+        first.stopAll()
+        let stored = home.paths.serviceBin(kind: "fake", version: "1.0").appendingPathComponent(".paddock-recipe.json")
+        let before = try Data(contentsOf: stored)
+        let described = FakeService.recipe(lockFiles: ["{data}/fake.pid"], notes: ["Described better."])
+        let second = makeManager([described])
+        XCTAssertEqual(second.statuses().first?.notes, ["Described better."], "described by the catalog at once")
+        _ = try second.env("fake")
+        XCTAssertEqual(try Data(contentsOf: stored), before, "status and env wrote nothing")
+        try second.start("fake")
+        XCTAssertEqual(second.installer.installedRecipe(kind: "fake", version: "1.0"), described)
+    }
+
+    /// The catalog's download size counts only what would be downloaded: not an asset that is on this Mac.
+    func testTheDownloadSizeCountsOnlyWhatIsDownloaded() throws {
+        let remote = RecipeAsset(artifact: Artifact(url: URL(string: "https://example.invalid/fake.tar.gz")!,
+                                                    sha256: String(repeating: "0", count: 64), size: 1_000_000),
+                                 archive: "tar.gz")
+        var local = try addOn()
+        local = RecipeAsset(artifact: Artifact(url: local.artifact.url, sha256: local.artifact.sha256, size: 500_000),
+                            archive: "tar.gz")
+        let manager = makeManager([FakeService.recipe(assets: [remote, local])])
+        let entry = try XCTUnwrap(manager.catalogEntries().first)
+        XCTAssertEqual(entry.series.first?.downloadBytes, 1_000_000)
+        XCTAssertEqual(entry.downloadBytes, 1_000_000)
     }
 
     func testUpdateCompletesAnInstallMissingALaterAsset() async throws {

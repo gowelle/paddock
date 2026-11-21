@@ -31,9 +31,23 @@ final class LaunchAgentTests: XCTestCase {
         FakeLaunchd(loaded: loaded).runner()
     }
 
-    func testTheExitTimeoutFollowsTheLongestServiceGrace() {
-        XCTAssertEqual(LaunchAgent.exitTimeOut(serviceGrace: 0), 20, "never shorter than before")
-        XCTAssertEqual(LaunchAgent.exitTimeOut(serviceGrace: 60), 80)
+    /// A fixed number (so the plist never depends on finding the catalog), checked against the catalog here:
+    /// the web stack's grace, then every service's at once, with room to spare.
+    func testTheExitTimeoutCoversTheLongestServiceGrace() throws {
+        XCTAssertEqual(LaunchAgent.exitTimeOut, 80)
+        let longest = try ServiceCatalog.bundled().recipes.map(\.stopGraceSeconds).max() ?? 0
+        XCTAssertGreaterThanOrEqual(LaunchAgent.exitTimeOut, Supervisor.defaultStopGrace + longest + 15)
+    }
+
+    /// Unloading waits as long as a daemon may take to stop its services, and no longer than it needs.
+    func testUnloadingWaitsForASlowShutdownAndReturnsWhenItIsGone() throws {
+        XCTAssertEqual(LaunchAgent.Waits().unload, TimeInterval(LaunchAgent.exitTimeOut + 5))
+        let launchd = FakeLaunchd(loaded: true, loadedAfterBootout: 60)
+        let agent = LaunchAgent(runner: launchd.runner(), plist: plist, paths: paths, waits: .init(poll: 0.01))
+        let began = Date()
+        XCTAssertTrue(try agent.stop())
+        XCTAssertFalse(launchd.loaded)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 5, "returns as soon as the job is gone")
     }
 
     func testPlistContentsIsAValidPropertyListWithTheRequiredKeys() throws {
@@ -49,9 +63,6 @@ final class LaunchAgentTests: XCTestCase {
         XCTAssertEqual(dict["StandardErrorPath"] as? String, log)
         XCTAssertEqual(dict["ProcessType"] as? String, "Interactive")
         XCTAssertEqual(dict["ExitTimeOut"] as? Int, LaunchAgent.exitTimeOut, "time for a clean shutdown before launchd kills it")
-        let longest = try ServiceCatalog.bundled().recipes.map(\.stopGraceSeconds).max() ?? 0
-        XCTAssertGreaterThanOrEqual(LaunchAgent.exitTimeOut, longest + 15,
-                                    "the web stack and every service's grace (stopped side by side) fit before launchd kills it")
         XCTAssertNil(dict["EnvironmentVariables"])
         XCTAssertFalse(text.contains("PADDOCK_"))
     }

@@ -17,25 +17,21 @@ public struct LaunchAgent: Sendable {
     static let launchctl = "/bin/launchctl"
 
     /// Seconds launchd gives a stopping daemon before killing it: the web stack's grace, then every service's
-    /// at once (they stop side by side), with room to spare; never less than 20.
-    static func exitTimeOut(serviceGrace: Int) -> Int {
-        max(20, Supervisor.defaultStopGrace + serviceGrace + 15)
-    }
-
-    /// For the longest stop grace of any recipe in the bundled catalog (PostgreSQL's 60 seconds).
-    static var exitTimeOut: Int {
-        exitTimeOut(serviceGrace: (try? ServiceCatalog.bundled())?.recipes.map(\.stopGraceSeconds).max() ?? 0)
-    }
+    /// at once (they stop side by side; PostgreSQL's 60 seconds is the longest), with room to spare. A fixed
+    /// number, so the plist never depends on finding the catalog; a test checks it against the catalog.
+    public static let exitTimeOut = 80
 
     /// How long to wait for launchd. Tests shorten them.
     public struct Waits: Sendable {
-        /// The longest `bootout` is given to finish unloading the job.
-        public var unload: TimeInterval = 5
+        /// The longest `bootout` is given to finish unloading the job: as long as launchd gives the daemon to
+        /// stop its services, and a little more. It returns as soon as the job is gone.
+        public var unload: TimeInterval = TimeInterval(LaunchAgent.exitTimeOut + 5)
         public var poll: TimeInterval = 0.1
         /// The pause before trying a failed `bootstrap` once more.
         public var bootstrapRetry: TimeInterval = 1
 
-        public init(unload: TimeInterval = 5, poll: TimeInterval = 0.1, bootstrapRetry: TimeInterval = 1) {
+        public init(unload: TimeInterval = TimeInterval(LaunchAgent.exitTimeOut + 5), poll: TimeInterval = 0.1,
+                    bootstrapRetry: TimeInterval = 1) {
             self.unload = unload
             self.poll = poll
             self.bootstrapRetry = bootstrapRetry

@@ -265,6 +265,38 @@ final class PostgresServiceTests: XCTestCase {
         XCTAssertEqual(try pdo(tcp(port17, "postgres"), "databases"), "postgres", "17 has its own data")
         XCTAssertTrue(isSocket(socketPath("postgres-17", port: port17)))
 
+        // The postmaster and its children run in their data folder: that is how Paddock tells this instance's
+        // server from another instance's of the same binaries.
+        let pid17 = try postmaster(manager, "postgres-17")
+        let data17 = try XCTUnwrap(ServiceManager.realPath(home.paths.serviceData("postgres-17").path))
+        XCTAssertEqual(ServiceProcessInspector.live.workingDirectory(pid17), data17)
+        for child in children(of: pid17) {
+            XCTAssertEqual(ServiceProcessInspector.live.workingDirectory(child), data17, "child \(child)")
+        }
+
+        // 18's lock files naming 17's postmaster (a pid reused by another instance of the same kind): removed,
+        // 18 starts, and 17 is untouched and still serving.
+        manager.stop("postgres-18")
+        try Data("\(pid17)\n\(data18.path)\n".utf8).write(to: postmasterPid)
+        try Data("\(pid17)\n".utf8).write(to: socketLock)
+        try manager.start("postgres-18")
+        XCTAssertEqual(try pdo(tcp(port), "read"), "over TCP,over the socket")
+        XCTAssertEqual(try postmaster(manager, "postgres-17"), pid17, "17 was not restarted")
+        XCTAssertTrue(try pdo(tcp(port17, "postgres"), "server").hasPrefix("root 17.12 "))
+
+        // Lock files naming a dead pid are left to PostgreSQL, which removes them itself.
+        manager.stop("postgres-18")
+        let gone = Process()
+        gone.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try gone.run()
+        gone.waitUntilExit()
+        try Data("\(gone.processIdentifier)\n\(data18.path)\n".utf8).write(to: postmasterPid)
+        try Data("\(gone.processIdentifier)\n".utf8).write(to: socketLock)
+        try manager.start("postgres-18")
+        XCTAssertEqual(try pdo(tcp(port), "read"), "over TCP,over the socket")
+        XCTAssertEqual(try String(contentsOf: postmasterPid, encoding: .utf8).components(separatedBy: "\n").first,
+                       "\(try postmaster(manager, "postgres-18"))")
+
         // Removing keeps the data; adding again reuses it without initdb.
         let initdbRuns = { manager.logTail("postgres-18").components(separatedBy: "creating subdirectories").count - 1 }
         XCTAssertEqual(initdbRuns(), 1)

@@ -400,7 +400,6 @@ public enum Messages {
         }.map { "\($0.value) (\($0.key))" }.joined(separator: ", ")
     }
 
-    /// Columns: service name, state, ports.
     /// Columns: service name, state, ports; then each service's notes, one line each, after a blank line.
     public static func serviceTable(_ services: [ServiceStatus]) -> String {
         let rows = table([["SERVICE", "STATE", "PORTS"]]
