@@ -62,6 +62,27 @@ final class ServiceMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.addedEnvLines(plain), ["MAIL_PORT=1025"])
     }
 
+    /// `paddock service remove --delete-data` asks on a terminal, needs `--yes` otherwise, and takes only the
+    /// service's name typed exactly.
+    func testDeletingDataIsConfirmedByTypingTheName() {
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: true, interactive: false), .proceed)
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: true, interactive: true), .proceed)
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: false, interactive: true), .ask)
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: false, interactive: false), .refuse)
+        XCTAssertTrue(DeleteDataConfirmation.accepts(typed: "PostgreSQL 18", name: "PostgreSQL 18"))
+        for typed in [nil, "", "postgresql 18", "PostgreSQL", " PostgreSQL 18", "PostgreSQL 18 ", "y", "yes"] {
+            XCTAssertFalse(DeleteDataConfirmation.accepts(typed: typed, name: "PostgreSQL 18"), "\(typed ?? "nil")")
+        }
+        XCTAssertEqual(DeleteDataConfirmation.prompt(name: "PostgreSQL 18", dataPath: "/h/services/postgres-18/data"), [
+            "PostgreSQL 18: its data is in /h/services/postgres-18/data.",
+            "This deletes its data permanently. Paddock keeps no backups.",
+        ])
+        XCTAssertEqual(DeleteDataConfirmation.question(name: "PostgreSQL 18"),
+                       "Type the service's name (PostgreSQL 18) to delete it: ")
+        XCTAssertEqual(DeleteDataConfirmation.needsYes, "Add --yes to delete data without being asked.")
+        XCTAssertEqual(DeleteDataConfirmation.notConfirmed, "The name didn't match, so nothing was removed or deleted.")
+    }
+
     func testStates() {
         XCTAssertEqual([ServiceState.running, .starting, .stopped, .crashed, .portInUse(holder: "Herd"),
                         .unavailable(reason: "no PHP")].map(Messages.serviceState),

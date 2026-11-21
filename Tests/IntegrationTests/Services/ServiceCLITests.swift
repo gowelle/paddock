@@ -109,7 +109,14 @@ final class ServiceCLITests: XCTestCase {
         let again = try run(["service", "add", "fake"])
         XCTAssertEqual(again.out, "Starting Fake…\nFound existing data for Fake; using it.\n"
                        + "Fake is running on port \(port).\n\n" + env)
-        let deleted = try run(["service", "remove", "fake", "--delete-data"])
+        // Without a terminal to ask on, deleting data needs --yes; nothing is removed or deleted.
+        let unasked = try run(["service", "remove", "fake", "--delete-data"])
+        XCTAssertEqual(unasked.status, 1)
+        XCTAssertEqual(unasked.out, "")
+        XCTAssertEqual(unasked.err, "Add --yes to delete data without being asked.\n")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: home.paths.serviceData("fake").path))
+        XCTAssertTrue(try run(["service", "list"]).out.contains("Fake     running"))
+        let deleted = try run(["service", "remove", "fake", "--delete-data", "--yes"])
         XCTAssertEqual(deleted.out, "Removed Fake and deleted its data.\n")
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.serviceHome("fake").path))
         XCTAssertEqual(try run(["service", "list"]).out,
@@ -138,6 +145,28 @@ final class ServiceCLITests: XCTestCase {
         let env = try run(["service", "env", "Fake"])
         XCTAssertEqual(env.status, 0, env.err)
         XCTAssertEqual(env.out, plain + "FAKE_SECRET=\(key)\n")
+    }
+
+    /// On a terminal, deleting data asks for the service's name: a wrong answer removes and deletes nothing; the
+    /// exact name goes ahead. (`script` gives the command a terminal, fed with `input`.)
+    func testDeletingDataOnATerminalAsksForTheName() throws {
+        try launchDaemon()
+        XCTAssertEqual(try run(["service", "add", "fake"]).status, 0)
+        let data = home.paths.serviceData("fake").path
+
+        let wrong = try runInTerminal(["service", "remove", "fake", "--delete-data"], input: "fake\n")
+        XCTAssertNotEqual(wrong.status, 0)
+        XCTAssertTrue(wrong.out.contains("Fake: its data is in \(data)."), wrong.out)
+        XCTAssertTrue(wrong.out.contains("This deletes its data permanently. Paddock keeps no backups."), wrong.out)
+        XCTAssertTrue(wrong.out.contains("Type the service's name (Fake) to delete it: "), wrong.out)
+        XCTAssertTrue(wrong.out.contains("The name didn't match, so nothing was removed or deleted."), wrong.out)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: data))
+        XCTAssertTrue(try run(["service", "list"]).out.contains("Fake     running"))
+
+        let right = try runInTerminal(["service", "remove", "fake", "--delete-data"], input: "Fake\n")
+        XCTAssertEqual(right.status, 0, right.out)
+        XCTAssertTrue(right.out.contains("Removed Fake and deleted its data."), right.out)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: data))
     }
 
     /// A daemon whose services take a while to stop (here one that ignores SIGTERM, with five seconds'
@@ -183,6 +212,31 @@ final class ServiceCLITests: XCTestCase {
         process.waitUntilExit()
         let read = { (url: URL) in (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
         return Result(status: process.terminationStatus, out: read(outFile), err: read(errFile))
+    }
+
+    /// Runs `paddock` on a pseudo-terminal (`script`), typing `input`; returns what the terminal showed.
+    private func runInTerminal(_ args: [String], input: String, timeout: TimeInterval = 60) throws -> Result {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        process.arguments = ["-q", "/dev/null", products.appendingPathComponent("paddock").path] + args
+        process.environment = environment
+        process.currentDirectoryURL = home.root
+        let outFile = home.root.appendingPathComponent("tty-\(TestSupport.token())")
+        FileManager.default.createFile(atPath: outFile.path, contents: nil)
+        process.standardOutput = try FileHandle(forWritingTo: outFile)
+        process.standardError = process.standardOutput
+        let stdin = Pipe()
+        process.standardInput = stdin
+        try process.run()
+        stdin.fileHandleForWriting.write(Data(input.utf8))
+        if !waitFor(timeout, { !process.isRunning }) {
+            kill(process.processIdentifier, SIGKILL)
+            XCTFail("paddock \(args) timed out")
+        }
+        process.waitUntilExit()
+        try? stdin.fileHandleForWriting.close()
+        let out = (try? String(contentsOf: outFile, encoding: .utf8)) ?? ""
+        return Result(status: process.terminationStatus, out: out.replacingOccurrences(of: "\r\n", with: "\n"), err: "")
     }
 
     private func launchDaemon() throws {

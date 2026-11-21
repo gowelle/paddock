@@ -146,10 +146,27 @@ struct ServiceRemove: ParsableCommand {
     @Argument(help: "The service's name, such as mail.") var name: String
     @Flag(name: .customLong("delete-data"), help: "Also delete the service's data. This can't be undone.")
     var deleteData = false
+    @Flag(name: .customLong("yes"), help: "With --delete-data: don't ask first.")
+    var yes = false
 
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
         let service = try CLI.service(named: name, in: try CLI.send(.status, timeout: 30))
+        if deleteData {
+            switch DeleteDataConfirmation.decide(yes: yes, interactive: isatty(STDIN_FILENO) == 1) {
+            case .proceed:
+                break
+            case .refuse:
+                throw CLI.failure(DeleteDataConfirmation.needsYes)
+            case .ask:
+                for line in DeleteDataConfirmation.prompt(name: service.name, dataPath: service.dataPath) { print(line) }
+                print(DeleteDataConfirmation.question(name: service.name), terminator: "")
+                fflush(stdout)
+                guard DeleteDataConfirmation.accepts(typed: readLine(strippingNewline: true), name: service.name) else {
+                    throw CLI.failure(DeleteDataConfirmation.notConfirmed)
+                }
+            }
+        }
         switch try CLI.sendRaw(.serviceRemove(name: service.id, deleteData: deleteData)) {
         case .removed(let path, _):
             print(Messages.serviceRemoved(service.name, dataPath: path, deletedData: deleteData))
