@@ -1,12 +1,12 @@
 #!/bin/bash
 # Builds Paddock's own Valkey (its "Redis (Valkey)" service) for Intel Macs, using Xcode's toolchain only
 # (no Homebrew, no MacPorts), and writes the archive Paddock ships into Vendor/builds/:
-#   valkey-9.2.0-macos-x86_64.tar.gz
+#   valkey-9.1.4-macos-x86_64.tar.gz
 # with valkey-server and valkey-cli at the top level and the licence texts of everything compiled into
 # them under share/licenses/valkey/. No prebuilt Valkey or Redis for Intel Macs exists anywhere, so Paddock
 # compiles it; the recipe in Resources/services-catalog.json names it as paddock-builds://<archive>.
 #
-# Usage: Scripts/build-valkey.sh [--force] [9.2.0]   build the pinned release (the version, if given, must
+# Usage: Scripts/build-valkey.sh [--force] [9.1.4]   build the pinned release (the version, if given, must
 #                                                    be the pinned one)
 #        Scripts/build-valkey.sh --fetch-only        set up the build folder, download and verify the
 #                                                    pinned source, then stop
@@ -23,15 +23,21 @@
 # from scratch.
 #
 # What is pinned, by SHA-256, verified on every run before anything extracted from it is used:
-#   - the source: Valkey 9.2.0, https://github.com/valkey-io/valkey/archive/refs/tags/9.2.0.tar.gz
+#   - the source: Valkey 9.1.4, https://github.com/valkey-io/valkey/archive/refs/tags/9.1.4.tar.gz
 #     (the checksum the Valkey project publishes for it in github.com/valkey-io/valkey-hashes).
+# Not 9.2: Valkey 9.2 writes RDB format 81, which 9.0 and 9.1 refuse, so data written by 9.2 can never go
+# back to 9.1; 9.1's format is read by 9.2, so a later move from 9.1.x to 9.2.x stays possible.
 # Xcode's clang, make and the macOS SDK are whatever the Mac has. Built with BUILD_TLS=no MALLOC=libc
 # BUILD_ZSTD=no USE_SYSTEMD=no (macOS's malloc; no OpenSSL, no jemalloc), with the dependencies Valkey
 # vendors in deps/ compiled in statically (libvalkey, linenoise, Lua 5.1 with its cjson, cmsgpack, bit and
-# struct libraries, lz4, hdr_histogram, fpconv, fast_float); MACOSX_DEPLOYMENT_TARGET 13.0.
+# struct libraries, hdr_histogram, fpconv, fast_float); MACOSX_DEPLOYMENT_TARGET 13.0.
 #
 # The build identity is neutral: Valkey's release header would record `uname -n` (this Mac's host name)
-# as its build id; SOURCE_DATE_EPOCH (the release date) replaces it, and git is never consulted.
+# as its build id; SOURCE_DATE_EPOCH replaces it, and git is never consulted. SOURCE_DATE_EPOCH is the
+# newest file time in the verified source tarball, the same on every build.
+#
+# The archive is reproducible (Scripts/build-lib.sh, reproducible_archive): building the same pinned
+# version again gives the same bytes, so its SHA-256 can be checked by anyone who rebuilds it.
 # Every binary is checked before the archive is written: x86_64, linking only /usr/lib/ and /System/ with
 # no rpath, and no file containing this Mac's user name, host names (hostname -s, LocalHostName,
 # ComputerName) or a /Users/ path.
@@ -48,14 +54,14 @@ W="${PADDOCK_VALKEY_BUILD_DIR:-/private/tmp/paddock-valkey-build-$(id -u)}"
 OUT="$ROOT/Vendor/builds"
 BUILD_USER="$(id -un)"
 
-VALKEY_VER=9.2.0
+VALKEY_VER=9.1.4
 VALKEY_URL="https://github.com/valkey-io/valkey/archive/refs/tags/$VALKEY_VER.tar.gz"
-VALKEY_SHA=a02cb44db1269b699629e419d4949e6e51e984b1f0e9a984e8ee1e1b3b7cc36f
-# 2026-11-18 00:00 UTC, the release date: the build id Valkey records instead of this Mac's host name.
-RELEASE_EPOCH=1794960000
+VALKEY_SHA=fe3d623600a1c046b4668feec097c507b4ae52f20c1fc7f1ebd384c07a165e77
 MINIMUM_MACOS=13.0
 
 fail() { echo "build-valkey.sh: $*" >&2; exit 1; }
+# shellcheck source=build-lib.sh
+source "$ROOT/Scripts/build-lib.sh"
 [ "${#BUILD_USER}" -ge 3 ] || fail "user name '$BUILD_USER' is shorter than 3 characters; the privacy check cannot work."
 say() { echo "==> $*"; }
 usage() { sed -n '9,14p' "${BASH_SOURCE[0]}" | sed 's/^# //' >&2; exit 2; }
@@ -73,7 +79,8 @@ require_private_dir() {
   case "$d" in */|*/.|*/..|*/./*|*/../*) fail "use a plain path for the build folder (got: $d)." ;; esac
   parent="$(dirname "$d")"
   [ -d "$parent" ] || fail "$parent does not exist."
-  resolved="$(cd "$parent" && pwd -P)/$(basename "$d")" || fail "cannot resolve $d"
+  resolved="$(cd "$parent" && pwd -P)" || fail "cannot resolve $d"
+  resolved="$resolved/$(basename "$d")"
   home="$(cd "$HOME" 2>/dev/null && pwd -P || echo "$HOME")"
   for p in "$d" "$resolved"; do
     case "$p" in
@@ -95,15 +102,18 @@ require_private_dir() {
     || fail "$d already exists and was not created by this script (no $SENTINEL in it); pick an empty or new path."
 }
 
+# This Mac's host names (build_host_names fails the build when one can't be read).
+HOST_NAMES=()
+HOST_LIST="$(build_host_names)" || fail "could not read this Mac's host names"
+while IFS= read -r line; do HOST_NAMES+=("$line"); done <<< "$HOST_LIST"
+
 # privacy_check FILE: as in build-php.sh. Fails when FILE contains this Mac's user name, host names
 # (hostname -s, LocalHostName, ComputerName) or a /Users/ path. grep reads the file itself (byte-wise) and
 # counts matches; no `grep -q` in a pipeline, which under pipefail lets the writer die of SIGPIPE and turns
 # a match into a pass.
 privacy_check() {
   local file="$1" name patterns=(-e "/Users/") count
-  for name in "$BUILD_USER" "$(hostname -s 2>/dev/null || true)" \
-              "$(scutil --get LocalHostName 2>/dev/null || true)" "$(scutil --get ComputerName 2>/dev/null || true)"; do
-    [ -n "$name" ] || continue
+  for name in "$BUILD_USER" "${HOST_NAMES[@]}"; do
     [ "${#name}" -ge 3 ] || fail "cannot check $file for '$name': names shorter than 3 characters match too much."
     patterns+=(-e "$name")
   done
@@ -191,15 +201,15 @@ mkdir -p "$W"/{downloads,build,stage,logs,tools} "$OUT"
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 unset PKG_CONFIG_PATH CPATH LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH LIBS CFLAGS LDFLAGS \
   CPPFLAGS CC OPTIMIZATION OPENSSL_PREFIX MAKEFLAGS || true
-for tool in clang make curl shasum tar otool codesign xcrun file awk sed; do
+for tool in clang make curl shasum tar otool codesign strip xcrun file awk sed; do
   command -v "$tool" >/dev/null || fail "$tool is missing; install the Xcode command line tools (xcode-select --install)."
 done
 xcrun --find clang >/dev/null || fail "Xcode's clang is missing; install the Xcode command line tools (xcode-select --install)."
 # No AppleDouble ._ files in archives.
 export COPYFILE_DISABLE=1
+# ar and ld record no file times (the same bytes on every build).
+export ZERO_AR_DATE=1
 export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_MACOS"
-# Valkey's build id: the release date rather than `uname -n` and the time of the build.
-export SOURCE_DATE_EPOCH="$RELEASE_EPOCH"
 # Valkey's release header asks git for a commit and for local changes: a git that always fails stands in
 # for the real one (outside a repository, `git diff` would compare src/ with deps/ and call the tree dirty),
 # so it records commit 00000000, clean.
@@ -235,6 +245,11 @@ rm -rf "$W/build" "$W/stage"
 mkdir -p "$W/build" "$W/stage"
 tar -xzf "$W/downloads/valkey-$VALKEY_VER.tar.gz" -C "$W/build" || fail "could not unpack valkey-$VALKEY_VER.tar.gz"
 [ -d "$SRC/src" ] || fail "valkey-$VALKEY_VER.tar.gz did not unpack into valkey-$VALKEY_VER"
+# Valkey's build id and every time in the archive: the newest file time in the verified source, rather
+# than `uname -n` and the time of the build.
+SOURCE_DATE_EPOCH="$(newest_mtime "$SRC")" || fail "could not date the source"
+export SOURCE_DATE_EPOCH
+SDK_VERSION="$(xcrun --show-sdk-version)" || fail "xcrun cannot tell the macOS SDK's version"
 
 JOBS="$(sysctl -n hw.ncpu)"
 LOG="$W/logs/valkey-$VALKEY_VER-build.log"
@@ -249,30 +264,23 @@ mkdir -p "$LIC"
 install -m 755 "$SRC/src/valkey-server" "$STAGE/valkey-server"
 install -m 755 "$SRC/src/valkey-cli" "$STAGE/valkey-cli"
 for f in "$STAGE/valkey-server" "$STAGE/valkey-cli"; do
-  codesign --force -s - "$f" 2>/dev/null || fail "could not sign $f"
+  # Without debugging entries: libvalkey builds with -g, and its entries name each object file with its
+  # build time, so no two builds would be the same.
+  strip -S "$f" || fail "could not strip $f"
+  codesign --force -s - "$f" || fail "could not sign $f"
   minos="$(minimum_macos "$f")"
   [ "$minos" = "$MINIMUM_MACOS" ] || fail "$f needs macOS $minos, not $MINIMUM_MACOS"
 done
 
-# The licence texts of everything compiled in, from the verified source (its REUSE.toml maps each file
-# to its licence; LICENSES/ holds the texts).
+# The licence texts of everything compiled in, from the verified source: Valkey's COPYING, the licence files
+# of the dependencies in deps/, and the notices at the top of the source files under other licences.
 while read -r out src; do
   [ -f "$SRC/$src" ] || fail "licence file $src is missing"
   cp "$SRC/$src" "$LIC/$out"
 done <<EOF
 COPYING COPYING
-REUSE.toml REUSE.toml
-LICENSES-Apache-2.0.txt LICENSES/Apache-2.0.txt
-LICENSES-BSD-2-Clause.txt LICENSES/BSD-2-Clause.txt
-LICENSES-BSD-3-Clause.txt LICENSES/BSD-3-Clause.txt
-LICENSES-BSL-1.0.txt LICENSES/BSL-1.0.txt
-LICENSES-CC0-1.0.txt LICENSES/CC0-1.0.txt
-LICENSES-ISC.txt LICENSES/ISC.txt
-LICENSES-MIT.txt LICENSES/MIT.txt
-LICENSES-Zlib.txt LICENSES/Zlib.txt
 deps-libvalkey-COPYING.txt deps/libvalkey/COPYING
 deps-lua-COPYRIGHT.txt deps/lua/COPYRIGHT
-deps-lz4-LICENSE.txt deps/lz4/LICENSE
 deps-hdr_histogram-LICENSE.txt deps/hdr_histogram/LICENSE.txt
 deps-hdr_histogram-COPYING.txt deps/hdr_histogram/COPYING.txt
 deps-fpconv-LICENSE.txt deps/fpconv/LICENSE.txt
@@ -284,16 +292,38 @@ sed -n '/^ \* Copyright (c) 2010-2016, Redis Ltd\./,/EVEN IF ADVISED OF THE POSS
 sed -n '/^\/\/ MIT License Notice/,/DEALINGS IN THE SOFTWARE\./p' "$SRC/deps/fast_float/ffc.h" \
   > "$LIC/deps-fast_float-LICENSE-MIT.txt"
 [ -s "$LIC/deps-fast_float-LICENSE-MIT.txt" ] || fail "could not find fast_float's licence in ffc.h"
+# The leading comments of a C file (its notice): its comment lines before its first declaration.
+NOTICE_AWK='/^[A-Za-z_]/ && !inc { exit }
+{ if (!inc && $0 ~ /^[ \t]*\/\*/) inc = 1; if (inc) print; if (inc && $0 ~ /\*\//) inc = 0 }'
+notices() { # OUT FILE...: each file's notice, under its name
+  local out="$1" f
+  shift
+  : > "$out"
+  for f in "$@"; do
+    [ -f "$SRC/$f" ] || fail "$f is missing"
+    printf '==== %s\n' "$f" >> "$out"
+    awk "$NOTICE_AWK" "$SRC/$f" >> "$out" || fail "could not read the notice of $f"
+    printf '\n' >> "$out"
+  done
+}
+notices "$LIC/src-notices.txt" src/setproctitle.c src/crc64.c src/sha1.c src/sha256.c src/siphash.c \
+  src/mt19937-64.c src/crcspeed.c src/crccombine.c src/strl.c src/pqsort.c src/lzf_c.c src/lzf_d.c
+notices "$LIC/deps-lua-extras-notices.txt" deps/lua/src/lua_cjson.c deps/lua/src/strbuf.c deps/lua/src/fpconv.c \
+  deps/lua/src/lua_bit.c deps/lua/src/lua_cmsgpack.c
+# lua_struct.c keeps its notice at its end.
+printf '==== %s\n' deps/lua/src/lua_struct.c >> "$LIC/deps-lua-extras-notices.txt"
+sed -n '/^\* Copyright (C) 2010-2018 Lua.org/,$p' "$SRC/deps/lua/src/lua_struct.c" >> "$LIC/deps-lua-extras-notices.txt"
+grep -q "Lua.org" "$LIC/deps-lua-extras-notices.txt" || fail "could not find lua_struct's notice"
 cat > "$LIC/BUILDINFO.txt" <<EOF
 Valkey $VALKEY_VER (BSD-3-Clause), built by Paddock's Scripts/build-valkey.sh from
 $VALKEY_URL
 (SHA-256 $VALKEY_SHA).
 make valkey-server valkey-cli BUILD_TLS=no MALLOC=libc BUILD_ZSTD=no BUILD_RDMA=no USE_SYSTEMD=no
-MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET SDK=$(xcrun --show-sdk-version) SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
+MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET SDK=$SDK_VERSION SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
 Compiled in from deps/: libvalkey (BSD-3-Clause), linenoise (BSD-2-Clause), Lua 5.1 with lua_cjson,
-lua_cmsgpack, lua_bit, lua_struct, strbuf and fpconv (MIT), lz4 (BSD-2-Clause), hdr_histogram
-(CC0-1.0 AND BSD-2-Clause), fpconv (BSL-1.0), fast_float (MIT, also Apache-2.0 or BSL-1.0).
-Valkey's own sources include files under MIT, BSD-2-Clause, CC0-1.0, Zlib and ISC: see REUSE.toml.
+lua_cmsgpack, lua_bit, lua_struct, strbuf and fpconv (MIT), hdr_histogram (CC0-1.0, also BSD-2-Clause),
+fpconv (BSL-1.0), fast_float (MIT, also Apache-2.0 or BSL-1.0).
+Valkey's own sources include files under other licences: see src-notices.txt.
 Linked from macOS (not shipped): libSystem.
 EOF
 
@@ -312,9 +342,7 @@ find "$STAGE" ! -type f ! -type d -print0 > "$LIST" || fail "could not list the 
 "$STAGE/valkey-cli" --version >> "$W/logs/version.txt" || fail "valkey-cli --version failed"
 cat "$W/logs/version.txt"
 
-tar -C "$STAGE" --uid 0 --gid 0 --uname root --gname wheel -czf "$OUT/$ARCHIVE.part" valkey-server valkey-cli share \
-  || fail "could not write $ARCHIVE"
-mv "$OUT/$ARCHIVE.part" "$OUT/$ARCHIVE"
+reproducible_archive "$STAGE" "$SOURCE_DATE_EPOCH" "$OUT/$ARCHIVE" valkey-server valkey-cli share
 say "wrote Vendor/builds/$ARCHIVE (macOS $MINIMUM_MACOS or later)"
 echo "  $(shasum -a 256 -- "$OUT/$ARCHIVE" | awk '{print $1}')  $(stat -f %z "$OUT/$ARCHIVE") bytes"
 say "put the checksum into Scripts/versions.lock (valkey) and the checksum and size into Resources/services-catalog.json"

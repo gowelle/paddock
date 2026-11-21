@@ -35,6 +35,9 @@
 # macOS 15). PGXS needs PG_SYSROOT pointed at this Mac's SDK and with_llvm=no (theseus records its CI's
 # SDK and an absent clang for JIT bitcode, which is optional).
 #
+# Each archive is written reproducibly (Scripts/build-lib.sh, reproducible_archive): fixed times (the
+# newest file time in the PostGIS source), modes, owner and order, and no gzip time.
+#
 # Every archive is checked before it is written: each library is x86_64 and links only @rpath/, /usr/lib/
 # and /System/ (its only rpath @loader_path); no file contains this Mac's user name, host names (hostname -s,
 # LocalHostName, ComputerName) or a /Users/ path; and no file would replace one of PostgreSQL's (Paddock
@@ -78,6 +81,8 @@ CMAKE_SHA=d1449f969c54d5c00886d5b643340d493dfb3c81cb39ee29b35453395c11ebf7
 fail() { echo "build-postgis.sh: $*" >&2; exit 1; }
 [ "${#BUILD_USER}" -ge 3 ] || fail "user name '$BUILD_USER' is shorter than 3 characters; the privacy check cannot work."
 say() { echo "==> $*"; }
+# shellcheck source=build-lib.sh
+source "$ROOT/Scripts/build-lib.sh"
 usage() { sed -n '10,15p' "${BASH_SOURCE[0]}" | sed 's/^# //' >&2; exit 2; }
 
 archive_name() { echo "postgis-$POSTGIS_VER-pg$1-macos-x86_64.tar.gz"; }
@@ -93,7 +98,8 @@ require_private_dir() {
   case "$d" in */|*/.|*/..|*/./*|*/../*) fail "use a plain path for the build folder (got: $d)." ;; esac
   parent="$(dirname "$d")"
   [ -d "$parent" ] || fail "$parent does not exist."
-  resolved="$(cd "$parent" && pwd -P)/$(basename "$d")" || fail "cannot resolve $d"
+  resolved="$(cd "$parent" && pwd -P)" || fail "cannot resolve $d"
+  resolved="$resolved/$(basename "$d")"
   home="$(cd "$HOME" 2>/dev/null && pwd -P || echo "$HOME")"
   for p in "$d" "$resolved"; do
     case "$p" in
@@ -115,15 +121,18 @@ require_private_dir() {
     || fail "$d already exists and was not created by this script (no $SENTINEL in it); pick an empty or new path."
 }
 
+# This Mac's host names (build_host_names fails the build when one can't be read).
+HOST_NAMES=()
+HOST_LIST="$(build_host_names)" || fail "could not read this Mac's host names"
+while IFS= read -r line; do HOST_NAMES+=("$line"); done <<< "$HOST_LIST"
+
 # privacy_check FILE: as in build-php.sh. Fails when FILE contains this Mac's user name, host names
 # (hostname -s, LocalHostName, ComputerName) or a /Users/ path. grep reads the file itself (byte-wise) and
 # counts matches; no `grep -q` in a pipeline, which under pipefail lets the writer die of SIGPIPE and turns
 # a match into a pass.
 privacy_check() {
   local file="$1" name patterns=(-e "/Users/") count
-  for name in "$BUILD_USER" "$(hostname -s 2>/dev/null || true)" \
-              "$(scutil --get LocalHostName 2>/dev/null || true)" "$(scutil --get ComputerName 2>/dev/null || true)"; do
-    [ -n "$name" ] || continue
+  for name in "$BUILD_USER" "${HOST_NAMES[@]}"; do
     [ "${#name}" -ge 3 ] || fail "cannot check $file for '$name': names shorter than 3 characters match too much."
     patterns+=(-e "$name")
   done
@@ -273,9 +282,12 @@ if [ ! -f "$W/tools/.extracted-cmake-$CMAKE_SHA" ]; then
 fi
 command -v cmake >/dev/null || fail "cmake did not unpack"
 
-SDK="$(xcrun --show-sdk-path)"
+SDK="$(xcrun --show-sdk-path)" || fail "xcrun cannot find the macOS SDK"
+SDK_VERSION="$(xcrun --show-sdk-version)" || fail "xcrun cannot tell the macOS SDK's version"
 JOBS="$(sysctl -n hw.ncpu)"
 SRC="$W/src"; B="$W/build"; DEPS="$B/deps"; LOGS="$W/logs"
+# Every time in the archives: the newest file time in the verified PostGIS source (the same on every build).
+POSTGIS_EPOCH="$(newest_mtime "$SRC/postgis-$POSTGIS_VER")" || fail "could not date the PostGIS source"
 mkdir -p "$DEPS"
 
 CMAKE_COMMON=(
@@ -420,13 +432,13 @@ build_series() {
   cp "$DEPS/share/proj/proj.db" "$DEPS/share/proj/proj.ini" "$ADD/share/proj/"
   for f in "$ADD"/lib/*.dylib; do chmod u+w "$f"; fix_rpaths "$f"; done
   install_name_tool -id @rpath/libgeos_c.1.dylib "$ADD/lib/libgeos_c.1.dylib"
-  for f in "$ADD"/lib/*.dylib; do codesign --force -s - "$f" 2>/dev/null || fail "could not sign $f"; done
+  for f in "$ADD"/lib/*.dylib; do codesign --force -s - "$f" || fail "could not sign $f"; done
   licenses "$ADD/share/licenses/postgis"
   cat > "$ADD/share/licenses/postgis/BUILDINFO.txt" <<EOF
 postgis $POSTGIS_VER (GPL-2.0-or-later) built against theseus-rs postgresql $ver x86_64-apple-darwin
 geos $GEOS_VER (LGPL-2.1-or-later), proj $PROJ_VER (MIT), json-c ${JSONC_TAG#json-c-} (MIT)
 system libraries used: libxml2, libsqlite3, libiconv, libc++, libSystem (macOS)
-MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET SDK=$(xcrun --show-sdk-version) by Scripts/build-postgis.sh
+MACOSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET SDK=$SDK_VERSION by Scripts/build-postgis.sh
 configure: --without-raster --without-topology --without-tiger --without-address-standardizer --without-protobuf
 EOF
 
@@ -445,9 +457,7 @@ EOF
     [ ! -e "$PG/$rel" ] && [ ! -L "$PG/$rel" ] || fail "$rel would replace a file of PostgreSQL $ver"
   done
 
-  (cd "$ADD" && tar --uid 0 --gid 0 --uname root --gname wheel -czf "$OUT/$name.part" lib share) \
-    || fail "could not write $name"
-  mv "$OUT/$name.part" "$OUT/$name"
+  reproducible_archive "$ADD" "$POSTGIS_EPOCH" "$OUT/$name" lib share
   say "wrote Vendor/builds/$name"
   echo "  $(shasum -a 256 -- "$OUT/$name" | awk '{print $1}')  $(stat -f %z "$OUT/$name") bytes"
 }

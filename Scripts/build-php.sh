@@ -38,6 +38,9 @@
 #     accepts the new downloads and rewrites that manifest (review and commit it). A patch with no
 #     committed manifest records one. Each build also writes Vendor/builds/sources-<patch>.sha256.
 #
+# Each archive is written reproducibly (Scripts/build-lib.sh, reproducible_archive): fixed times (the
+# newest file time in the PHP source), modes, owner and order, and no gzip time.
+#
 # Every build is checked to contain no user name, host name (hostname -s, LocalHostName, ComputerName)
 # or /Users/ path (PHP_UNAME and PHP_BUILD_SYSTEM are set to a neutral string). The archives shipped today (8.4.28 and 8.5.13) predate
 # that: they embed the original build machine's host name and scratch paths with its user name, and must
@@ -72,6 +75,8 @@ WITH_LIBS="freetype,libjpeg,libwebp,libpng,onig"
 fail() { echo "build-php.sh: $*" >&2; exit 1; }
 [ "${#BUILD_USER}" -ge 3 ] || fail "user name '$BUILD_USER' is shorter than 3 characters; the privacy check cannot work."
 say() { echo "==> $*"; }
+# shellcheck source=build-lib.sh
+source "$ROOT/Scripts/build-lib.sh"
 loud() { printf '\n!!! %s\n\n' "$*" >&2; }
 
 usage() {
@@ -151,7 +156,8 @@ require_private_dir() {
   case "$d" in */|*/.|*/..|*/./*|*/../*) fail "use a plain path for the build folder (got: $d)." ;; esac
   parent="$(dirname "$d")"
   [ -d "$parent" ] || fail "$parent does not exist."
-  resolved="$(cd "$parent" && pwd -P)/$(basename "$d")" || fail "cannot resolve $d"
+  resolved="$(cd "$parent" && pwd -P)" || fail "cannot resolve $d"
+  resolved="$resolved/$(basename "$d")"
   home="$(cd "$HOME" 2>/dev/null && pwd -P || echo "$HOME")"
   for p in "$d" "$resolved"; do
     case "$p" in
@@ -187,6 +193,11 @@ resolve_patch() {
   esac
 }
 
+# This Mac's host names (build_host_names fails the build when one can't be read).
+HOST_NAMES=()
+HOST_LIST="$(build_host_names)" || fail "could not read this Mac's host names"
+while IFS= read -r line; do HOST_NAMES+=("$line"); done <<< "$HOST_LIST"
+
 # privacy_check FILE: fail when FILE contains this Mac's user name, host names (hostname -s,
 # LocalHostName, ComputerName) or a /Users/ path. grep reads the binary itself (byte-wise, so a
 # ComputerName with non-ASCII letters is found too, which `strings` would split) and counts matches; no
@@ -194,9 +205,7 @@ resolve_patch() {
 # pass.
 privacy_check() {
   local file="$1" name patterns=(-e "/Users/") count
-  for name in "$BUILD_USER" "$(hostname -s 2>/dev/null || true)" \
-              "$(scutil --get LocalHostName 2>/dev/null || true)" "$(scutil --get ComputerName 2>/dev/null || true)"; do
-    [ -n "$name" ] || continue
+  for name in "$BUILD_USER" "${HOST_NAMES[@]}"; do
     [ "${#name}" -ge 3 ] || fail "cannot check $file for '$name': names shorter than 3 characters match too much."
     patterns+=(-e "$name")
   done
@@ -441,8 +450,9 @@ for patch in "${PATCHES[@]}"; do
     if [ -f "$OUT/$archive" ]; then
       old="$(shasum -a 256 -- "$OUT/$archive" | awk '{print $1}')" || fail "cannot hash $OUT/$archive"
     fi
-    tar -czf "$OUT/$archive.part" -C "$dir" "$bin"
-    mv "$OUT/$archive.part" "$OUT/$archive"
+    # The same bytes on every build of this patch: times from the PHP source spc unpacked.
+    epoch="$(newest_mtime "$W/work/source/php-src")" || fail "could not date the PHP $patch source"
+    reproducible_archive "$dir" "$epoch" "$OUT/$archive" "$bin"
     new="$(shasum -a 256 -- "$OUT/$archive" | awk '{print $1}')"
     if [ -n "$old" ]; then echo "  replaced $archive: $old -> $new"; else echo "  wrote $archive: $new"; fi
   done
