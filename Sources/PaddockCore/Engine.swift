@@ -29,6 +29,8 @@ public final class Engine: @unchecked Sendable {
     public let installer: PHPInstaller
     /// Makes macOS trust Caddy's local CA when a site is secured; nil leaves trust alone.
     let trust: CertificateTrust?
+    /// The file `status().resolverInstalled` reads; `/etc/resolver/<tld>` unless a test says otherwise.
+    let resolverFile: URL
 
     private let supervisor: Supervisor
     private let dns: DNSResponder
@@ -49,15 +51,16 @@ public final class Engine: @unchecked Sendable {
     private static let readyTimeout: TimeInterval = 15
 
     public convenience init(paths: Paths = .current, settings: Settings = .current,
-                            trust: CertificateTrust? = nil) {
-        self.init(paths: paths, settings: settings, installAction: nil, trust: trust)
+                            trust: CertificateTrust? = nil, resolverFile: URL? = nil) {
+        self.init(paths: paths, settings: settings, installAction: nil, trust: trust, resolverFile: resolverFile)
     }
 
     /// `backoffScale` shortens the supervisor's restart delays (tests only).
     init(paths: Paths, settings: Settings, installAction: (@Sendable (PHPVersion) async throws -> Void)?,
-         trust: CertificateTrust? = nil, backoffScale: TimeInterval = 1) {
+         trust: CertificateTrust? = nil, backoffScale: TimeInterval = 1, resolverFile: URL? = nil) {
         self.installAction = installAction
         self.trust = trust
+        self.resolverFile = resolverFile ?? Resolver.defaultFile(settings: settings)
         supervisor = Supervisor(backoffScale: backoffScale)
         self.paths = paths
         self.settings = settings
@@ -158,7 +161,9 @@ public final class Engine: @unchecked Sendable {
         return EngineStatus(running: started && !caddyCrashed, blockedBy: blocked, sites: sites,
                             installedPHP: installer.installed(), defaultPHP: state.defaultPHP,
                             processes: processes,
-                            resolverInstalled: false, trustEnabled: trust != nil) // Task 13: check /etc/resolver/<tld>.
+                            resolverInstalled: (try? String(contentsOf: resolverFile, encoding: .utf8))
+                                == Resolver.desiredContents(settings: settings),
+                            trustEnabled: trust != nil)
     }
 
     // MARK: - State and configs

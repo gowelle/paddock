@@ -7,9 +7,7 @@ struct Start: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Start Paddock.")
 
     func run() throws {
-        if !CLI.client.daemonIsRunning {
-            try DaemonLauncher.launch(paths: CLI.paths)
-        }
+        try DaemonLauncher.ensureRunning()
         switch try CLI.sendRaw(.start) {
         case .ok:
             print("Paddock is running.")
@@ -27,15 +25,45 @@ struct Stop: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Stop Paddock.")
 
     func run() throws {
+        let bootedOut: Bool
+        do { bootedOut = try CLI.lifecycle.stopViaSystem() } catch {
+            throw CLI.failure("Couldn't stop Paddock: \(error)")
+        }
+        if bootedOut {
+            waitForDaemonToExit()
+            print("Paddock stopped.")
+            return
+        }
         guard CLI.client.daemonIsRunning else {
             print("Paddock isn't running.")
             return
         }
         try CLI.send(.shutdown, timeout: 60)
-        // The daemon exits right after replying; give it a moment so `status` agrees.
+        waitForDaemonToExit()
+        print("Paddock stopped.")
+    }
+
+    /// The daemon exits right after replying (or on SIGTERM); give it a moment so `status` agrees.
+    private func waitForDaemonToExit() {
         let deadline = Date().addingTimeInterval(5)
         while CLI.client.daemonIsRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        print("Paddock stopped.")
+    }
+}
+
+struct Uninstall: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Remove Paddock's resolver, login item and certificate trust. Keeps your sites and data.")
+
+    func run() throws {
+        do {
+            for line in try CLI.lifecycle.uninstall() { print(line) }
+        } catch ResolverError.cancelled {
+            throw CLI.failure("Paddock needs your password once to restore .test domains. Run paddock uninstall to try again.")
+        } catch let error as ResolverError {
+            throw CLI.failure("Couldn't restore the resolver: \(error)")
+        } catch {
+            throw CLI.failure("Couldn't uninstall Paddock: \(error)")
+        }
     }
 }
 
@@ -116,12 +144,40 @@ struct Logs: ParsableCommand {
     }
 }
 
-/// Starts `paddockd` so it outlives this process. Task 13 replaces this with the LaunchAgent.
+/// Starts `paddockd` so it outlives this process: through the LaunchAgent on the owner's system,
+/// or detached when `PADDOCK_HOME` marks a development home.
 enum DaemonLauncher {
-    static func launch(paths: Paths) throws {
+    static func ensureRunning() throws {
         guard let binary = daemonBinary() else {
             throw CLI.failure("Can't find paddockd next to paddock.")
         }
+        let started: Bool
+        do {
+            started = try CLI.lifecycle.startViaSystem(daemon: binary)
+        } catch ResolverError.cancelled {
+            throw CLI.failure("Paddock needs your password once to route .test domains. Run paddock start to try again.")
+        } catch ResolverError.failed(let message) {
+            throw CLI.failure("Couldn't route .test domains to Paddock: \(message)")
+        } catch {
+            throw CLI.failure("Couldn't start Paddock: \(error)")
+        }
+        if started {
+            try waitForDaemon(logPath: CLI.paths.log.appendingPathComponent("paddockd.log").path)
+        } else if !CLI.client.daemonIsRunning {
+            try launch(paths: CLI.paths, binary: binary)
+        }
+    }
+
+    private static func waitForDaemon(logPath: String) throws {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if CLI.client.daemonIsRunning { return }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        throw CLI.failure("Paddock didn't start within 10 seconds. See \(logPath)")
+    }
+
+    private static func launch(paths: Paths, binary: URL) throws {
         try? paths.ensureDirectories()
         let logPath = paths.log.appendingPathComponent("paddockd.log").path
 
@@ -149,12 +205,7 @@ enum DaemonLauncher {
             throw CLI.failure("Couldn't start Paddock: \(String(cString: strerror(rc))).")
         }
 
-        let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline {
-            if CLI.client.daemonIsRunning { return }
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        throw CLI.failure("Paddock didn't start within 10 seconds. See \(logPath)")
+        try waitForDaemon(logPath: logPath)
     }
 
     private static func daemonBinary() -> URL? {
@@ -166,7 +217,8 @@ enum DaemonLauncher {
             directories.append(executable.resolvingSymlinksInPath().deletingLastPathComponent())
         }
         return directories.map { $0.appendingPathComponent("paddockd") }
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }?
+            .resolvingSymlinksInPath()
     }
 
     private static func withCStrings<R>(_ strings: [String],

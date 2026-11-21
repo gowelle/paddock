@@ -11,7 +11,7 @@ struct Paddock: ParsableCommand {
             Link.self, Unlink.self, Links.self,
             Secure.self, Unsecure.self, Trust.self,
             Isolate.self, Unisolate.self, Use.self,
-            Start.self, Stop.self, Restart.self, Status.self,
+            Start.self, Stop.self, Restart.self, Status.self, Uninstall.self,
             Open.self, Logs.self,
         ]
     )
@@ -21,6 +21,11 @@ struct Paddock: ParsableCommand {
 enum CLI {
     static var paths: Paths { .current }
     static var client: PaddockClient { PaddockClient(paths: paths) }
+    /// The system pieces `start`, `stop` and `uninstall` touch; the real system unless a test replaces it.
+    nonisolated(unsafe) static var services = SystemServices.production(settings: .current)
+    static var lifecycle: SystemLifecycle {
+        SystemLifecycle(services: services, paths: paths, settings: Settings.current)
+    }
     static var tld: String { Settings.current.tld }
     static var currentDirectory: String { FileManager.default.currentDirectoryPath }
 

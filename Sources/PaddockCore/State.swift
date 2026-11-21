@@ -31,7 +31,7 @@ public struct State: Codable, Equatable, Sendable {
 }
 
 public final class StateStore: @unchecked Sendable {
-    private let paths: Paths
+    let paths: Paths
     private let lock = NSLock()
 
     public init(paths: Paths) {
