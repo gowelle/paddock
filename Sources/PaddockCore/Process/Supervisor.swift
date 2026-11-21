@@ -20,6 +20,12 @@ public struct ProcessSpec: Sendable {
     public var stopGrace: TimeInterval?
     /// Where the process runs; nil keeps the supervisor's own working directory.
     public var workingDirectory: URL?
+    /// Asked after each unexpected exit, with its code: false leaves the process stopped instead of restarting
+    /// it. Nil restarts after every exit (until the failure limit). Called while the supervisor is busy, so it
+    /// must be quick and must not call the supervisor.
+    public var restartsAfterExit: (@Sendable (Int32) -> Bool)?
+    /// Told about each unexpected exit (not one `stop` asked for): its code, and whether a restart follows.
+    public var didExit: (@Sendable (_ code: Int32, _ restarting: Bool) -> Void)?
 
     public init(name: String, executable: URL, arguments: [String], environment: [String: String] = [:],
                 logFile: URL, stopSignal: Int32 = SIGTERM, stopGrace: TimeInterval? = nil,
@@ -49,6 +55,16 @@ public enum ProcessStatus: Equatable, Sendable, CustomStringConvertible {
         case .crashed(let code): return "crashed (exit \(code))"
         }
     }
+}
+
+/// How a `stop` ended.
+public enum StopOutcome: Equatable, Sendable {
+    /// Nothing was running.
+    case notRunning
+    /// It exited within the grace period.
+    case exited
+    /// It was still there after the grace period, so its group got SIGKILL.
+    case killed
 }
 
 public enum SupervisorError: Error, Equatable {
@@ -111,26 +127,27 @@ public final class Supervisor: @unchecked Sendable {
         try spawnLocked(entry)
     }
 
-    /// The spec's stop signal (SIGTERM unless it says otherwise) to the process group, SIGKILL after the
-    /// spec's grace period (or the supervisor's); returns once it has exited.
-    public func stop(_ name: String) {
+    /// The spec's stop signal (SIGTERM unless it says otherwise) to the process group, SIGKILL after
+    /// `grace` if given, else the spec's grace period (or the supervisor's); returns once it has exited.
+    @discardableResult
+    public func stop(_ name: String, grace: TimeInterval? = nil) -> StopOutcome {
         lock.lock()
-        guard let entry = entries[name] else { lock.unlock(); return }
+        guard let entry = entries[name] else { lock.unlock(); return .notRunning }
         entry.wantsRunning = false
         entry.generation += 1
         let pid = entry.pid
         let exited = entry.exited
         let signal = entry.spec.stopSignal
-        let grace = entry.spec.stopGrace ?? stopGracePeriod
+        let grace = grace ?? entry.spec.stopGrace ?? stopGracePeriod
         if pid == nil { entry.status = .stopped }
         lock.unlock()
 
-        guard let pid, let exited else { return }
+        guard let pid, let exited else { return .notRunning }
         kill(-pid, signal)
-        if exited.wait(timeout: .now() + grace) == .timedOut {
-            kill(-pid, SIGKILL)
-            exited.wait()
-        }
+        guard exited.wait(timeout: .now() + grace) == .timedOut else { return .exited }
+        kill(-pid, SIGKILL)
+        exited.wait()
+        return .killed
     }
 
     public func stopAll() {
@@ -191,19 +208,28 @@ public final class Supervisor: @unchecked Sendable {
         let code = signal == 0 ? (waitStatus >> 8) & 0xff : 128 + signal
 
         lock.lock()
-        defer { lock.unlock() }
-        guard entry.pid == pid else { return }
+        guard entry.pid == pid else { lock.unlock(); return }
         entry.pid = nil
         entry.exited = nil
         guard entry.wantsRunning, entry.generation == generation else {
             entry.status = .stopped
+            lock.unlock()
             return
         }
-        entry.status = .crashed(exitCode: code)
-        let now = Date()
-        entry.failures = entry.failures.filter { now.timeIntervalSince($0) < Self.failureWindow } + [now]
-        guard entry.failures.count < Self.maxFailures else { return }
-        scheduleRestartLocked(entry, generation: generation)
+        let report = entry.spec.didExit
+        let restarting: Bool
+        if entry.spec.restartsAfterExit?(code) == false {
+            entry.status = .stopped
+            restarting = false
+        } else {
+            entry.status = .crashed(exitCode: code)
+            let now = Date()
+            entry.failures = entry.failures.filter { now.timeIntervalSince($0) < Self.failureWindow } + [now]
+            restarting = entry.failures.count < Self.maxFailures
+            if restarting { scheduleRestartLocked(entry, generation: generation) }
+        }
+        lock.unlock()
+        report?(code, restarting)
     }
 
     private func scheduleRestartLocked(_ entry: Entry, generation: Int) {

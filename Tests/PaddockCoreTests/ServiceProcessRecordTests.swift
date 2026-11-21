@@ -61,6 +61,26 @@ final class ServiceProcessRecordTests: XCTestCase {
         XCTAssertFalse(record.isOurLiveProcess(allowedDirectories: ["/bin"]), "gone")
     }
 
+    /// Telling apart a record whose process is gone (or whose pid now belongs to a process that started at
+    /// another time) from one whose process still runs but is not provably an orphan of ours, which must be
+    /// left alone. (The orphan case runs in the integration tests.)
+    func testIdentityTellsAGoneProcessFromOneThatIsNotOurs() throws {
+        let sleep = try startSleep()
+        let record = try XCTUnwrap(ServiceProcessRecord.live(pid: sleep.processIdentifier))
+        XCTAssertEqual(record.identity(belongs: { _ in true }), .runningButNotOurs,
+                       "the same process, but its parent (this test) is alive: not an orphan")
+        let reused = ServiceProcessRecord(pid: record.pid, pgid: record.pgid, startSeconds: record.startSeconds - 100,
+                                          startMicroseconds: record.startMicroseconds, executable: record.executable)
+        XCTAssertEqual(reused.identity(belongs: { _ in true }), .gone, "a reused pid starts at another time")
+        let renamed = ServiceProcessRecord(pid: record.pid, pgid: record.pgid, startSeconds: record.startSeconds,
+                                           startMicroseconds: record.startMicroseconds, executable: "/bin/sleepy")
+        XCTAssertEqual(renamed.identity(belongs: { _ in true }), .runningButNotOurs,
+                       "the same process running another program is still running, and not ours")
+        sleep.terminate()
+        sleep.waitUntilExit()
+        XCTAssertEqual(record.identity(belongs: { _ in true }), .gone)
+    }
+
     /// A group is listed whole however many members it has (the buffer grows until the list fits), and a group
     /// that can't be listed whole is reported as such, never as a partial list.
     func testGroupMembersAreListedWholeOrNotAtAll() throws {

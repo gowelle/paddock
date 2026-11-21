@@ -174,4 +174,46 @@ final class SupervisorTests: XCTestCase {
         XCTAssertLessThan(took, 5, "SIGKILL after the spec's 0.5 seconds, not the supervisor's 30")
         XCTAssertEqual(supervisor.status("stubborn"), .stopped)
     }
+
+    /// A stop may give less time than the spec's grace (the daemon shutting down), and says whether the
+    /// process had to be killed.
+    func testStopWithAShorterGraceSaysWhetherItHadToKill() throws {
+        supervisor = Supervisor()
+        var stubborn = shell("stubborn", "trap '' TERM; while :; do sleep 0.05; done")
+        stubborn.stopGrace = 30
+        try supervisor.start(stubborn)
+        try supervisor.start(shell("polite", "exec sleep 60"))
+        Thread.sleep(forTimeInterval: 0.3) // Let the shell set its trap.
+        let started = Date()
+        XCTAssertEqual(supervisor.stop("stubborn", grace: 0.5), .killed)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "the shorter grace, not the spec's 30 seconds")
+        XCTAssertEqual(supervisor.stop("polite", grace: 5), .exited)
+        XCTAssertEqual(supervisor.stop("polite"), .notRunning)
+        XCTAssertEqual(supervisor.status("stubborn"), .stopped)
+    }
+
+    /// A spec can decline a restart after an exit (a command that keeps finishing by itself): it is left
+    /// stopped. Every unexpected exit is reported, with whether a restart follows.
+    func testAnExitTheSpecDeclinesIsNotRestartedAndEveryExitIsReported() throws {
+        supervisor = Supervisor(backoffScale: 0.01)
+        let runs = dir.appendingPathComponent("runs").path
+        let exits = Locked<[String]>([])
+        var spec = shell("once", "echo run >> '\(runs)'; exit 0")
+        spec.restartsAfterExit = { code in code != 0 }
+        spec.didExit = { code, restarting in exits.withValue { $0.append("\(code) \(restarting)") } }
+        try supervisor.start(spec)
+        XCTAssertTrue(waitUntil(5) { exits.value.count == 1 })
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(lines("runs"), 1, "not restarted")
+        XCTAssertEqual(exits.value, ["0 false"])
+        XCTAssertEqual(supervisor.status("once"), .stopped)
+
+        var failing = shell("fail", "exit 3")
+        failing.didExit = { code, restarting in exits.withValue { $0.append("\(code) \(restarting)") } }
+        exits.withValue { $0 = [] }
+        try supervisor.start(failing)
+        XCTAssertTrue(waitUntil(5) { exits.value.count == 5 })
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(exits.value, ["3 true", "3 true", "3 true", "3 true", "3 false"], "the fifth failure gives up")
+    }
 }

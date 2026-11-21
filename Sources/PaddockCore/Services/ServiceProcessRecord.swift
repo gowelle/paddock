@@ -46,9 +46,28 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
     /// own process group, whose parent is launchd (pid 1), running a program inside one of `allowedDirectories`.
     /// While the daemon that started it is alive it is that daemon's child, so never an orphan.
     public func isOurLiveProcess(allowedDirectories: [String]) -> Bool {
-        guard Self.isInside(executable, allowedDirectories), pid == pgid, let now = Self.live(pid: pid), now == self,
-              Self.parent(of: pid) == 1 else { return false }
-        return true
+        Self.isInside(executable, allowedDirectories) && identity(belongs: { _ in true }) == .orphan
+    }
+
+    /// What the record's process is now.
+    public enum Identity: Equatable, Sendable {
+        /// No process has the pid, or the one that has it started at another time (the pid was reused).
+        case gone
+        /// The very process recorded, now an orphan of a daemon that died: every field matches, it leads its
+        /// own group, its parent is launchd (pid 1), and `belongs` agrees.
+        case orphan
+        /// The process recorded (same pid and start time) still runs, but is not provably an orphan of ours
+        /// (its parent lives, it runs another program, or `belongs` says no): it must be left alone.
+        case runningButNotOurs
+    }
+
+    /// While the daemon that started the process is alive it is that daemon's child, so never an orphan.
+    /// `belongs` adds a check of the caller's own (say, the process's working folder).
+    public func identity(belongs: (Int32) -> Bool) -> Identity {
+        guard let now = Self.live(pid: pid), now.startSeconds == startSeconds,
+              now.startMicroseconds == startMicroseconds else { return .gone }
+        guard pid == pgid, now == self, Self.parent(of: pid) == 1, belongs(pid) else { return .runningButNotOurs }
+        return .orphan
     }
 
     /// When the record's leader is gone but its group lives on: the remaining members, if there are any and
@@ -56,10 +75,16 @@ public struct ServiceProcessRecord: Codable, Equatable, Sendable {
     /// when the group can't be listed whole). A process group id is never reused while the group has members,
     /// so these are the leader's own.
     public func orphanedGroupMembers(allowedDirectories: [String]) -> [Int32]? {
+        orphanedGroupMembers { member in
+            PortCheck.executablePath(pid: member).map { Self.isInside($0, allowedDirectories) } ?? false
+        }
+    }
+
+    /// As above, with `belongs` deciding for each member instead of the folders its program must be in.
+    public func orphanedGroupMembers(belongs: (Int32) -> Bool) -> [Int32]? {
         guard pid == pgid, Self.live(pid: pid) == nil else { return nil }
         guard let members = Self.members(ofGroup: pgid), !members.isEmpty, members.allSatisfy({ member in
-            guard let program = PortCheck.executablePath(pid: member) else { return false }
-            return Self.isInside(program, allowedDirectories) && Self.parent(of: member) == 1 && getpgid(member) == pgid
+            belongs(member) && Self.parent(of: member) == 1 && getpgid(member) == pgid
         }) else { return nil }
         return members
     }
