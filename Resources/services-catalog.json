@@ -398,6 +398,76 @@
         }
       ],
       "readyTimeoutSeconds": 60
+    },
+    {
+      "kind": "meilisearch",
+      "displayName": "Meilisearch",
+      "version": "1.57.0",
+      "series": "1.57",
+      "licence": "MIT",
+      "minimumMacOS": "10.12",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://github.com/meilisearch/meilisearch/releases/download/v1.57.0/meilisearch-macos-amd64",
+            "sha256": "253ecf09ab119847af7dcc9ebdb233cbe5d612bfe73925008ee87f7c5572ebd5",
+            "size": 351390264
+          },
+          "archive": "binary",
+          "installAs": "meilisearch"
+        }
+      ],
+      "initialise": [],
+      "start": {
+        "executable": "{bin}/meilisearch",
+        "arguments": [
+          "--config-file-path",
+          "{config}/meilisearch.toml",
+          "--http-addr",
+          "127.0.0.1:{port.main}",
+          "--db-path",
+          "{data}/data.ms",
+          "--dump-dir",
+          "{data}/dumps",
+          "--snapshot-dir",
+          "{data}/snapshots",
+          "--no-analytics",
+          "--env",
+          "development",
+          "--upgrade-db"
+        ]
+      },
+      "ready": {
+        "http": {
+          "url": "http://127.0.0.1:{port.main}/health",
+          "expectStatus": 200
+        }
+      },
+      "stopSignal": "TERM",
+      "stopGraceSeconds": 30,
+      "ports": [
+        {
+          "name": "main",
+          "preferred": 7700
+        }
+      ],
+      "env": [
+        "SCOUT_DRIVER=meilisearch",
+        "MEILISEARCH_HOST=http://127.0.0.1:{port.main}",
+        "MEILISEARCH_KEY="
+      ],
+      "openURL": "http://127.0.0.1:{port.main}",
+      "needsPHP": false,
+      "notes": [
+        "Search indexes are tied to Meilisearch 1.57; export a dump before changing version."
+      ],
+      "configFiles": [
+        {
+          "path": "{config}/meilisearch.toml",
+          "contents": "# Written by Paddock on every start: changes here are replaced.\n# Every setting is on Meilisearch's command line; naming this empty file keeps it from reading a\n# config.toml from its working folder.\n"
+        }
+      ],
+      "readyTimeoutSeconds": 60
     }
   ]
 }

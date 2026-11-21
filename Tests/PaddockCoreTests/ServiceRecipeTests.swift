@@ -270,6 +270,41 @@ final class ServiceRecipeTests: XCTestCase {
         XCTAssertFalse(lines.contains { $0.hasPrefix("requirepass") || $0.hasPrefix("include") })
     }
 
+    /// Meilisearch's official Intel binary; series at the minor level, since its database is tied to it.
+    func testBundledCatalogHasMeilisearch() throws {
+        let recipes = try ServiceCatalog.bundled().recipes(of: "meilisearch")
+        XCTAssertEqual(recipes.map(\.version), ["1.57.0"])
+        let meili = try XCTUnwrap(recipes.first)
+        XCTAssertEqual(meili.displayName, "Meilisearch")
+        XCTAssertEqual(meili.series, "1.57")
+        XCTAssertTrue(meili.seriesInID, "meilisearch-1-57")
+        XCTAssertEqual(meili.licence, "MIT")
+        XCTAssertEqual(meili.minimumMacOS, "10.12", "the binary's LC_VERSION_MIN_MACOSX")
+        let asset = try XCTUnwrap(meili.assets.first)
+        XCTAssertEqual(meili.assets.count, 1)
+        XCTAssertEqual(asset.artifact.url.absoluteString,
+                       "https://github.com/meilisearch/meilisearch/releases/download/v1.57.0/meilisearch-macos-amd64")
+        XCTAssertEqual(asset.artifact.sha256, "253ecf09ab119847af7dcc9ebdb233cbe5d612bfe73925008ee87f7c5572ebd5")
+        XCTAssertEqual(asset.artifact.size, 351390264)
+        XCTAssertEqual(asset.archive, "binary")
+        XCTAssertEqual(asset.installAs, "meilisearch")
+        XCTAssertEqual(meili.start.executable, "{bin}/meilisearch")
+        XCTAssertEqual(meili.start.arguments, [
+            "--config-file-path", "{config}/meilisearch.toml", "--http-addr", "127.0.0.1:{port.main}",
+            "--db-path", "{data}/data.ms", "--dump-dir", "{data}/dumps", "--snapshot-dir", "{data}/snapshots",
+            "--no-analytics", "--env", "development", "--upgrade-db"])
+        XCTAssertFalse(meili.start.arguments.contains("--master-key"), "no master key in development, loopback only")
+        XCTAssertEqual(meili.ready, .http(url: "http://127.0.0.1:{port.main}/health", expectStatus: 200))
+        XCTAssertEqual(meili.stopSignal, "TERM")
+        XCTAssertEqual(meili.ports, [RecipePort(name: "main", preferred: 7700)])
+        XCTAssertNil(meili.socket)
+        XCTAssertEqual(meili.env, ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:{port.main}",
+                                   "MEILISEARCH_KEY="])
+        XCTAssertEqual(meili.openURL, "http://127.0.0.1:{port.main}")
+        XCTAssertEqual(meili.configFiles.map(\.path), ["{config}/meilisearch.toml"])
+        XCTAssertEqual(meili.notes, ["Search indexes are tied to Meilisearch 1.57; export a dump before changing version."])
+    }
+
     /// Readiness keeps its JSON form for the existing kinds, and a command is the command itself.
     func testReadinessCoding() throws {
         let decoder = JSONDecoder()
