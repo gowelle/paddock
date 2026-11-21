@@ -543,6 +543,30 @@ public enum Messages {
         return lines
     }
 
+    /// Columns: task, state, command; then the site's notice and each task's warning, one line each.
+    public static func taskTable(_ status: SiteTasksStatus) -> String {
+        var lines = [table([["TASK", "STATE", "COMMAND"]]
+                           + status.tasks.map { [$0.name, taskState($0.state), $0.run] })]
+        lines += status.tasks.compactMap { task in task.warning.map { "\(task.name): \($0)" } }
+        if let notice = status.notice { lines.append(notice) }
+        return lines.joined(separator: "\n")
+    }
+
+    /// `paddock tasks` outside a site folder, when no site has a `paddock.json`.
+    public static let noSiteHasTasks =
+        "No site has a paddock.json yet. Start one in a Laravel project with: paddock tasks init"
+
+    /// `paddock tasks init` in a project that isn't Laravel: an example follows.
+    public static func tasksExample(site: String, path: String) -> String {
+        "\(site) isn't a Laravel project, so here is an example to start from. Save it as \(path):"
+    }
+
+    public static func tasksFileWritten(path: String) -> String {
+        "Wrote \(path). Review and approve its tasks with: paddock tasks on"
+    }
+
+    public static func nothingToApprove(path: String) -> String { "\(path) has no tasks or proxy paths to approve." }
+
     /// What approving shows: every task with its command, then every proxy line.
     public static func approvalLines(_ pending: [PendingTask]) -> [String] {
         pending.map { line in

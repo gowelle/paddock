@@ -261,7 +261,7 @@ public struct SiteTasksStatus: Codable, Equatable, Sendable {
 
     /// The pending lines for a file: its tasks by name, then its proxy paths, each shown as `Messages` shows
     /// text from a file.
-    static func pendingLines(_ file: SiteTasksFile) -> [PendingTask] {
+    public static func pendingLines(_ file: SiteTasksFile) -> [PendingTask] {
         file.tasks.keys.sorted().map { PendingTask(name: $0, run: Messages.shownCommand(file.tasks[$0]!.run), port: nil) }
             + file.proxy.keys.sorted().map { PendingTask(name: $0, run: nil, port: file.proxy[$0]) }
     }

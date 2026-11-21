@@ -156,7 +156,8 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
         return Stamp(entries: entries)
     }
 
-    static func realPath(_ path: String) -> String? {
+    /// `path` with every symlink resolved, if it exists.
+    public static func realPath(_ path: String) -> String? {
         guard let resolved = Darwin.realpath(path, nil) else { return nil }
         defer { free(resolved) }
         return String(cString: resolved)
@@ -257,7 +258,7 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
     }
 
     /// `^[a-z][a-z0-9-]{0,30}$`
-    static func isTaskName(_ name: String) -> Bool {
+    public static func isTaskName(_ name: String) -> Bool {
         let bytes = Array(name.utf8)
         guard (1...31).contains(bytes.count), (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(bytes[0]) else { return false }
         return bytes.allSatisfy { (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0)

@@ -117,6 +117,11 @@ struct Status: ParsableCommand {
             print("")
             print(Messages.serviceTable(status.services))
         }
+        let tasks = Messages.siteTasksLines(status.sites)
+        if !tasks.isEmpty {
+            print("")
+            print(tasks.joined(separator: "\n"))
+        }
     }
 }
 

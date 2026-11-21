@@ -54,6 +54,22 @@ final class TaskMessagesTests: XCTestCase {
         ])
     }
 
+    func testTheTaskTable() {
+        let status = SiteTasksStatus(
+            approval: .changed,
+            tasks: [task("queue", .running(pid: 4)),
+                    TaskStatus(name: "once", run: "php artisan migrate", state: .stopped(reason: .exited), restartOnChange: false,
+                               logPath: "/l", warning: Messages.taskKeepsExiting)],
+            pending: [], pendingHash: nil, notice: Messages.tasksChanged(site: "shop"))
+        XCTAssertEqual(Messages.taskTable(status), """
+        TASK   STATE                                  COMMAND
+        queue  running (pid 4)                        x
+        once   stopped: it keeps finishing by itself  php artisan migrate
+        once: \(Messages.taskKeepsExiting)
+        \(Messages.tasksChanged(site: "shop"))
+        """)
+    }
+
     func testWhatApprovingShows() {
         XCTAssertEqual(Messages.approvalLines([PendingTask(name: "queue", run: "php artisan queue:work", port: nil),
                                                PendingTask(name: "/app", run: nil, port: 8080)]),
@@ -81,6 +97,17 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.taskError(.fileExists(site: "shop", path: "/p/shop/paddock.json")),
                        "/p/shop/paddock.json already exists; Paddock never overwrites it.")
         XCTAssertEqual(Messages.taskError(.unknownSite("nope")), "Paddock doesn't serve a site named nope.")
+    }
+
+    func testWhatTasksInitAndOnSay() {
+        XCTAssertEqual(Messages.noSiteHasTasks,
+                       "No site has a paddock.json yet. Start one in a Laravel project with: paddock tasks init")
+        XCTAssertEqual(Messages.tasksExample(site: "blog", path: "/p/blog/paddock.json"),
+                       "blog isn't a Laravel project, so here is an example to start from. Save it as /p/blog/paddock.json:")
+        XCTAssertEqual(Messages.tasksFileWritten(path: "/p/shop/paddock.json"),
+                       "Wrote /p/shop/paddock.json. Review and approve its tasks with: paddock tasks on")
+        XCTAssertEqual(Messages.nothingToApprove(path: "/p/shop/paddock.json"),
+                       "/p/shop/paddock.json has no tasks or proxy paths to approve.")
     }
 
     func testNotesInATasksLog() {
