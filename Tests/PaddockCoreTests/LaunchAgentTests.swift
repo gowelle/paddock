@@ -22,12 +22,13 @@ final class LaunchAgentTests: XCTestCase {
     }
 
     private func agent(_ runner: CommandRunner) -> LaunchAgent {
-        LaunchAgent(runner: runner, plist: plist, paths: paths)
+        LaunchAgent(runner: runner, plist: plist, paths: paths,
+                    waits: .init(unload: 0.3, poll: 0.01, bootstrapRetry: 0.01))
     }
 
-    /// Answers `launchctl print` with `loaded`, everything else with success.
+    /// A launchd that starts with the job `loaded` or not; bootout unloads it, bootstrap loads it.
     private func fake(loaded: Bool) -> RecordingCommandRunner {
-        RecordingCommandRunner { _, args in (args.first == "print" ? (loaded ? 0 : 113) : 0, "") }
+        FakeLaunchd(loaded: loaded).runner()
     }
 
     func testPlistContentsIsAValidPropertyListWithTheRequiredKeys() throws {
@@ -69,16 +70,66 @@ final class LaunchAgentTests: XCTestCase {
         XCTAssertEqual(runner.calls.map(\.arguments), [
             ["print", target],
             ["bootout", target],
+            ["print", target],
             ["bootstrap", "gui/\(getuid())", plist.path],
         ])
     }
 
-    func testInstallThrowsWhenBootstrapFails() {
-        let runner = RecordingCommandRunner { _, args in (args.first == "bootstrap" ? 5 : 1, "Bootstrap failed: 5") }
+    func testInstallWaitsUntilBootoutHasUnloadedTheJobBeforeBootstrapping() throws {
+        // bootout returns before launchd has let go of the job: it stays loaded for two more prints.
+        let prints = LockedCounter()
+        let runner = RecordingCommandRunner { _, args in
+            switch args.first {
+            case "print": return (prints.next() < 3 ? 0 : 113, "")
+            default: return (0, "")
+            }
+        }
+        try agent(runner).install(daemon: daemon)
+        XCTAssertEqual(runner.calls.map { $0.arguments.first! }, ["print", "bootout", "print", "print", "print", "bootstrap"])
+    }
+
+    func testInstallRetriesAFailedBootstrapOnce() throws {
+        let launchd = FakeLaunchd(loaded: true, bootstrapFailures: 1)
+        let runner = launchd.runner()
+        try agent(runner).install(daemon: daemon)
+        XCTAssertEqual(runner.calls.map { $0.arguments.first! }, ["print", "bootout", "print", "bootstrap", "bootstrap"])
+        XCTAssertTrue(launchd.loaded)
+    }
+
+    func testInstallGivesUpAfterTheSecondFailedBootstrap() {
+        let runner = FakeLaunchd(bootstrapFailures: 2).runner()
         XCTAssertThrowsError(try agent(runner).install(daemon: daemon)) {
-            XCTAssertEqual($0 as? LaunchAgentError, .failed("Bootstrap failed: 5"))
+            XCTAssertEqual($0 as? LaunchAgentError, .failed("Bootstrap failed: 5: Input/output error"))
+        }
+        XCTAssertEqual(runner.calls.filter { $0.arguments.first == "bootstrap" }.count, 2)
+    }
+
+    func testStopSucceedsWhenBootoutFailsButTheJobIsGone() throws {
+        let launchd = FakeLaunchd(loaded: true, bootoutStatus: 5)
+        XCTAssertTrue(try agent(launchd.runner()).stop())
+        XCTAssertFalse(launchd.loaded)
+    }
+
+    func testStopFailsWhenTheJobStaysLoaded() {
+        let launchd = FakeLaunchd(loaded: true, bootoutStatus: 5, bootoutUnloads: false)
+        XCTAssertThrowsError(try agent(launchd.runner()).stop()) {
+            XCTAssertEqual($0 as? LaunchAgentError, .failed("Boot-out failed: 5: Input/output error"))
         }
     }
+
+    func testInstalledDaemonIsReadFromACurrentPlistOnly() throws {
+        let exe = dir.appendingPathComponent("MacOS/paddockd")
+        try FileManager.default.createDirectory(at: exe.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\n".utf8).write(to: exe)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
+        XCTAssertNil(agent(fake(loaded: false)).installedDaemon(), "no plist")
+        try agent(fake(loaded: false)).install(daemon: exe)
+        XCTAssertEqual(agent(fake(loaded: true)).installedDaemon()?.path, exe.path)
+
+        try FileManager.default.removeItem(at: exe)
+        XCTAssertNil(agent(fake(loaded: true)).installedDaemon(), "the plist's daemon is gone")
+    }
+
 
     func testIsLoadedFollowsPrintExitStatus() {
         XCTAssertTrue(agent(fake(loaded: true)).isLoaded())
@@ -89,7 +140,7 @@ final class LaunchAgentTests: XCTestCase {
         try agent(fake(loaded: false)).install(daemon: daemon)
         let runner = fake(loaded: true)
         try agent(runner).uninstall()
-        XCTAssertEqual(runner.calls.map(\.arguments), [["print", target], ["bootout", target]])
+        XCTAssertEqual(runner.calls.map(\.arguments), [["print", target], ["bootout", target], ["print", target]])
         XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
     }
 
@@ -105,7 +156,7 @@ final class LaunchAgentTests: XCTestCase {
         try agent(fake(loaded: false)).install(daemon: daemon)
         let runner = fake(loaded: true)
         try agent(runner).stop()
-        XCTAssertEqual(runner.calls.map(\.arguments), [["print", target], ["bootout", target]])
+        XCTAssertEqual(runner.calls.map(\.arguments), [["print", target], ["bootout", target], ["print", target]])
         XCTAssertTrue(FileManager.default.fileExists(atPath: plist.path))
     }
 

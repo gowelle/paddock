@@ -60,3 +60,72 @@ final class LockedFlag: @unchecked Sendable {
         set { lock.lock(); defer { lock.unlock() }; flag = newValue }
     }
 }
+
+/// A fake launchd for `launchctl print/bootout/bootstrap/kickstart`: tracks whether the job is loaded.
+/// `bootstrapFailures` bootstraps fail (status 5) before one succeeds; `bootoutStatus` is what bootout
+/// exits with (it still unloads the job unless `bootoutUnloads` is false).
+public final class FakeLaunchd: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isLoaded: Bool
+    private var failuresLeft: Int
+    private let bootoutStatus: Int32
+    private let bootoutUnloads: Bool
+
+    public init(loaded: Bool = false, bootstrapFailures: Int = 0, bootoutStatus: Int32 = 0,
+                bootoutUnloads: Bool = true) {
+        isLoaded = loaded
+        failuresLeft = bootstrapFailures
+        self.bootoutStatus = bootoutStatus
+        self.bootoutUnloads = bootoutUnloads
+    }
+
+    public var loaded: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return isLoaded
+    }
+
+    /// The answer for a `launchctl` call, or nil for any other program.
+    public func answer(_ executable: String, _ arguments: [String]) -> (status: Int32, output: String)? {
+        guard executable == "/bin/launchctl" else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        switch arguments.first {
+        case "print": return (isLoaded ? 0 : 113, "")
+        case "bootout":
+            if bootoutUnloads { isLoaded = false }
+            return (bootoutStatus, bootoutStatus == 0 ? "" : "Boot-out failed: 5: Input/output error")
+        case "bootstrap":
+            if failuresLeft > 0 {
+                failuresLeft -= 1
+                return (5, "Bootstrap failed: 5: Input/output error")
+            }
+            isLoaded = true
+            return (0, "")
+        default: return (0, "")
+        }
+    }
+
+    /// A runner that answers only launchctl; anything else fails.
+    public func runner() -> RecordingCommandRunner {
+        RecordingCommandRunner { [self] exe, args in answer(exe, args) ?? (1, "unexpected") }
+    }
+}
+
+/// A thread-safe counter for fakes and closures.
+public final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    public init() {}
+    /// Returns the count before this call, then adds one.
+    public func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count - 1 }
+}
+
+/// A value shared between a test and the closures it hands out.
+public final class LockedBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: T
+    public init(_ value: T) { stored = value }
+    public var value: T {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); defer { lock.unlock() }; stored = newValue }
+    }
+}

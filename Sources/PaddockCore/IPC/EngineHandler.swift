@@ -42,10 +42,26 @@ final class AsyncMutex: @unchecked Sendable {
 extension Engine {
     /// Applies one request. `status` is answered at once; everything else runs one at a time, in
     /// arrival order, and returns the fresh status (or an error with a stable code).
+    ///
+    /// `shutdown` marks the engine as shutting down before it queues, so nothing queued behind it (or
+    /// arriving later) can start the web stack again just before the daemon exits.
     public func handle(_ request: Request) async -> Response {
         if case .status = request { return .ok(status()) }
-        return await mutations.withLock { await perform(request) }
+        if case .shutdown = request { markShuttingDown() }
+        return await mutations.withLock {
+            if self.isShuttingDown && request != .shutdown { return self.shuttingDownError }
+            return await self.perform(request)
+        }
     }
+
+    /// The daemon's exit on a signal: refuses new work, waits for the request in progress, then stops
+    /// everything (web stack and DNS). The same path a `shutdown` request takes.
+    public func shutDownAfterPendingWork() async {
+        markShuttingDown()
+        await mutations.withLock { await self.blocking { self.shutdown() } }
+    }
+
+    private var shuttingDownError: Response { error(ErrorCode.internal, "Paddock is shutting down.") }
 
     private func perform(_ request: Request) async -> Response {
         switch request {
@@ -61,7 +77,7 @@ extension Engine {
             return await startReply()
         case .shutdown:
             // The daemon exits after this reply has been written.
-            await blocking { self.stop() }
+            await blocking { self.shutdown() }
             return .ok(status())
 
         case .park(let path):
@@ -126,7 +142,8 @@ extension Engine {
 
     // MARK: - Pieces
 
-    /// Starts the engine; blocked ports are an error naming the first holder.
+    /// Starts the engine; held ports are `ports_blocked` with the full sentence naming who holds them,
+    /// ports macOS won't let Paddock use are `ports_not_permitted`.
     private func startReply() async -> Response {
         do {
             try await blocking { try self.start() }
@@ -138,10 +155,11 @@ extension Engine {
             return self.error(ErrorCode.internal, "Could not start: \(error.localizedDescription)")
         }
         let current = status()
-        if let holder = current.blockedBy.first {
-            let who = holder.command.map { "\($0) (pid \(holder.pid.map(String.init) ?? "unknown"))" }
-                ?? holder.pid.map { "pid \($0)" } ?? "an unknown process"
-            return error(ErrorCode.portsBlocked, "Port \(holder.port) is in use by \(who)")
+        if !current.blockedBy.isEmpty {
+            return error(ErrorCode.portsBlocked, Messages.portsBlocked(current.blockedBy))
+        }
+        if !current.portsNotPermitted.isEmpty {
+            return error(ErrorCode.portsNotPermitted, Messages.portsNotPermitted(current.portsNotPermitted))
         }
         return .ok(current)
     }

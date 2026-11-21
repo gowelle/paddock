@@ -17,7 +17,7 @@ final class PHPVersionsTests: XCTestCase {
     }
 
     override func tearDown() {
-        engine?.stop()
+        engine?.shutdown()
         engine = nil
         home?.cleanUp()
     }
@@ -97,7 +97,7 @@ final class PHPVersionsTests: XCTestCase {
     }
 
     func testShimsWorkFromAHomeWithASpace() throws {
-        engine?.stop()
+        engine?.shutdown()
         home.cleanUp()
         home = try TestHome(rootName: "pdk \(TestSupport.token())")
         XCTAssertTrue(home.paths.home.path.contains(" "))

@@ -69,10 +69,26 @@ private final class FakeServices: AppServices, @unchecked Sendable {
     func parkedFolders() -> [String] { parked }
 }
 
-private struct FakeQuitter: ApplicationQuitter {
-    var quittable: Set<Int32> = []
-    func canQuit(pid: Int32) -> Bool { quittable.contains(pid) }
-    func quit(pid: Int32) -> Bool { quittable.contains(pid) }
+/// Pretends the applications at `quittable` are running for this user. Never quits anything real.
+private final class FakeQuitter: ApplicationQuitter, @unchecked Sendable {
+    let quittable: Set<String>
+    private(set) var quitRequests: [String] = []
+    init(quittable: Set<String> = []) { self.quittable = quittable }
+    func canQuit(appBundlePath: String) -> Bool { quittable.contains(appBundlePath) }
+    func quit(appBundlePath: String) -> Bool {
+        quitRequests.append(appBundlePath)
+        return quittable.contains(appBundlePath)
+    }
+}
+
+private let herdApp = "/Applications/Herd.app"
+
+/// Herd's nginx: 4 worker pids listening on each of 80 and 443.
+private func herdHolders() -> [PortHolder] {
+    [80, 443].flatMap { port in
+        (101...104).map { PortHolder(port: port, pid: Int32($0), command: "nginx-x86", ownedByCurrentUser: true,
+                                     executablePath: herdApp + "/Contents/Resources/nginx-x86") }
+    }
 }
 
 private struct SomeError: Error, LocalizedError {
@@ -82,12 +98,13 @@ private struct SomeError: Error, LocalizedError {
 private let v84 = PHPVersion(major: 8, minor: 4)
 private let v85 = PHPVersion(major: 8, minor: 5)
 
-private func sampleStatus(running: Bool = true, blockedBy: [PortHolder] = [], sites: [Site]? = nil) -> EngineStatus {
-    EngineStatus(running: running, blockedBy: blockedBy,
+private func sampleStatus(running: Bool = true, blockedBy: [PortHolder] = [], notPermitted: [Int] = [],
+                          sites: [Site]? = nil) -> EngineStatus {
+    EngineStatus(running: running, blockedBy: blockedBy, portsNotPermitted: notPermitted,
                  sites: sites ?? [Site(name: "blog", path: "/p/blog", kind: .parked, secured: true,
                                        php: v85, pinned: false)],
                  installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
-                 resolverInstalled: true, trustEnabled: true)
+                 resolverInstalled: true, trustEnabled: true, dnsRunning: true)
 }
 
 @MainActor
@@ -138,13 +155,54 @@ final class AppModelTests: XCTestCase {
     func testBlockedStatusExposesTheHolderForTheMenuLine() async {
         let holder = PortHolder(port: 80, pid: 123, command: "nginx", ownedByCurrentUser: true)
         let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(running: false, blockedBy: [holder])) },
-                             quitter: FakeQuitter(quittable: [123]))
+                             quitter: FakeQuitter())
         await model.refresh()
         XCTAssertEqual(model.blockingHolder, holder)
         XCTAssertEqual(model.statusLine, "Can't start: port 80 in use by nginx")
+        XCTAssertFalse(model.canQuitBlockingHolder, "a program outside any application gets no button")
+        XCTAssertEqual(model.blockedExplanation, "Paddock can't start: port 80 is in use by nginx (pid 123).")
+    }
+
+    func testAnAppHoldingBothPortsGetsOneLineAndAQuitButtonForTheApp() async {
+        let quitter = FakeQuitter(quittable: [herdApp])
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(running: false, blockedBy: herdHolders())) },
+                             quitter: quitter)
+        await model.refresh()
+        XCTAssertEqual(model.statusLine, "Can't start: ports 80 and 443 in use by Herd")
         XCTAssertTrue(model.canQuitBlockingHolder)
-        XCTAssertEqual(model.quitButtonTitle, "Quit nginx")
+        XCTAssertEqual(model.quitButtonTitle, "Quit Herd")
         XCTAssertNil(model.blockedExplanation)
+        XCTAssertEqual(quitter.quitRequests, [], "nothing is quit until the user clicks")
+    }
+
+    func testAnAppThatIsNotRunningForThisUserGetsNoButton() async {
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(running: false, blockedBy: herdHolders())) },
+                             quitter: FakeQuitter())
+        await model.refresh()
+        XCTAssertFalse(model.canQuitBlockingHolder)
+        XCTAssertEqual(model.blockedExplanation, "Paddock can't start: ports 80 and 443 are in use by Herd.")
+    }
+
+    func testPortsNotPermittedShowTheLimitationSentence() async {
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(running: false, notPermitted: [80, 443])) },
+                             quitter: FakeQuitter())
+        await model.refresh()
+        XCTAssertEqual(model.statusLine, "Can't listen on ports 80 and 443 yet")
+        XCTAssertFalse(model.canQuitBlockingHolder)
+        XCTAssertEqual(model.blockedExplanation, Messages.portsNotPermitted([80, 443]))
+    }
+
+    func testPortsNotPermittedOnStartIsNotAnErrorLine() async {
+        let client = FakeClient { r in
+            if r == .start {
+                return .error(code: ErrorCode.portsNotPermitted, message: Messages.portsNotPermitted([80]))
+            }
+            return .ok(sampleStatus(running: false, notPermitted: [80]))
+        }
+        let model = AppModel(client: client, services: FakeServices())
+        await model.start()
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(model.statusLine, "Can't listen on port 80 yet")
     }
 
     // MARK: - Derived properties
@@ -178,7 +236,7 @@ final class AppModelTests: XCTestCase {
     func testHolderNotOwnedByUserGetsTheSentenceAndNoButton() async {
         let holder = PortHolder(port: 80, pid: 44, command: "nginx", ownedByCurrentUser: false)
         let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(running: false, blockedBy: [holder])) },
-                             quitter: FakeQuitter(quittable: [44]))
+                             quitter: FakeQuitter(quittable: [herdApp]))
         await model.refresh()
         XCTAssertFalse(model.canQuitBlockingHolder)
         XCTAssertEqual(model.blockedExplanation, Messages.portsBlocked([holder]))
@@ -194,13 +252,14 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.blockedExplanation, Messages.portsBlocked([holder]))
     }
 
-    func testQuitBlockingHolderQuitsOnlyThatPidThenStarts() async {
-        let holder = PortHolder(port: 80, pid: 123, command: "nginx", ownedByCurrentUser: true)
-        let client = FakeClient { _ in .ok(sampleStatus(running: false, blockedBy: [holder])) }
-        let model = AppModel(client: client, quitter: FakeQuitter(quittable: [123]))
+    func testQuitBlockingHolderQuitsOnlyThatAppThenStarts() async {
+        let client = FakeClient { _ in .ok(sampleStatus(running: false, blockedBy: herdHolders())) }
+        let quitter = FakeQuitter(quittable: [herdApp])
+        let model = AppModel(client: client, quitter: quitter)
         await model.refresh()
         client.handler = { _ in .ok(sampleStatus()) }
         await model.quitBlockingHolder()
+        XCTAssertEqual(quitter.quitRequests, [herdApp])
         XCTAssertTrue(client.requests.contains(.start))
         XCTAssertEqual(model.statusLine, "Running")
     }

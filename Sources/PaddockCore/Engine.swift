@@ -5,6 +5,8 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var running: Bool
     /// Listeners on the HTTP/HTTPS ports that stopped the last `start()`.
     public var blockedBy: [PortHolder]
+    /// HTTP/HTTPS ports nobody holds but macOS didn't let Paddock listen on at the last `start()`.
+    public var portsNotPermitted: [Int]
     public var sites: [Site]
     public var installedPHP: [PHPVersion]
     public var defaultPHP: PHPVersion?
@@ -13,19 +15,27 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var resolverInstalled: Bool
     /// True iff this engine can make macOS trust Paddock's certificate (it has a trust object).
     public var trustEnabled: Bool
+    /// Whether the `.test` DNS responder is answering. It runs whenever the daemon does, even while
+    /// the web server is stopped or blocked.
+    public var dnsRunning: Bool
 
-    public init(running: Bool, blockedBy: [PortHolder], sites: [Site], installedPHP: [PHPVersion],
-                defaultPHP: PHPVersion?, processes: [String: String], resolverInstalled: Bool,
-                trustEnabled: Bool) {
+    public init(running: Bool, blockedBy: [PortHolder], portsNotPermitted: [Int], sites: [Site],
+                installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
+                resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool) {
         self.running = running
         self.blockedBy = blockedBy
+        self.portsNotPermitted = portsNotPermitted
         self.sites = sites
         self.installedPHP = installedPHP
         self.defaultPHP = defaultPHP
         self.processes = processes
         self.resolverInstalled = resolverInstalled
         self.trustEnabled = trustEnabled
+        self.dnsRunning = dnsRunning
     }
+
+    /// True when the last start found the web ports held or not permitted.
+    public var portsUnavailable: Bool { !blockedBy.isEmpty || !portsNotPermitted.isEmpty }
 }
 
 public enum EngineError: Error, Equatable {
@@ -34,7 +44,9 @@ public enum EngineError: Error, Equatable {
     case caddyReloadFailed(output: String)
 }
 
-/// Runs the web stack: one PHP-FPM per PHP version in use, Caddy in front, and the DNS responder.
+/// Runs the web stack (one PHP-FPM per PHP version in use, Caddy in front) and the DNS responder.
+/// The DNS responder is independent of the web stack: it starts with the first `start()` (or
+/// `startDNS()`) and stops only in `shutdown()`, when the daemon exits.
 public final class Engine: @unchecked Sendable {
     public let paths: Paths
     public let settings: Settings
@@ -49,10 +61,13 @@ public final class Engine: @unchecked Sendable {
     private let dns: DNSResponder
     /// Held for the whole of `start`, `stop` and `reload`, including slow waits. Never taken by `status`.
     private let operationLock = NSLock()
-    /// Guards only the two fields `status` reads; held for an instant, never across slow work.
+    /// Guards only the fields `status` reads; held for an instant, never across slow work.
     private let flagsLock = NSLock()
     private var isRunning = false
     private var blockedBy: [PortHolder] = []
+    private var notPermitted: [Int] = []
+    private var dnsUp = false
+    private var shuttingDown = false
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
     /// Replaces the real download in `installPHP` requests; tests use it to make installs slow.
@@ -82,13 +97,15 @@ public final class Engine: @unchecked Sendable {
         dns = DNSResponder(port: settings.dnsPort, tld: settings.tld)
     }
 
-    deinit { stop() }
+    deinit { shutdown() }
 
-    /// Starts everything, unless the HTTP/HTTPS ports are held, in which case it starts nothing
-    /// and reports the holders in `status().blockedBy`. Returns once Caddy accepts connections.
+    /// Starts the DNS responder (if it isn't answering yet), then the web stack, unless the HTTP/HTTPS
+    /// ports are held or not permitted, in which case it starts no web server and reports why in
+    /// `status().blockedBy` / `status().portsNotPermitted`. Returns once Caddy accepts connections.
     public func start() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
+        startDNS()
         if flags.running {
             // Caddy crashed and was given up on: tear down what is left and start afresh.
             guard caddyCrashed else { return }
@@ -101,16 +118,15 @@ public final class Engine: @unchecked Sendable {
         }
         let state = try prepareState()
 
-        let holders = PortCheck.holders(of: [settings.httpPort, settings.httpsPort])
-        setFlags(blockedBy: holders)
-        guard holders.isEmpty else { return }
+        let ports = PortCheck.report(ports: [settings.httpPort, settings.httpsPort])
+        setFlags(blockedBy: ports.holders, notPermitted: ports.notPermitted)
+        guard ports.isClear else { return }
 
         do {
             try writeConfigs(state)
             for v in versionsInUse(state).sorted() { try startFPM(v) }
             try startCaddy()
             try waitUntilReady()
-            try dns.start()
             setFlags(running: true)
         } catch {
             stopLocked()
@@ -130,12 +146,33 @@ public final class Engine: @unchecked Sendable {
         try Shims.install(paths: paths, source: sibling, resources: Bundled.resources)
     }
 
-    /// Stops Caddy, every PHP-FPM (with its workers) and the DNS responder.
+    /// Starts the `.test` DNS responder unless it is already answering. A failure (its port taken) is
+    /// logged and shows as `status().dnsRunning == false`; the next `start()` tries again.
+    public func startDNS() {
+        do {
+            try dns.start()
+            setFlags(dnsRunning: true)
+        } catch {
+            setFlags(dnsRunning: false)
+            fputs("paddockd: the .test DNS responder could not listen on port \(settings.dnsPort): \(error)\n", stderr)
+        }
+    }
+
+    /// Stops Caddy and every PHP-FPM (with its workers). The DNS responder keeps answering.
     public func stop() {
         operationLock.lock()
         defer { operationLock.unlock() }
         stopLocked()
-        setFlags(blockedBy: [])
+        setFlags(blockedBy: [], notPermitted: [])
+    }
+
+    /// Stops the web stack and the DNS responder; for the daemon's exit.
+    public func shutdown() {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        stopLocked()
+        dns.stop()
+        setFlags(blockedBy: [], notPermitted: [], dnsRunning: false)
     }
 
     /// Regenerates configs; when running, also starts/stops FPM pools to match the versions in use
@@ -164,25 +201,26 @@ public final class Engine: @unchecked Sendable {
     /// Answers promptly even while `start`, `reload` or a PHP install is in progress: it takes only
     /// short-lived locks, never `operationLock`. `running` is false while Caddy is crashed.
     public func status() -> EngineStatus {
-        let (started, blocked) = flags
+        let current = flags
         let state = store.load()
         let sites = state.defaultPHP.map {
             SiteRegistry(state: state, defaultPHP: $0, settings: settings).sites()
         } ?? []
         var processes: [String: String] = [:]
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
-        return EngineStatus(running: started && !caddyCrashed, blockedBy: blocked, sites: sites,
+        return EngineStatus(running: current.running && !caddyCrashed, blockedBy: current.blockedBy,
+                            portsNotPermitted: current.notPermitted, sites: sites,
                             installedPHP: installer.installed(), defaultPHP: state.defaultPHP,
                             processes: processes,
                             resolverInstalled: (try? String(contentsOf: resolverFile, encoding: .utf8))
                                 == Resolver.desiredContents(settings: settings),
-                            trustEnabled: trust != nil)
+                            trustEnabled: trust != nil, dnsRunning: current.dnsRunning)
     }
 
     // MARK: - State and configs
 
     /// Installs the bundled PHP if none is installed, makes sure the default PHP is installed,
-    /// and creates the first parked directory.
+    /// and creates the first parked directory if it can (it may be on a volume that isn't mounted).
     private func prepareState() throws -> State {
         var installed = installer.installed()
         if installed.isEmpty {
@@ -195,7 +233,7 @@ public final class Engine: @unchecked Sendable {
             }
         }
         if let first = state.parked.first {
-            try FileManager.default.createDirectory(atPath: first, withIntermediateDirectories: true)
+            try? FileManager.default.createDirectory(atPath: first, withIntermediateDirectories: true)
         }
         return state
     }
@@ -320,7 +358,6 @@ public final class Engine: @unchecked Sendable {
 
     private func stopLocked() {
         supervisor.stopAll()
-        dns.stop()
         fpmVersions = []
         setFlags(running: false)
     }
@@ -330,16 +367,32 @@ public final class Engine: @unchecked Sendable {
         return false
     }
 
-    private var flags: (running: Bool, blockedBy: [PortHolder]) {
+    private var flags: (running: Bool, blockedBy: [PortHolder], notPermitted: [Int], dnsRunning: Bool) {
         flagsLock.lock()
         defer { flagsLock.unlock() }
-        return (isRunning, blockedBy)
+        return (isRunning, blockedBy, notPermitted, dnsUp)
     }
 
-    private func setFlags(running: Bool? = nil, blockedBy: [PortHolder]? = nil) {
+    private func setFlags(running: Bool? = nil, blockedBy: [PortHolder]? = nil, notPermitted: [Int]? = nil,
+                          dnsRunning: Bool? = nil) {
         flagsLock.lock()
         defer { flagsLock.unlock() }
         if let running { isRunning = running }
         if let blockedBy { self.blockedBy = blockedBy }
+        if let notPermitted { self.notPermitted = notPermitted }
+        if let dnsRunning { dnsUp = dnsRunning }
+    }
+
+    /// Set once the daemon begins to exit; from then on every request that changes anything is refused.
+    var isShuttingDown: Bool {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        return shuttingDown
+    }
+
+    func markShuttingDown() {
+        flagsLock.lock()
+        shuttingDown = true
+        flagsLock.unlock()
     }
 }

@@ -16,7 +16,7 @@ final class EngineHandleTests: XCTestCase {
     }
 
     override func tearDown() {
-        engine?.stop()
+        engine?.shutdown()
         engine = nil
         home?.cleanUp()
     }
@@ -143,8 +143,7 @@ final class EngineHandleTests: XCTestCase {
             return XCTFail("expected ports_blocked")
         }
         XCTAssertEqual(code, "ports_blocked")
-        XCTAssertTrue(message.contains("\(home.settings.httpPort)"), message)
-        XCTAssertTrue(message.contains("\(getpid())"), message)
+        XCTAssertTrue(message.hasPrefix("Paddock can't start: port \(home.settings.httpPort) is in use by "), message)
 
         let extra = try home.makeDirectory("later")
         let parked = try await st(.park(path: extra.path))
@@ -215,6 +214,56 @@ final class EngineHandleTests: XCTestCase {
         XCTAssertTrue(slow.store.load().parked.contains(parkDir.path))
     }
 
+    func testRequestsQueuedBehindShutdownCannotStartTheEngineAgain() async throws {
+        let started = expectation(description: "install started")
+        let release = DispatchSemaphore(value: 0)
+        let slow = Engine(paths: home.paths, settings: home.settings, installAction: { _ in
+            started.fulfill()
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    _ = release.wait(timeout: .now() + 20)
+                    continuation.resume()
+                }
+            }
+        })
+        defer { slow.shutdown() }
+        let install = Task { await slow.handle(.installPHP(version: v84)) }
+        await fulfillment(of: [started], timeout: 10)
+
+        // A shutdown queues behind the install; a start arrives after it.
+        let shutdown = Task { await slow.handle(.shutdown) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let start = Task { await slow.handle(.start) }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        release.signal()
+        _ = await install.value
+        guard case .ok = await shutdown.value else { return XCTFail("shutdown should be ok") }
+        let startResponse = await start.value
+        XCTAssertEqual(startResponse, .error(code: ErrorCode.internal, message: "Paddock is shutting down."))
+        XCTAssertFalse(slow.status().running)
+        XCTAssertTrue(slow.status().processes.values.allSatisfy { $0 == "stopped" }, "\(slow.status().processes)")
+
+        // Later changes are refused too; status still answers.
+        let later = try home.makeDirectory("too-late")
+        let parkResponse = await slow.handle(.park(path: later.path))
+        XCTAssertEqual(parkResponse, .error(code: ErrorCode.internal, message: "Paddock is shutting down."))
+        XCTAssertFalse(slow.store.load().parked.contains(later.path))
+        guard case .ok = await slow.handle(.status) else { return XCTFail("status should still answer") }
+    }
+
+    func testShutDownAfterPendingWorkWaitsForTheRequestInProgressThenRefusesTheRest() async throws {
+        let engine = try XCTUnwrap(self.engine)
+        guard case .ok(let running) = await engine.handle(.start), running.running else {
+            return XCTFail("start should be ok")
+        }
+        await engine.shutDownAfterPendingWork()
+        XCTAssertFalse(engine.status().running)
+        XCTAssertFalse(engine.status().dnsRunning)
+        let again = await engine.handle(.start)
+        XCTAssertEqual(again, .error(code: ErrorCode.internal, message: "Paddock is shutting down."))
+        XCTAssertFalse(engine.status().running)
+    }
+
     func testStatusIsPromptWhileStartRuns() async throws {
         let fresh = Engine(paths: home.paths, settings: home.settings)
         let done = DispatchGroup()
@@ -225,7 +274,7 @@ final class EngineHandleTests: XCTestCase {
         }
         var finished: Bool { done.wait(timeout: .now()) == .success }
         starter.start()
-        defer { fresh.stop() }
+        defer { fresh.shutdown() }
 
         var answeredDuringStart = 0
         let deadline = Date().addingTimeInterval(30)
@@ -291,7 +340,7 @@ final class EngineHandleTests: XCTestCase {
 
     func testStartRecoversAfterCaddyIsGivenUpOn() async throws {
         let fast = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.01)
-        defer { fast.stop() }
+        defer { fast.shutdown() }
         _ = await fast.handle(.start)
         try await driveCaddyToGivenUp(fast)
         XCTAssertFalse(fast.status().running)
@@ -303,7 +352,7 @@ final class EngineHandleTests: XCTestCase {
 
     func testStateChangesStillSucceedWhileCaddyIsGivenUpOn() async throws {
         let fast = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.01)
-        defer { fast.stop() }
+        defer { fast.shutdown() }
         _ = await fast.handle(.start)
         try await driveCaddyToGivenUp(fast)
 

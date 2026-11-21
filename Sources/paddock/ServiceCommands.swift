@@ -15,11 +15,9 @@ struct Start: ParsableCommand {
         switch try CLI.sendRaw(.start) {
         case .ok:
             print("Paddock is running.")
-        case .error(let code, let message):
-            if code == ErrorCode.portsBlocked,
-               case .ok(let status)? = try? CLI.client.send(.status, timeout: 30), !status.blockedBy.isEmpty {
-                throw CLI.failure(Messages.portsBlocked(status.blockedBy))
-            }
+        case .error(_, let message):
+            // Held ports come back as the full "in use by …" sentence; ports macOS won't let Paddock use
+            // as the not-permitted sentence.
             throw CLI.failure(message)
         }
     }
@@ -51,7 +49,7 @@ struct Uninstall: ParsableCommand {
         } catch ResolverError.cancelled {
             throw CLI.failure(Self.stillInstalled)
         } catch let error as ResolverError {
-            CLI.printError("Couldn't restore the resolver: \(error)")
+            CLI.printError("Couldn't restore the resolver: \(error.message)")
             throw CLI.failure(Self.stillInstalled)
         } catch {
             throw CLI.failure("Couldn't uninstall Paddock: \(error)")
@@ -66,11 +64,7 @@ struct Restart: ParsableCommand {
         switch try CLI.sendRaw(.restart) {
         case .ok:
             print("Paddock restarted.")
-        case .error(let code, let message):
-            if code == ErrorCode.portsBlocked,
-               case .ok(let status)? = try? CLI.client.send(.status, timeout: 30), !status.blockedBy.isEmpty {
-                throw CLI.failure(Messages.portsBlocked(status.blockedBy))
-            }
+        case .error(_, let message):
             throw CLI.failure(message)
         }
     }
@@ -97,6 +91,8 @@ struct Status: ParsableCommand {
             print("Paddock is running.")
         } else if !status.blockedBy.isEmpty {
             print(Messages.portsBlocked(status.blockedBy))
+        } else if !status.portsNotPermitted.isEmpty {
+            print(Messages.portsNotPermitted(status.portsNotPermitted))
         } else {
             print("Paddock is stopped.")
         }

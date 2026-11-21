@@ -56,14 +56,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Quits another application politely, as if the user chose Quit in it. Never sends a signal.
+/// Quits another application politely, as if the user chose Quit in it. Never sends a signal, and
+/// only ever an application running for the current user.
 struct AppKitQuitter: ApplicationQuitter {
-    func canQuit(pid: Int32) -> Bool {
-        NSRunningApplication(processIdentifier: pid) != nil
+    func canQuit(appBundlePath: String) -> Bool {
+        application(at: appBundlePath) != nil
     }
 
-    func quit(pid: Int32) -> Bool {
-        NSRunningApplication(processIdentifier: pid)?.terminate() ?? false
+    func quit(appBundlePath: String) -> Bool {
+        application(at: appBundlePath)?.terminate() ?? false
+    }
+
+    private func application(at path: String) -> NSRunningApplication? {
+        let wanted = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        return NSWorkspace.shared.runningApplications.first { app in
+            guard let bundle = app.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() else { return false }
+            return bundle == wanted && Self.isOwnedByCurrentUser(app.processIdentifier)
+        }
+    }
+
+    private static func isOwnedByCurrentUser(_ pid: pid_t) -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return false }
+        return info.kp_eproc.e_ucred.cr_uid == getuid()
     }
 }
 

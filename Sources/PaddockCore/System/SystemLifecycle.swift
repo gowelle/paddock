@@ -29,17 +29,22 @@ public struct SystemLifecycle: Sendable {
     let environment: [String: String]
     let userHome: URL
     let daemonIsRunning: @Sendable () -> Bool
+    /// Talks to the daemon; uninstall uses it to shut down a daemon the LaunchAgent didn't run.
+    let client: ClientProtocol
+    /// The shell rc file `ShellPath` adds its PATH line to: `~/.zshrc` in `userHome`.
+    var rcFile: URL { userHome.appendingPathComponent(".zshrc") }
 
     /// With system integration on, the LaunchAgent starts a daemon with default settings, so the
     /// resolver is built from default `Settings()` and port environment variables are ignored.
     public init(services: SystemServices, paths: Paths, settings: Settings,
                 environment: [String: String] = ProcessInfo.processInfo.environment,
                 userHome: URL = FileManager.default.homeDirectoryForCurrentUser,
-                daemonIsRunning: (@Sendable () -> Bool)? = nil) {
+                daemonIsRunning: (@Sendable () -> Bool)? = nil, client: ClientProtocol? = nil) {
         self.services = services
         self.paths = paths
         self.settings = SystemIntegration.isEnabled(environment: environment) ? Settings() : settings
         self.daemonIsRunning = daemonIsRunning ?? { PaddockClient(paths: paths).daemonIsRunning }
+        self.client = client ?? PaddockClient(paths: paths)
         self.environment = environment
         self.userHome = userHome
     }
@@ -58,18 +63,39 @@ public struct SystemLifecycle: Sendable {
                     paths: paths)
     }
 
-    /// Installs the resolver if needed, then loads the LaunchAgent, which starts the daemon.
-    /// Returns false, having done nothing, when this is a development home: launch the daemon directly.
-    /// Throws `ResolverError.cancelled` without starting the agent if the password prompt is dismissed.
-    public func startViaSystem(daemon: URL) throws -> Bool {
+    /// Brings the daemon up through the LaunchAgent (loading it, or kickstarting a loaded one), asks it
+    /// to start with `startEngine` (which waits for it and returns its status), and only then routes
+    /// `.test` to it: the resolver is installed (one password prompt) only when the web ports are free.
+    /// With them held or not permitted the resolver is left alone, so another tool's `.test` keeps
+    /// working; a later start that finds the ports free installs it.
+    ///
+    /// `daemon` may be nil when this program has no `paddockd` of its own; a loaded agent whose plist is
+    /// current is then used as is. Returns false, having done nothing, for a development home: launch the
+    /// daemon directly. Throws `ResolverError.cancelled` if the password prompt is dismissed; an agent
+    /// this call installed is then removed again.
+    public func startViaSystem(daemon: URL?, startEngine: () throws -> EngineStatus) throws -> Bool {
         guard isEnabled else { return false }
-        if !resolver.isInstalled() { try resolver.install() }
         let agent = agent
-        if agent.isCurrent(daemon: daemon) && agent.isLoaded() {
+        var installedAgent = false
+        // The plist is current if it runs this daemon (or, with none of our own, any daemon still there).
+        let plistIsCurrent = daemon.map(agent.isCurrent(daemon:)) ?? (agent.installedDaemon() != nil)
+        if plistIsCurrent && agent.isLoaded() {
             // launchd doesn't restart a daemon that exited cleanly (KeepAlive SuccessfulExit false).
             if !daemonIsRunning() { try agent.kickstart() }
-        } else {
+        } else if let daemon {
             try agent.install(daemon: daemon)
+            installedAgent = true
+        } else {
+            throw DaemonLaunchError.noDaemonBinary
+        }
+
+        let status = try startEngine()
+        guard !status.portsUnavailable, !resolver.isInstalled() else { return true }
+        do {
+            try resolver.install()
+        } catch {
+            if installedAgent { try? agent.uninstall() }
+            throw error
         }
         return true
     }
@@ -104,8 +130,8 @@ public struct SystemLifecycle: Sendable {
         return try agent.stop()
     }
 
-    /// Reverses `startViaSystem` and trust, leaving the owner's sites and Paddock's data alone.
-    /// Returns the lines to print.
+    /// Reverses `startViaSystem`, trust and the PATH line, leaving the owner's sites and Paddock's data
+    /// alone. Returns the lines to print. Safe to run again after a partial failure.
     public func uninstall() throws -> [String] {
         guard isEnabled else { return ["Nothing to uninstall for this Paddock home."] }
         var lines: [String] = []
@@ -115,15 +141,25 @@ public struct SystemLifecycle: Sendable {
             lines.append("\(services.resolverFile.path) was changed by another program, so Paddock left it alone.")
         }
         try agent.uninstall()
+        shutDownRemainingDaemon()
 
         let trust = CertificateTrust(paths: paths, runner: services.runner)
         if trust.isTrusted() { try trust.untrust() }
 
-        lines.append("The PATH line Paddock added to ~/.zshrc was left alone.")
+        try ShellPath.unconfigure(rcFile: rcFile)
         let sites = store.load().parked.map(abbreviated).joined(separator: ", ")
         lines.append("Paddock is uninstalled. Your sites in \(sites.isEmpty ? "~/Paddock" : sites) "
             + "and Paddock's data in \(abbreviated(paths.home.path)) were left in place.")
         return lines
+    }
+
+    /// A daemon started without the agent (start at login off, or left over after an app crash) is
+    /// still answering after the bootout: ask it to shut down and give it a moment to go.
+    private func shutDownRemainingDaemon() {
+        guard daemonIsRunning() else { return }
+        _ = try? client.send(.shutdown, timeout: 5)
+        let deadline = Date().addingTimeInterval(5)
+        while daemonIsRunning() && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
     }
 
     private func abbreviated(_ path: String) -> String {

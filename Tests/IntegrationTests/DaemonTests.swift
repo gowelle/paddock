@@ -82,6 +82,8 @@ final class DaemonTests: XCTestCase {
         XCTAssertFalse(status.running)
         XCTAssertEqual(status.blockedBy.first?.port, home.settings.httpPort)
         XCTAssertEqual(status.blockedBy.first?.pid, getpid())
+        XCTAssertTrue(status.dnsRunning, "the daemon answers .test while the web ports are blocked")
+        XCTAssertEqual(try TestSupport.dig("blocked.test", port: home.settings.dnsPort), "127.0.0.1")
 
         // State changes still work, and an explicit start explains the problem.
         let more = try home.makeDirectory("more")

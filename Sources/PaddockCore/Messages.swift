@@ -35,30 +35,70 @@ public enum Messages {
         "PHP \(version) isn't available for Intel Macs yet."
     }
 
-    /// `Paddock can't start: port 80 is in use by nginx (pid 123).`, plus a `sudo kill` hint on a second
-    /// line for each holder that has a known pid and belongs to someone else. Paddock never runs it.
+    /// `Paddock can't start: ports 80 and 443 are in use by Herd.` One clause per distinct owner (the
+    /// application if known, else the command), each listing its ports once. A `sudo kill` hint follows on
+    /// its own line, once per distinct pid, only for someone else's process that belongs to no known
+    /// application. Paddock never runs it.
     public static func portsBlocked(_ holders: [PortHolder]) -> String {
         guard !holders.isEmpty else { return "Paddock can't start: its ports are in use." }
-        let clauses = holders.map { holder -> String in
-            var who: String
-            switch (holder.command, holder.pid) {
-            case (let command?, let pid?): who = "\(command) (pid \(pid))"
-            case (let command?, nil): who = command
-            case (nil, let pid?): who = "another program (pid \(pid))"
-            case (nil, nil): who = "another program"
-            }
-            return "port \(holder.port) is in use by \(who)"
+        let clauses = owners(holders).map { owner -> String in
+            let who = owner.who + (owner.onlyPid.map { " (pid \($0))" } ?? "")
+            return "\(portList(owner.ports)) \(Set(owner.ports).count == 1 ? "is" : "are") in use by \(who)"
         }
         var text = "Paddock can't start: " + clauses.joined(separator: "; ") + "."
-        for holder in holders where !holder.ownedByCurrentUser {
-            if let pid = holder.pid { text += "\nStop it with: sudo kill \(pid)" }
+        var hinted = Set<Int32>()
+        for holder in holders where !holder.ownedByCurrentUser && holder.appName == nil {
+            if let pid = holder.pid, hinted.insert(pid).inserted { text += "\nStop it with: sudo kill \(pid)" }
         }
         return text
     }
 
-    /// The menu bar's one-line form: `Can't start: port 80 in use by nginx`.
-    public static func cantStart(_ holder: PortHolder) -> String {
-        "Can't start: port \(holder.port) in use by \(holder.command ?? "another program")"
+    /// The menu bar's one-line form, for the first owner: `Can't start: ports 80 and 443 in use by Herd`.
+    public static func cantStart(_ holders: [PortHolder]) -> String {
+        guard let first = owners(holders).first else { return "Can't start: ports in use" }
+        return "Can't start: \(portList(first.ports)) in use by \(first.who)"
+    }
+
+    /// For ports below 1024 that macOS won't let Paddock listen on (not held by anyone).
+    public static func portsNotPermitted(_ ports: [Int]) -> String {
+        "Paddock can't listen on \(portList(ports)) yet on this Mac. This is a known limitation being worked on."
+    }
+
+    /// The menu bar's one-line form of `portsNotPermitted`.
+    public static func cantListen(_ ports: [Int]) -> String {
+        "Can't listen on \(portList(ports)) yet"
+    }
+
+    /// `port 80`, `ports 80 and 443`, `ports 80, 443 and 8080`.
+    static func portList(_ ports: [Int]) -> String {
+        let sorted = Array(Set(ports)).sorted().map(String.init)
+        guard let last = sorted.last else { return "its ports" }
+        if sorted.count == 1 { return "port \(last)" }
+        return "ports \(sorted.dropLast().joined(separator: ", ")) and \(last)"
+    }
+
+    /// Holders grouped by who they are, in first-seen order. `onlyPid` is set for an owner with no
+    /// known application and exactly one known pid.
+    private static func owners(_ holders: [PortHolder]) -> [(who: String, ports: [Int], onlyPid: Int32?)] {
+        var order: [String] = []
+        var groups: [String: (holders: [PortHolder], ports: [Int])] = [:]
+        for holder in holders {
+            let key: String
+            if let app = holder.appName { key = "app:" + app }
+            else if let command = holder.command { key = "command:" + command }
+            else if let pid = holder.pid { key = "pid:\(pid)" }
+            else { key = "unknown" }
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: ([], [])].holders.append(holder)
+            groups[key]!.ports.append(holder.port)
+        }
+        return order.map { key in
+            let group = groups[key]!
+            let first = group.holders[0]
+            let pids = Set(group.holders.compactMap(\.pid))
+            let onlyPid = first.appName == nil && pids.count == 1 ? pids.first : nil
+            return (first.appName ?? first.command ?? "another program", group.ports, onlyPid)
+        }
     }
 
     /// A site name as the user may have typed it: `My App`, `myapp.test` -> `my-app`, `myapp`.

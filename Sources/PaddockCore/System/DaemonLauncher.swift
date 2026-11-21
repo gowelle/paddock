@@ -8,6 +8,8 @@ public enum DaemonLaunchError: Error, Equatable {
     case resolverChangedDuringInstall(path: String)
     case resolverFailed(String)
     case didNotStart(logPath: String)
+    /// The control socket's path is longer than macOS allows for a unix socket (103 bytes).
+    case socketPathTooLong(path: String)
     case failed(String)
 
     /// The plain sentence for this failure. `retry` is how the reader tries again (e.g. `Run paddock start`).
@@ -20,6 +22,9 @@ public enum DaemonLaunchError: Error, Equatable {
             return "\(path) changed while Paddock was waiting for your password." + again
         case .resolverFailed(let message): return "Couldn't route .test domains to Paddock: \(message)"
         case .didNotStart(let log): return "Paddock didn't start within 10 seconds. See \(log)"
+        case .socketPathTooLong(let path):
+            return "Paddock can't run from this folder: the path \(path) is too long for macOS. "
+                + "Use a shorter PADDOCK_HOME."
         case .failed(let message): return "Couldn't start Paddock: \(message)"
         }
     }
@@ -52,21 +57,27 @@ public struct DaemonLauncher: Sendable {
     private var client: PaddockClient { PaddockClient(paths: paths) }
     private var logPath: String { paths.log.appendingPathComponent("paddockd.log").path }
 
-    /// Makes sure a daemon is answering. On the owner's system this installs the resolver (one
-    /// password prompt) and the LaunchAgent if needed.
+    /// Makes sure a daemon is answering. On the owner's system this installs the LaunchAgent if needed,
+    /// has the daemon start, and then (only if the web ports are free) installs the resolver (one
+    /// password prompt).
     ///
     /// `honouringLoginSetting` (the app): when the owner turned start at login off, launch the daemon
     /// directly instead of reinstalling the LaunchAgent.
     public func ensureRunning(honouringLoginSetting: Bool = false) throws -> Outcome {
-        guard let daemon else { throw DaemonLaunchError.noDaemonBinary }
+        guard Wire.socketAddress(paths.daemonSocket.path) != nil else {
+            throw DaemonLaunchError.socketPathTooLong(path: paths.daemonSocket.path)
+        }
         if honouringLoginSetting && lifecycle.runsWithoutAgent {
             if client.daemonIsRunning { return .alreadyRunning }
+            guard let daemon else { throw DaemonLaunchError.noDaemonBinary }
             try spawn(daemon)
             return .spawned
         }
         let started: Bool
         do {
-            started = try lifecycle.startViaSystem(daemon: daemon)
+            started = try lifecycle.startViaSystem(daemon: daemon, startEngine: startEngine)
+        } catch let error as DaemonLaunchError {
+            throw error
         } catch ResolverError.cancelled {
             throw DaemonLaunchError.passwordCancelled
         } catch ResolverError.changedDuringInstall {
@@ -76,13 +87,29 @@ public struct DaemonLauncher: Sendable {
         } catch {
             throw DaemonLaunchError.failed("\(error)")
         }
-        if started {
-            try waitForDaemon()
-            return .viaSystem
-        }
+        if started { return .viaSystem }
         if client.daemonIsRunning { return .alreadyRunning }
+        guard let daemon else { throw DaemonLaunchError.noDaemonBinary }
         try spawn(daemon)
         return .spawned
+    }
+
+    /// Waits for the daemon, asks it to start (queued behind its own start, so the port check is done
+    /// when this returns) and returns its status.
+    private func startEngine() throws -> EngineStatus {
+        try waitForDaemon()
+        // An error here (ports held, a process that didn't come up) shows in the status that follows.
+        _ = try? client.send(.start, timeout: 600)
+        let response: Response
+        do {
+            response = try client.send(.status, timeout: 30)
+        } catch {
+            throw DaemonLaunchError.failed(Messages.unexpectedAnswer(error))
+        }
+        switch response {
+        case .ok(let status): return status
+        case .error(_, let message): throw DaemonLaunchError.failed(message)
+        }
     }
 
     /// Boots the LaunchAgent out, or asks a directly launched daemon to shut down, and waits for it to go.
@@ -142,7 +169,9 @@ public struct DaemonLauncher: Sendable {
         while client.daemonIsRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
     }
 
-    /// `paddockd` next to the running executable (following symlinks), if it is there.
+    /// `paddockd` for the running executable (following symlinks), if there is one: next to it, or, for
+    /// the copy of `paddock` in `bin/`, in the app whose resources its `.resources` record names
+    /// (`<Resources>/../MacOS/paddockd`).
     public static func daemonBinary() -> URL? {
         var directories: [URL] = []
         if let argv0 = CommandLine.arguments.first, argv0.contains("/") {
@@ -151,9 +180,21 @@ public struct DaemonLauncher: Sendable {
         if let executable = Bundle.main.executableURL {
             directories.append(executable.resolvingSymlinksInPath().deletingLastPathComponent())
         }
-        return directories.map { $0.appendingPathComponent("paddockd") }
-            .first { FileManager.default.isExecutableFile(atPath: $0.path) }?
-            .resolvingSymlinksInPath()
+        return daemonBinary(executableDirectories: directories)
+    }
+
+    static func daemonBinary(executableDirectories directories: [URL]) -> URL? {
+        let fm = FileManager.default
+        let beside = directories.map { $0.appendingPathComponent("paddockd") }
+        let recorded = directories.compactMap { directory -> URL? in
+            guard let text = try? String(contentsOf: directory.appendingPathComponent(".resources"), encoding: .utf8)
+            else { return nil }
+            let resources = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !resources.isEmpty else { return nil }
+            return URL(fileURLWithPath: resources, isDirectory: true)
+                .deletingLastPathComponent().appendingPathComponent("MacOS/paddockd").standardizedFileURL
+        }
+        return (beside + recorded).first { fm.isExecutableFile(atPath: $0.path) }?.resolvingSymlinksInPath()
     }
 
     private static func withCStrings<R>(_ strings: [String],

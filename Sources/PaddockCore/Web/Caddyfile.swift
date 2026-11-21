@@ -38,7 +38,9 @@ public enum Caddyfile {
             }
         }
 
-        http://*.\(settings.tld) {
+        # Every other host on the HTTP port, subdomains included (api.myapp.test). Only .test resolves
+        # here, and the router picks the site from the host. Named site blocks below take precedence.
+        http:// {
             import paddock_php \(quote(paths.fpmSocket(defaultPHP).path))
         }
 
@@ -52,12 +54,12 @@ public enum Caddyfile {
             if site.secured {
                 out += """
 
-                https://\(site.host) {
+                https://\(site.host), https://*.\(site.host) {
                     tls internal
                     import paddock_php \(socket)
                 }
 
-                http://\(site.host) {
+                http://\(site.host), http://*.\(site.host) {
                     redir https://\(httpsAuthority){uri}
                 }
 
@@ -65,7 +67,7 @@ public enum Caddyfile {
             } else {
                 out += """
 
-                http://\(site.host) {
+                http://\(site.host), http://*.\(site.host) {
                     import paddock_php \(socket)
                 }
 

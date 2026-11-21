@@ -81,6 +81,20 @@ enum TestSupport {
         return preferred
     }
 
+    /// The `dig +short` answer for an A query of `name` against 127.0.0.1:<port>.
+    static func dig(_ name: String, port: Int) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/dig")
+        p.arguments = ["+short", "+time=2", "+tries=1", "-p", "\(port)", "@127.0.0.1", name, "A"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: Processes
 
     /// Pids in a process group, via pgrep.

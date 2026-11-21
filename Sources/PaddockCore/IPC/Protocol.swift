@@ -26,6 +26,8 @@ public enum ErrorCode {
     public static let phpInUse = "php_in_use"
     public static let phpNotAvailable = "php_not_available"
     public static let portsBlocked = "ports_blocked"
+    /// Nobody holds the HTTP/HTTPS ports, but macOS doesn't let Paddock listen on them.
+    public static let portsNotPermitted = "ports_not_permitted"
     /// A site is served over HTTPS but macOS does not trust Paddock's certificate authority.
     public static let needsTrust = "needs_trust"
     public static let trustDisabled = "trust_disabled"

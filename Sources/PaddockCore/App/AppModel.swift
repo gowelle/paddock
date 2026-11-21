@@ -32,10 +32,11 @@ public protocol AppServices: Sendable {
     func parkedFolders() -> [String]
 }
 
-/// Politely quits another application of the current user's. Lives in the app (it needs AppKit).
+/// Politely quits another application of the current user's, found by its bundle folder (e.g.
+/// `/Applications/Herd.app`). Lives in the app (it needs AppKit).
 public protocol ApplicationQuitter: Sendable {
-    func canQuit(pid: Int32) -> Bool
-    func quit(pid: Int32) -> Bool
+    func canQuit(appBundlePath: String) -> Bool
+    func quit(appBundlePath: String) -> Bool
 }
 
 /// Everything the menu and settings window show, and every action they take. The views hold no logic.
@@ -96,28 +97,32 @@ public final class AppModel: ObservableObject {
 
     public var statusLine: String {
         if isRunning { return "Running" }
-        if let holder = blockingHolder { return Messages.cantStart(holder) }
+        if let blocked = status?.blockedBy, !blocked.isEmpty { return Messages.cantStart(blocked) }
+        if let ports = status?.portsNotPermitted, !ports.isEmpty { return Messages.cantListen(ports) }
         return "Stopped"
     }
 
-    /// The first listener keeping Paddock from starting.
+    /// The listener keeping Paddock from starting: the first one inside an application, else the first.
     public var blockingHolder: PortHolder? {
-        isRunning ? nil : status?.blockedBy.first
+        guard !isRunning, let blocked = status?.blockedBy else { return nil }
+        return blocked.first { $0.appBundlePath != nil } ?? blocked.first
     }
 
-    /// A `Quit <command>` button is offered only for an application of the current user's.
+    /// A `Quit <app>` button is offered only when the holder belongs to an application that is running
+    /// for the current user.
     public var canQuitBlockingHolder: Bool {
-        guard let holder = blockingHolder, holder.ownedByCurrentUser, let pid = holder.pid,
-              let quitter else { return false }
-        return quitter.canQuit(pid: pid)
+        guard let path = blockingHolder?.appBundlePath, blockingHolder?.appName != nil, let quitter else { return false }
+        return quitter.canQuit(appBundlePath: path)
     }
 
-    public var quitButtonTitle: String { "Quit \(blockingHolder?.command ?? "it")" }
+    public var quitButtonTitle: String { "Quit \(blockingHolder?.appName ?? "it")" }
 
     /// The plain explanation shown instead of a button.
     public var blockedExplanation: String? {
-        guard let blocked = status?.blockedBy, !isRunning, !blocked.isEmpty, !canQuitBlockingHolder else { return nil }
-        return Messages.portsBlocked(blocked)
+        guard let status, !isRunning else { return nil }
+        if !status.blockedBy.isEmpty { return canQuitBlockingHolder ? nil : Messages.portsBlocked(status.blockedBy) }
+        if !status.portsNotPermitted.isEmpty { return Messages.portsNotPermitted(status.portsNotPermitted) }
+        return nil
     }
 
     public var sites: [Site] { status?.sites ?? [] }
@@ -200,7 +205,8 @@ public final class AppModel: ObservableObject {
         case .success(.error(let code, let message)):
             if code == ErrorCode.needsTrust || code == ErrorCode.trustDisabled {
                 trustNotice = message
-            } else if code != ErrorCode.portsBlocked { // The status line already says it.
+            } else if code != ErrorCode.portsBlocked && code != ErrorCode.portsNotPermitted {
+                // (Those two the status line already says.)
                 lastError = message
             }
         case .failure(ClientError.daemonNotRunning):
@@ -224,6 +230,7 @@ public final class AppModel: ObservableObject {
         case ClientError.daemonNotRunning: return Messages.notRunning
         case ClientError.timedOut: return Messages.didNotAnswer
         case let launch as DaemonLaunchError: return launch.message()
+        case let resolver as ResolverError: return resolver.message
         default:
             let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             return text
@@ -281,15 +288,17 @@ public final class AppModel: ObservableObject {
     }
 
     /// Asks the application holding the port to quit (never a signal), then starts once the port is free.
+    /// Only ever called from the user's click on the Quit button.
     public func quitBlockingHolder() async {
-        guard canQuitBlockingHolder, let pid = blockingHolder?.pid, let quitter else { return }
-        guard quitter.quit(pid: pid) else {
-            lastError = "\(blockingHolder?.command ?? "That program") didn't quit."
+        guard canQuitBlockingHolder, let app = blockingHolder?.appBundlePath, let quitter else { return }
+        let name = blockingHolder?.appName ?? "That application"
+        guard quitter.quit(appBundlePath: app) else {
+            lastError = "\(name) didn't quit."
             return
         }
         for _ in 0..<20 {
             await start()
-            guard blockingHolder?.pid == pid else { return }
+            guard status?.blockedBy.contains(where: { $0.appBundlePath == app }) == true else { return }
             try? await Task.sleep(nanoseconds: quitRetryDelay)
         }
     }

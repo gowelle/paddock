@@ -12,13 +12,31 @@ public struct LaunchAgent: Sendable {
     let runner: CommandRunner
     public let plist: URL
     let paths: Paths
+    let waits: Waits
 
     static let launchctl = "/bin/launchctl"
 
-    public init(runner: CommandRunner, plist: URL = LaunchAgent.defaultPlist, paths: Paths = .current) {
+    /// How long to wait for launchd. Tests shorten them.
+    public struct Waits: Sendable {
+        /// The longest `bootout` is given to finish unloading the job.
+        public var unload: TimeInterval = 5
+        public var poll: TimeInterval = 0.1
+        /// The pause before trying a failed `bootstrap` once more.
+        public var bootstrapRetry: TimeInterval = 1
+
+        public init(unload: TimeInterval = 5, poll: TimeInterval = 0.1, bootstrapRetry: TimeInterval = 1) {
+            self.unload = unload
+            self.poll = poll
+            self.bootstrapRetry = bootstrapRetry
+        }
+    }
+
+    public init(runner: CommandRunner, plist: URL = LaunchAgent.defaultPlist, paths: Paths = .current,
+                waits: Waits = Waits()) {
         self.runner = runner
         self.plist = plist
         self.paths = paths
+        self.waits = waits
     }
 
     public static var defaultPlist: URL {
@@ -53,13 +71,31 @@ public struct LaunchAgent: Sendable {
         (try? String(contentsOf: plist, encoding: .utf8)) == plistContents(daemon: daemon)
     }
 
+    /// The daemon a plist on disk runs, if that plist is exactly what `install(daemon:)` would write
+    /// for it and the daemon is still there. Lets `paddock start` work without a `paddockd` of its own.
+    public func installedDaemon() -> URL? {
+        guard let data = try? Data(contentsOf: plist),
+              let dictionary = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let program = (dictionary["ProgramArguments"] as? [String])?.first else { return nil }
+        let daemon = URL(fileURLWithPath: program)
+        guard isCurrent(daemon: daemon), FileManager.default.isExecutableFile(atPath: daemon.path) else { return nil }
+        return daemon
+    }
+
     /// Writes the plist and loads it, replacing a loaded copy. launchd then runs the daemon at once.
+    /// A bootstrap right after a bootout can fail while launchd is still tearing the old job down, so a
+    /// failed bootstrap is tried once more after a short pause.
     public func install(daemon: URL) throws {
         try FileManager.default.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: paths.log, withIntermediateDirectories: true)
         try Data(plistContents(daemon: daemon).utf8).write(to: plist, options: .atomic)
-        if isLoaded() { try launchctl(["bootout", service]) }
-        try launchctl(["bootstrap", domain, plist.path])
+        if isLoaded() { try unload() }
+        do {
+            try launchctl(["bootstrap", domain, plist.path])
+        } catch {
+            Thread.sleep(forTimeInterval: waits.bootstrapRetry)
+            try launchctl(["bootstrap", domain, plist.path])
+        }
     }
 
     /// Unloads the agent; launchd sends the daemon SIGTERM and it shuts down cleanly. Keeps the plist.
@@ -67,8 +103,22 @@ public struct LaunchAgent: Sendable {
     @discardableResult
     public func stop() throws -> Bool {
         guard isLoaded() else { return false }
-        try launchctl(["bootout", service])
+        try unload()
         return true
+    }
+
+    /// Boots the job out and waits (bounded) until launchd no longer has it. `bootout` may exit non-zero
+    /// while the daemon is still exiting, so success means "not loaded afterwards", whatever it returned.
+    private func unload() throws {
+        let result = try runner.run(Self.launchctl, ["bootout", service])
+        let deadline = Date().addingTimeInterval(waits.unload)
+        while isLoaded() {
+            guard Date() < deadline else {
+                let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw LaunchAgentError.failed(output.isEmpty ? "\(Self.label) is still loaded." : output)
+            }
+            Thread.sleep(forTimeInterval: waits.poll)
+        }
     }
 
     /// Unloads the agent and deletes its plist.

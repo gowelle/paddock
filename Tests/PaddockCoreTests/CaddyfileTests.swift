@@ -39,26 +39,24 @@ final class CaddyfileTests: XCTestCase {
         XCTAssertTrue(out.contains("uri strip_prefix /41c270e4-5535-4daa-b23e-c269744c2f45"))
     }
 
-    func testWildcardUsesDefaultVersionSocketAndTld() {
+    func testCatchAllServesEveryOtherHostWithTheDefaultVersion() {
         let out = render([])
-        XCTAssertTrue(out.contains("http://*.test {\n    import paddock_php \"/h/Paddock/run/php-8.4.sock\"\n}"))
-        var settings = Settings()
-        settings.tld = "localhost"
-        let other = Caddyfile.render(sites: [], defaultPHP: v84, paths: paths, settings: settings)
-        XCTAssertTrue(other.contains("http://*.localhost {"))
-        XCTAssertFalse(other.contains("*.test"))
+        // Every host on the HTTP port, so subdomains (api.myapp.test) reach the router too.
+        XCTAssertTrue(out.contains("http:// {\n    import paddock_php \"/h/Paddock/run/php-8.4.sock\"\n}"))
+        XCTAssertFalse(out.contains("*.test"))
     }
 
     func testPinnedSiteGetsOwnBlock() {
         let out = render([site("blog", pinned: true, php: v83)])
-        XCTAssertTrue(out.contains("http://blog.test {\n    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
+        XCTAssertTrue(out.contains(
+            "http://blog.test, http://*.blog.test {\n    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
     }
 
     func testSecuredSiteGetsHttpsAndRedirect() {
         let out = render([site("shop", secured: true, pinned: true, php: v83)])
-        XCTAssertTrue(out.contains(
-            "https://shop.test {\n    tls internal\n    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
-        XCTAssertTrue(out.contains("http://shop.test {\n    redir https://{host}:18443{uri}\n}"))
+        XCTAssertTrue(out.contains("https://shop.test, https://*.shop.test {\n    tls internal\n"
+            + "    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
+        XCTAssertTrue(out.contains("http://shop.test, http://*.shop.test {\n    redir https://{host}:18443{uri}\n}"))
     }
 
     func testRedirectOmitsPortOnDefaultHttpsPort() {
@@ -66,7 +64,7 @@ final class CaddyfileTests: XCTestCase {
         settings.httpsPort = 443
         let out = Caddyfile.render(sites: [site("shop", secured: true)], defaultPHP: v84, paths: paths,
                                    settings: settings)
-        XCTAssertTrue(out.contains("http://shop.test {\n    redir https://{host}{uri}\n}"))
+        XCTAssertTrue(out.contains("http://shop.test, http://*.shop.test {\n    redir https://{host}{uri}\n}"))
     }
 
     func testPlainSiteHasNoBlock() {

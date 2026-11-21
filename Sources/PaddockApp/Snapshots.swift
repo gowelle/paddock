@@ -89,10 +89,12 @@ enum Snapshots {
         switch sample {
         case .running, .blocked:
             let blocked = sample == .blocked
-                ? [PortHolder(port: 80, pid: 123, command: "nginx", ownedByCurrentUser: true)] : []
-            status = EngineStatus(running: sample == .running, blockedBy: blocked, sites: sites,
-                                  installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
-                                  resolverInstalled: true, trustEnabled: true)
+                ? [80, 443].map { PortHolder(port: $0, pid: 123, command: "nginx", ownedByCurrentUser: true,
+                                             executablePath: "/Applications/Other.app/Contents/Resources/nginx") }
+                : []
+            status = EngineStatus(running: sample == .running, blockedBy: blocked, portsNotPermitted: [],
+                                  sites: sites, installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
+                                  resolverInstalled: true, trustEnabled: true, dnsRunning: true)
         case .stopped:
             status = nil
         }
@@ -128,7 +130,7 @@ enum Snapshots {
     }
 
     private struct SampleQuitter: ApplicationQuitter {
-        func canQuit(pid: Int32) -> Bool { true }
-        func quit(pid: Int32) -> Bool { false }
+        func canQuit(appBundlePath: String) -> Bool { true }
+        func quit(appBundlePath: String) -> Bool { false }
     }
 }

@@ -31,11 +31,18 @@ let engine = Engine(paths: paths, settings: settings,
                     trust: trustsCertificate ? CertificateTrust(paths: paths, runner: SystemCommandRunner()) : nil)
 let server = IPCServer(socket: paths.daemonSocket) { await engine.handle($0) }
 
-/// Stops everything and exits; safe to reach more than once.
+/// Stops everything and exits; safe to reach more than once. Goes through the engine's serialized
+/// request path: new requests are refused at once, the one in progress finishes, then the web stack and
+/// the DNS responder stop. Called on a dispatch queue thread (never the cooperative pool), so it may block.
 let shutdownLock = NSLock()
 func shutDownAndExit() -> Never {
     shutdownLock.lock() // Never unlocked: the process is on its way out.
-    engine.stop()
+    let done = DispatchSemaphore(value: 0)
+    Task.detached {
+        await engine.shutDownAfterPendingWork()
+        done.signal()
+    }
+    done.wait()
     server.stop()
     exit(0)
 }
@@ -64,6 +71,9 @@ for sig in [SIGTERM, SIGINT] {
 }
 
 print("paddockd: listening on \(paths.daemonSocket.path)")
+
+// .test names resolve for as long as the daemon runs, whatever happens to the web server.
+engine.startDNS()
 
 // Start the engine through the same path as a client's `start`, so it queues with other requests.
 Task {

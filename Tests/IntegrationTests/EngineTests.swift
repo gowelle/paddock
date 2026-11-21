@@ -17,7 +17,7 @@ final class EngineTests: XCTestCase {
     }
 
     override func tearDown() {
-        engine?.stop()
+        engine?.shutdown()
         engine = nil
         if let root { try? FileManager.default.removeItem(at: root) }
     }
@@ -60,7 +60,7 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(r.body, "fresh:ok")
     }
 
-    func testBlockedPortsReported() throws {
+    func testBlockedPortsReportedWhileDNSKeepsAnswering() throws {
         let holder = try TestSupport.listen(port: settings.httpPort)
         defer { close(holder) }
         let engine = Engine(paths: paths, settings: settings)
@@ -70,8 +70,42 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(status.running)
         XCTAssertEqual(status.blockedBy.first?.port, settings.httpPort)
         XCTAssertEqual(status.blockedBy.first?.pid, getpid())
+        XCTAssertEqual(status.portsNotPermitted, [])
         XCTAssertTrue(status.processes.values.allSatisfy { $0 == "stopped" }, "\(status.processes)")
-        XCTAssertTrue(try TestSupport.canBindUDP(port: settings.dnsPort), "DNS responder started while blocked")
+        // The web server is blocked, but .test names still resolve.
+        XCTAssertTrue(status.dnsRunning)
+        XCTAssertEqual(try TestSupport.dig("blocked.test", port: settings.dnsPort), "127.0.0.1")
+
+        engine.stop()
+        XCTAssertTrue(engine.status().dnsRunning, "stopping the web stack leaves DNS answering")
+        XCTAssertEqual(try TestSupport.dig("still.test", port: settings.dnsPort), "127.0.0.1")
+        engine.shutdown()
+        XCTAssertFalse(engine.status().dnsRunning)
+        XCTAssertTrue(try TestSupport.canBindUDP(port: settings.dnsPort), "DNS responder still bound after shutdown")
+    }
+
+    func testAnUnavailableFirstParkedPathDoesNotStopTheOthersBeingServed() throws {
+        // A file where a directory should be: the parked path can neither exist nor be created.
+        let blocker = root.appendingPathComponent("not-a-volume")
+        try Data().write(to: blocker)
+        let missing = blocker.appendingPathComponent("Sites").path
+        try StateStore(paths: paths).update { $0.parked = [missing, self.parked.path] }
+        try startEngine()
+        let status = try XCTUnwrap(engine).status()
+        XCTAssertEqual(status.sites.map(\.name), ["laravel-like", "plain-php"])
+        XCTAssertTrue(status.sites.allSatisfy { $0.path.hasPrefix(parked.path) }, "\(status.sites)")
+        let r = try get("plain-php.test", "/")
+        XCTAssertEqual(r.status, 200, r.body)
+        XCTAssertTrue(r.body.hasPrefix("plain:8.5"), r.body)
+        // Later changes keep working too.
+        try XCTUnwrap(engine).reload()
+    }
+
+    func testSubdomainIsServedByItsSite() throws {
+        try startEngine()
+        let r = try get("api.plain-php.test", "/")
+        XCTAssertEqual(r.status, 200, r.body)
+        XCTAssertTrue(r.body.hasPrefix("plain:8.5"), r.body)
     }
 
     func testServesFolderWithSpaceInName() throws {
@@ -129,6 +163,8 @@ final class EngineTests: XCTestCase {
         }
         XCTAssertFalse(engine.status().running)
         XCTAssertEqual(PortCheck.holders(of: [settings.httpPort, settings.httpsPort]), [])
+        XCTAssertTrue(engine.status().dnsRunning, "DNS runs as long as the daemon does")
+        engine.shutdown()
         XCTAssertTrue(try TestSupport.canBindUDP(port: settings.dnsPort), "DNS responder still bound")
     }
 
@@ -162,6 +198,9 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(https.status, 200, https.verbose)
         XCTAssertTrue(https.body.hasPrefix("plain:8.5"), https.body)
         XCTAssertTrue(https.verbose.contains("Caddy Local Authority"), https.verbose)
+        let sub = try curlHTTPS("api.plain-php.test", "/")
+        XCTAssertEqual(sub.status, 200, sub.verbose)
+        XCTAssertTrue(sub.body.hasPrefix("plain:8.5"), sub.body)
         XCTAssertEqual(runner.calls.filter { $0.arguments.first == "add-trusted-cert" }.count, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: trust.rootCertificate.path))
     }
@@ -306,9 +345,16 @@ final class EngineTests: XCTestCase {
     }
 
     /// HTTPS to Caddy on the test's HTTPS port, without DNS: `-k` skips verification, `--resolve` pins the address.
+    /// Caddy loads a newly secured site's certificate in the background, so a failed handshake (status 0)
+    /// is retried for up to 10 seconds.
     private func curlHTTPS(_ host: String, _ path: String) throws -> CurlResult {
         let port = settings.httpsPort
-        return try curl(["-k", "--resolve", "\(host):\(port):127.0.0.1", "https://\(host):\(port)\(path)"])
+        let deadline = Date().addingTimeInterval(10)
+        while true {
+            let result = try curl(["-k", "--resolve", "\(host):\(port):127.0.0.1", "https://\(host):\(port)\(path)"])
+            if result.status != 0 || Date() >= deadline { return result }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
     }
 
     private func curlHTTP(_ host: String, _ path: String) throws -> CurlResult {

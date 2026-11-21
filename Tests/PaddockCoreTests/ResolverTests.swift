@@ -127,10 +127,10 @@ final class ResolverTests: XCTestCase {
     }
 
     func testInstallKeepsAlreadySavedValueWhenFileChangedAgain() throws {
-        try store.update { $0.previousResolver = "original\n" }
+        try store.update { $0.previousResolver = "nameserver 10.0.0.9\n" }
         try writeFile("someone else's\n")
         try resolver(RecordingCommandRunner()).install()
-        XCTAssertEqual(store.load().previousResolver, "original\n")
+        XCTAssertEqual(store.load().previousResolver, "nameserver 10.0.0.9\n")
     }
 
     func testCancelledPasswordPromptThrowsCancelled() throws {
@@ -179,20 +179,20 @@ final class ResolverTests: XCTestCase {
     func testRestoreWhenScriptFindsFileChangedKeepsSavedValue() throws {
         let r = resolver(RecordingCommandRunner())
         try writeFile(r.desiredContents)
-        try store.update { $0.previousResolver = "original\n" }
+        try store.update { $0.previousResolver = "nameserver 10.0.0.9\n" }
         let runner = RecordingCommandRunner { _, _ in (0, Resolver.changedMarker) }
         XCTAssertEqual(try resolver(runner).restore(), .changedByAnotherProgram)
-        XCTAssertEqual(store.load().previousResolver, "original\n")
+        XCTAssertEqual(store.load().previousResolver, "nameserver 10.0.0.9\n")
     }
 
     func testRestoreLeavesAFileSomeoneElseChanged() throws {
         try writeFile("nameserver 8.8.8.8\n")
-        try store.update { $0.previousResolver = "original\n" }
+        try store.update { $0.previousResolver = "nameserver 10.0.0.9\n" }
         let runner = RecordingCommandRunner()
         let outcome = try resolver(runner).restore()
         XCTAssertEqual(outcome, .changedByAnotherProgram)
         XCTAssertEqual(runner.calls, [])
-        XCTAssertEqual(store.load().previousResolver, "original\n")
+        XCTAssertEqual(store.load().previousResolver, "nameserver 10.0.0.9\n")
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "nameserver 8.8.8.8\n")
     }
 
@@ -205,12 +205,117 @@ final class ResolverTests: XCTestCase {
     func testRestoreCancelledKeepsSavedValue() throws {
         let r = resolver(RecordingCommandRunner())
         try writeFile(r.desiredContents)
-        try store.update { $0.previousResolver = "original\n" }
+        try store.update { $0.previousResolver = "nameserver 10.0.0.9\n" }
         let runner = RecordingCommandRunner { _, _ in (1, "User canceled.") }
         XCTAssertThrowsError(try resolver(runner).restore()) {
             XCTAssertEqual($0 as? ResolverError, .cancelled)
         }
-        XCTAssertEqual(store.load().previousResolver, "original\n")
+        XCTAssertEqual(store.load().previousResolver, "nameserver 10.0.0.9\n")
+    }
+
+    // MARK: - Keeping the owner's original safe (D7)
+
+    private var backupFile: URL { paths.backup.appendingPathComponent("resolver-test.orig") }
+
+    func testInstallSavesTheOriginalBeforeThePromptToStateAndABackupFile() throws {
+        try writeFile("nameserver 10.0.0.1\n")
+        let store = self.store!, backup = backupFile
+        // What state and the backup hold at the moment the privileged script runs.
+        let seen = LockedBox<(String?, String?)>((nil, nil))
+        let runner = RecordingCommandRunner { _, _ in
+            seen.value = (store.load().previousResolver, try? String(contentsOf: backup, encoding: .utf8))
+            return (0, "")
+        }
+        try resolver(runner).install()
+        XCTAssertEqual(seen.value.0, "nameserver 10.0.0.1\n")
+        XCTAssertEqual(seen.value.1, "nameserver 10.0.0.1\n")
+    }
+
+    func testCancelledOrRacedInstallRollsBackWhatItSaved() throws {
+        for answer in [(Int32(1), "User canceled. (-128)"), (Int32(1), "boom"), (Int32(0), Resolver.changedMarker)] {
+            try writeFile("nameserver 10.0.0.1\n")
+            XCTAssertThrowsError(try resolver(RecordingCommandRunner { _, _ in answer }).install())
+            XCTAssertNil(store.load().previousResolver, "\(answer)")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: backupFile.path), "\(answer)")
+        }
+    }
+
+    func testCancelledInstallKeepsAValueSavedEarlier() throws {
+        try store.update { $0.previousResolver = "nameserver 10.0.0.9\n" }
+        try writeFile("nameserver 10.0.0.1\n")
+        XCTAssertThrowsError(try resolver(RecordingCommandRunner { _, _ in (1, "User canceled.") }).install())
+        XCTAssertEqual(store.load().previousResolver, "nameserver 10.0.0.9\n")
+    }
+
+    func testTheBackupIsNeverOverwritten() throws {
+        try FileManager.default.createDirectory(at: paths.backup, withIntermediateDirectories: true)
+        try Data("nameserver 10.0.0.2\n".utf8).write(to: backupFile)
+        try writeFile("nameserver 10.0.0.1\n")
+        try resolver(RecordingCommandRunner()).install()
+        XCTAssertEqual(try String(contentsOf: backupFile, encoding: .utf8), "nameserver 10.0.0.2\n")
+    }
+
+    func testRestoreFallsBackToTheBackupFileAndRemovesItAfterwards() throws {
+        let r = resolver(RecordingCommandRunner())
+        try writeFile(r.desiredContents)
+        try FileManager.default.createDirectory(at: paths.backup, withIntermediateDirectories: true)
+        try Data("nameserver 10.0.0.2\n".utf8).write(to: backupFile)
+        let runner = RecordingCommandRunner()
+        XCTAssertEqual(try resolver(runner).restore(), .restored)
+        XCTAssertTrue(runner.calls[0].arguments[1].contains(b64("nameserver 10.0.0.2\n")))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupFile.path))
+    }
+
+    func testSuccessfulRestoreRemovesTheBackup() throws {
+        try writeFile("nameserver 10.0.0.1\n")
+        let r = resolver(RecordingCommandRunner())
+        try r.install()
+        try writeFile(r.desiredContents)
+        XCTAssertEqual(try r.restore(), .restored)
+        XCTAssertNil(store.load().previousResolver)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupFile.path))
+    }
+
+    func testRestoreRefusesSavedContentsThatAreNotAResolverFile() throws {
+        let r = resolver(RecordingCommandRunner())
+        for bad in ["nameserver 127.0.0.1\nrm -rf /\n", "#!/bin/sh\n", "nameserverX 1.2.3.4\n",
+                    "nameserver 127.0.0.1\n" + String(repeating: "search a\n", count: 120)] {
+            try writeFile(r.desiredContents)
+            try store.update { $0.previousResolver = bad }
+            let runner = RecordingCommandRunner()
+            XCTAssertThrowsError(try resolver(runner).restore()) {
+                XCTAssertEqual($0 as? ResolverError, .savedCopyRejected, bad)
+            }
+            XCTAssertEqual(runner.calls, [], "nothing runs as root")
+            XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), r.desiredContents)
+        }
+    }
+
+    func testEveryResolverKeywordIsAcceptedOnRestore() throws {
+        let good = "nameserver 127.0.0.1\nport 53\n\nsearch_order 1\ntimeout 5\ndomain test\nsearch test\noptions x\n"
+        XCTAssertTrue(Resolver.isSafeToRestore(good))
+        XCTAssertTrue(Resolver.isSafeToRestore("  nameserver 10.0.0.1\n"))
+        XCTAssertFalse(Resolver.isSafeToRestore("# comment\n"))
+    }
+
+    // MARK: - Re-running after a partial failure (I4c)
+
+    func testRestoreWithNothingSavedAndAFileThatIsNotPaddocksIsSilent() throws {
+        try writeFile("nameserver 8.8.8.8\n")
+        let runner = RecordingCommandRunner()
+        XCTAssertEqual(try resolver(runner).restore(), .notInstalled)
+        XCTAssertEqual(runner.calls, [])
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "nameserver 8.8.8.8\n")
+    }
+
+    func testRestoreOfAFileAlreadyPutBackIsSilentAndForgetsTheCopy() throws {
+        // The privileged write succeeded but saving state afterwards didn't.
+        try writeFile("nameserver 10.0.0.1\n")
+        try store.update { $0.previousResolver = "nameserver 10.0.0.1\n" }
+        let runner = RecordingCommandRunner()
+        XCTAssertEqual(try resolver(runner).restore(), .notInstalled)
+        XCTAssertEqual(runner.calls, [])
+        XCTAssertNil(store.load().previousResolver)
     }
 
     // MARK: - Quoting

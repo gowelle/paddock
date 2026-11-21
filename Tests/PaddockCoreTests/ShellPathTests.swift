@@ -65,4 +65,48 @@ final class ShellPathTests: XCTestCase {
         sh.waitUntilExit()
         XCTAssertTrue(output.hasPrefix("/tmp/a b/Library/Application Support/Paddock/bin:"), output)
     }
+
+    // MARK: - unconfigure
+
+    func testUnconfigureRemovesOnlyTheLineItAdded() throws {
+        let before = "# mine\nalias ll='ls -l'\n"
+        try Data(before.utf8).write(to: rc)
+        try ShellPath.configure(rcFile: rc)
+        // The owner added more after Paddock's line.
+        let handle = try FileHandle(forWritingTo: rc)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("export EDITOR=vim\n".utf8))
+        try handle.close()
+        try ShellPath.unconfigure(rcFile: rc)
+        XCTAssertEqual(try text(), before + "export EDITOR=vim\n")
+        XCTAssertFalse(ShellPath.isConfigured(rcFile: rc))
+    }
+
+    func testUnconfigureLeavesTheFileByteIdenticalWithoutTheLine() throws {
+        let content = "# a\r\nexport X=1   \n\n\t# Added by Paddock but edited by hand\nlast line without newline"
+        try Data(content.utf8).write(to: rc)
+        try ShellPath.unconfigure(rcFile: rc)
+        XCTAssertEqual(try Data(contentsOf: rc), Data(content.utf8))
+    }
+
+    func testUnconfigureWithoutAFileDoesNothing() throws {
+        try ShellPath.unconfigure(rcFile: rc)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rc.path))
+    }
+
+    func testUnconfigureKeepsASymlinkedRcFileASymlink() throws {
+        let real = dir.appendingPathComponent("dotfiles-zshrc")
+        try Data("# mine\n".utf8).write(to: real)
+        try FileManager.default.createSymbolicLink(at: rc, withDestinationURL: real)
+        try ShellPath.configure(rcFile: rc)
+        try ShellPath.unconfigure(rcFile: rc)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: rc.path), real.path)
+        XCTAssertEqual(try String(contentsOf: real, encoding: .utf8), "# mine\n")
+    }
+
+    func testUnconfigureRemovesTheLineWhenItIsLastWithoutANewline() throws {
+        try Data(("# mine\n" + line).utf8).write(to: rc)
+        try ShellPath.unconfigure(rcFile: rc)
+        XCTAssertEqual(try text(), "# mine\n")
+    }
 }
