@@ -80,9 +80,14 @@ public struct Paths: Sendable {
 /// Where the bundled programs (caddy, composer.phar, router/, php/, php-manifest.json) live.
 public struct Bundled {
     public static var resources: URL {
+        resources(environment: ProcessInfo.processInfo.environment)
+    }
+
+    /// `resources` as seen with `environment` in place of this process's.
+    public static func resources(environment: [String: String]) -> URL {
         let executable = Bundle.main.executableURL
         return resolveResources(
-            environment: ProcessInfo.processInfo.environment,
+            environment: environment,
             bundleURL: Bundle.main.bundleURL,
             executableDirectory: executable?.deletingLastPathComponent(),
             resolvedExecutableDirectory: executable?.resolvingSymlinksInPath().deletingLastPathComponent(),

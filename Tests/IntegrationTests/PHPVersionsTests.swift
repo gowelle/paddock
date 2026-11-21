@@ -4,7 +4,7 @@ import XCTest
 @testable import PaddockCore
 
 /// Two PHP versions side by side, and the `php` / `composer` shims following the current folder.
-/// The 8.4 build is downloaded once from the bundled manifest and cached under Vendor/php/8.4/.
+/// PHP 8.4 is installed from Paddock's own build in Vendor/builds, without the network.
 final class PHPVersionsTests: XCTestCase {
     private var home: TestHome!
     private var engine: Engine?
@@ -130,6 +130,40 @@ final class PHPVersionsTests: XCTestCase {
             atPath: home.paths.bin.appendingPathComponent("paddock").path))
     }
 
+    /// The installed app ships its builds in Contents/Resources/builds, so `paddock use 8.4` needs no
+    /// network: PADDOCK_BUILDS_DIR stands in for that folder here.
+    func testInstalling84FromTheBuildsFolderMakesNoNetworkRequest() throws {
+        let manifest = try PHPManifest.bundled()
+        let build = try XCTUnwrap(manifest.build(for: v84))
+        let builds = try home.makeDirectory("builds")
+        for asset in [build.cli, build.fpm] {
+            let name = asset.url.host ?? ""
+            let source = TestSupport.repoVendor.appendingPathComponent("builds/\(name)")
+            guard FileManager.default.fileExists(atPath: source.path) else {
+                throw XCTSkip("Vendor/builds/\(name) missing; build it with Scripts/build-php.sh 8.4")
+            }
+            try FileManager.default.copyItem(at: source, to: builds.appendingPathComponent(name))
+        }
+        OfflineURLProtocol.requests = 0
+        // Resources that hold no builds: only PADDOCK_BUILDS_DIR can supply the archives.
+        let environment = ["PADDOCK_BUILDS_DIR": builds.path,
+                           "PADDOCK_RESOURCES": try home.makeDirectory("empty-resources").path]
+        let installer = PHPInstaller(paths: home.paths, manifest: manifest, session: offline(), environment: environment)
+        try runInstall(installer)
+        XCTAssertEqual(OfflineURLProtocol.requests, 0)
+        XCTAssertTrue(installer.isInstalled(v84))
+        XCTAssertEqual(installer.buildRecord(v84)?.patch, build.patch)
+        let version = Process()
+        version.executableURL = installer.phpBinary(v84)
+        version.arguments = ["-n", "-r", "echo PHP_VERSION;"]
+        let out = Pipe()
+        version.standardOutput = out
+        try version.run()
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        version.waitUntilExit()
+        XCTAssertEqual(text, build.patch)
+    }
+
     // MARK: - Helpers
 
     private var products: URL { Bundle(for: PHPVersionsTests.self).bundleURL.deletingLastPathComponent() }
@@ -149,43 +183,36 @@ final class PHPVersionsTests: XCTestCase {
         try Shims.install(paths: home.paths, source: paddock, resources: TestSupport.repoVendor)
     }
 
-    /// Puts PHP 8.4 into the home from the cache, downloading it into the cache first if needed.
+    /// Installs PHP 8.4 into the home the way `paddock use 8.4` does: from the manifest's
+    /// `paddock-builds://` archive in Vendor/builds, verified, with no network.
     private func installPHP84() throws {
-        let cache = TestSupport.repoVendor.appendingPathComponent("php/8.4/default", isDirectory: true)
-        let fm = FileManager.default
-        func cached() -> Bool { ["php", "php-fpm"].allSatisfy { fm.isExecutableFile(atPath: cache.appendingPathComponent($0).path) } }
-        if !cached() {
-            let scratch = try home.makeDirectory("php84-download")
-            let scratchPaths = Paths(home: scratch)
-            let manifest = try PHPManifest.bundled()
-            let installer = PHPInstaller(paths: scratchPaths, manifest: manifest)
-            let done = expectation(description: "download")
-            var failure: Error?
-            Task {
-                do { try await installer.install(v84) } catch { failure = error }
-                done.fulfill()
-            }
-            wait(for: [done], timeout: 300)
-            if let failure {
-                if case PHPInstallError.checksumMismatch = failure { throw failure }
-                throw XCTSkip("Could not download PHP 8.4 (\(failure))")
-            }
-            try fm.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let staged = cache.deletingLastPathComponent().appendingPathComponent(".default-\(TestSupport.token())")
-            try fm.copyItem(at: scratchPaths.phpDir(v84), to: staged)
-            if fm.fileExists(atPath: cache.path) { try fm.removeItem(at: cache) }
-            try fm.moveItem(at: staged, to: cache)
-        }
-        let target = home.paths.phpDir(v84)
-        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
-        try fm.copyItem(at: cache, to: target)
-        let ini = home.paths.phpIni(v84)
-        try fm.createDirectory(at: ini.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !fm.fileExists(atPath: ini.path) {
-            try Data(FPMConfig.defaultIni(version: v84, paths: home.paths).utf8).write(to: ini)
-        }
+        let installer = PHPInstaller(paths: home.paths, manifest: try PHPManifest.bundled(), session: offline())
+        try runInstall(installer)
         XCTAssertTrue(engine?.installer.isInstalled(v84) ?? true)
+    }
+
+    private func runInstall(_ installer: PHPInstaller) throws {
+        let done = expectation(description: "install")
+        let failure = Locked<Error?>(nil)
+        let v84 = self.v84
+        Task {
+            do { try await installer.install(v84) } catch { failure.value = error }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 120)
+        if let error = failure.value {
+            if case PHPInstallError.buildMissing = error {
+                throw XCTSkip("Vendor/builds lacks the PHP 8.4 archives; build them with Scripts/build-php.sh 8.4")
+            }
+            throw error
+        }
+    }
+
+    /// A session that fails (and counts) every request.
+    private func offline() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [OfflineURLProtocol.self]
+        return URLSession(configuration: config)
     }
 
     private struct ShimResult { let status: Int32; let out: String; let err: String }
@@ -239,5 +266,28 @@ final class PHPVersionsTests: XCTestCase {
         let data = out.fileHandleForReading.readDataToEndOfFile()
         curl.waitUntilExit()
         return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// Fails and counts every request: a test using it proves nothing was downloaded.
+final class OfflineURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var requests = 0
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requests += 1
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+    override func stopLoading() {}
+}
+
+final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
     }
 }

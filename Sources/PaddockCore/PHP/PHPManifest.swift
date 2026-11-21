@@ -1,16 +1,10 @@
 import Foundation
 
-/// The list of downloadable PHP builds (bundled with the app, or fetched from a URL).
+/// The list of PHP builds Paddock can install (bundled with the app, or fetched from a URL).
 public struct PHPManifest: Codable, Sendable {
-    public struct Asset: Codable, Sendable, Equatable {
-        public var url: URL
-        public var sha256: String
-
-        public init(url: URL, sha256: String) {
-            self.url = url
-            self.sha256 = sha256
-        }
-    }
+    /// One archive holding one binary (`php` or `php-fpm`) at its top level. Paddock's own builds use
+    /// `paddock-builds://<file>` URLs, which `BuildSource` resolves to a file on this Mac.
+    public typealias Asset = Artifact
 
     public struct Build: Codable, Sendable, Equatable {
         public var version: PHPVersion

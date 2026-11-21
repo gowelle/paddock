@@ -31,6 +31,34 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(r.body.hasPrefix("plain:8.5"), r.body)
     }
 
+    /// An install from before Paddock's own builds (no build.json) is replaced from Vendor/builds when the
+    /// engine starts, before PHP-FPM starts, so the pool runs the new binary; php.ini is kept.
+    func testStartReplacesAnOldStyleBuildBeforeStartingFPM() throws {
+        let v85 = PHPVersion("8.5")!
+        let manifestBuild = try XCTUnwrap(try PHPManifest.bundled().build(for: v85))
+        let dir = paths.phpDir(v85)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for name in ["php", "php-fpm"] {
+            let file = dir.appendingPathComponent(name)
+            try Data("#!/bin/sh\nexit 1\n".utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        let ini = paths.phpIni(v85)
+        try FileManager.default.createDirectory(at: ini.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let custom = FPMConfig.defaultIni(version: v85, paths: paths) + "\n; mine\n"
+        try Data(custom.utf8).write(to: ini)
+
+        try startEngine()
+        let engine = try XCTUnwrap(self.engine)
+        XCTAssertEqual(engine.installer.buildRecord(v85),
+                       PHPBuildRecord(patch: manifestBuild.patch, cliSHA256: manifestBuild.cli.sha256,
+                                      fpmSHA256: manifestBuild.fpm.sha256))
+        XCTAssertEqual(try String(contentsOf: ini, encoding: .utf8), custom)
+        let r = try get("plain-php.test", "/")
+        XCTAssertEqual(r.status, 200, r.body)
+        XCTAssertTrue(r.body.hasPrefix("plain:\(manifestBuild.patch)"), r.body)
+    }
+
     func testServesLaravelFrontController() throws {
         try startEngine()
         let r = try get("laravel-like.test", "/users/7")

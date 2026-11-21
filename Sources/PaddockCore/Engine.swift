@@ -387,7 +387,8 @@ public final class Engine: @unchecked Sendable {
 
     // MARK: - State and configs
 
-    /// Installs the bundled PHP if none is installed, makes sure the default PHP is installed,
+    /// Installs the bundled PHP if none is installed, brings installed builds up to the app's own (before
+    /// any PHP-FPM starts, so the pools run the new binaries), makes sure the default PHP is installed,
     /// and creates the first parked directory if it can (it may be on a volume that isn't mounted).
     private func prepareState() throws -> State {
         var installed = installer.installed()
@@ -395,6 +396,7 @@ public final class Engine: @unchecked Sendable {
             try installer.installBundled()
             installed = installer.installed()
         }
+        installer.updateOutdatedBuilds(log: log)
         let state = try store.update { state in
             if state.defaultPHP.map({ !installed.contains($0) }) ?? true {
                 state.defaultPHP = installed.max()

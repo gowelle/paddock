@@ -101,6 +101,13 @@ final class PHPInstallerTests: XCTestCase {
         }
     }
 
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private var repoManifest: URL { repoRoot.appendingPathComponent("Resources/php-manifest.json") }
+
     private func leftoverTempDirs() -> [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? [])
             .filter { $0.hasPrefix(".php-install") }
@@ -129,11 +136,38 @@ final class PHPInstallerTests: XCTestCase {
 
     func testBundledManifestDecodes() throws {
         let m = try PHPManifest.bundled()
-        for minor in 1...5 {
-            let v = PHPVersion(major: 8, minor: minor)
-            XCTAssertNotNil(m.build(for: v), "missing 8.\(minor)")
-        }
+        XCTAssertNotNil(m.build(for: PHPVersion(major: 8, minor: 5)))
         XCTAssertNil(m.build(for: PHPVersion(major: 8, minor: 4), variant: "nope"))
+    }
+
+    /// The repository's manifest offers only Paddock's own Swoole-free builds, from `paddock-builds://`.
+    func testManifestOffersOnlyPaddocksOwnBuilds() throws {
+        let m = try JSONDecoder().decode(PHPManifest.self, from: Data(contentsOf: repoManifest))
+        XCTAssertEqual(m.builds.map(\.version.description).sorted(), ["8.4", "8.5"])
+        XCTAssertEqual(m.build(for: PHPVersion("8.4")!)?.patch, "8.4.28")
+        XCTAssertEqual(m.build(for: PHPVersion("8.5")!)?.patch, "8.5.13")
+        for minor in 1...3 { XCTAssertNil(m.build(for: PHPVersion(major: 8, minor: minor))) }
+        for build in m.builds {
+            for (asset, kind) in [(build.cli, "cli"), (build.fpm, "fpm")] {
+                XCTAssertEqual(asset.url.absoluteString,
+                               "paddock-builds://php-\(build.patch)-\(kind)-macos-x86_64.tar.gz")
+                XCTAssertEqual(asset.sha256.count, 64)
+                XCTAssertNotNil(asset.size)
+            }
+        }
+    }
+
+    /// Scripts/versions.lock and the manifest name the same archives with the same checksums.
+    func testManifestAgreesWithTheLock() throws {
+        let m = try JSONDecoder().decode(PHPManifest.self, from: Data(contentsOf: repoManifest))
+        let lock = try String(contentsOf: repoRoot.appendingPathComponent("Scripts/versions.lock"), encoding: .utf8)
+        let lines = lock.split(separator: "\n").map { $0.split(separator: "\t").map(String.init) }
+        for build in m.builds {
+            for (asset, kind) in [(build.cli, "cli"), (build.fpm, "fpm")] {
+                let line = lines.first { $0.first == "php-\(build.version)-\(kind)" }
+                XCTAssertEqual(line, ["php-\(build.version)-\(kind)", asset.url.absoluteString, asset.sha256])
+            }
+        }
     }
 
     func testInstallPlacesBinaries() async throws {
@@ -249,5 +283,214 @@ final class PHPInstallerTests: XCTestCase {
         XCTAssertFalse(installer.isInstalled(v84))
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.phpDir(v84).path))
         XCTAssertEqual(leftoverTempDirs(), [])
+    }
+
+    // MARK: Paddock's own builds, and updating installed builds
+
+    private struct LocalBuilds {
+        var manifest: PHPManifest
+        var build: PHPManifest.Build
+        var environment: [String: String]
+    }
+
+    /// Archives named as Paddock's builds are, in a builds directory that `PADDOCK_BUILDS_DIR` points at;
+    /// each binary prints `tag`.
+    private func makeLocalBuilds(patch: String = "8.4.28", tag: String = "new",
+                                 archivesPresent: Bool = true) throws -> LocalBuilds {
+        let dir = scratch.appendingPathComponent("builds-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var assets: [PHPManifest.Asset] = []
+        for (kind, name) in [("cli", "php"), ("fpm", "php-fpm")] {
+            let file = "php-\(patch)-\(kind)-macos-x86_64.tar.gz"
+            let data = try makeTarGz(binaryNamed: name, saying: tag)
+            if archivesPresent { try data.write(to: dir.appendingPathComponent(file)) }
+            assets.append(.init(url: URL(string: "paddock-builds://\(file)")!, sha256: sha(data), size: data.count))
+        }
+        let build = PHPManifest.Build(version: v84, patch: patch, variant: "default", cli: assets[0], fpm: assets[1])
+        return LocalBuilds(manifest: PHPManifest(builds: [build]), build: build,
+                           environment: ["PADDOCK_BUILDS_DIR": dir.path,
+                                         "PADDOCK_RESOURCES": scratch.appendingPathComponent("no-res").path])
+    }
+
+    private func makeTarGz(binaryNamed name: String, saying tag: String) throws -> Data {
+        let dir = scratch.appendingPathComponent("fx-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let binary = dir.appendingPathComponent(name)
+        try Data("#!/bin/sh\necho \(name) \(tag)\n".utf8).write(to: binary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+        let archive = scratch.appendingPathComponent("\(UUID().uuidString).tar.gz")
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = ["-czf", archive.path, "-C", dir.path, name]
+        try tar.run()
+        tar.waitUntilExit()
+        XCTAssertEqual(tar.terminationStatus, 0)
+        return try Data(contentsOf: archive)
+    }
+
+    private func noNetworkSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [NoNetworkURLProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    /// A build installed the way Paddock 0.x installed one: binaries, no build.json.
+    private func makeOldStyleInstall(_ v: PHPVersion, tag: String = "old") throws {
+        let dir = paths.phpDir(v)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for name in ["php", "php-fpm"] {
+            let file = dir.appendingPathComponent(name)
+            try Data("#!/bin/sh\necho \(name) \(tag)\n".utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        let ini = paths.phpIni(v)
+        try FileManager.default.createDirectory(at: ini.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("memory_limit=3G\n".utf8).write(to: ini)
+    }
+
+    private func phpText(_ v: PHPVersion) throws -> String {
+        try String(contentsOf: paths.phpDir(v).appendingPathComponent("php"), encoding: .utf8)
+    }
+
+    private final class Lines: @unchecked Sendable {
+        var lines: [String] = []
+    }
+
+    func testInstallFromPaddockBuildsUsesNoNetworkAndRecordsTheBuild() async throws {
+        NoNetworkURLProtocol.requests = 0
+        let local = try makeLocalBuilds()
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        try await installer.install(v84)
+        XCTAssertTrue(installer.isInstalled(v84))
+        XCTAssertEqual(NoNetworkURLProtocol.requests, 0)
+        XCTAssertEqual(installer.buildRecord(v84),
+                       PHPBuildRecord(patch: "8.4.28", cliSHA256: local.build.cli.sha256,
+                                      fpmSHA256: local.build.fpm.sha256))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.phpDir(v84).appendingPathComponent("build.json").path))
+        XCTAssertTrue(leftoverTempDirs().isEmpty)
+    }
+
+    func testInstallWithAMissingLocalBuildFailsWithoutTheNetworkAndLeavesNothing() async throws {
+        NoNetworkURLProtocol.requests = 0
+        let local = try makeLocalBuilds(archivesPresent: false)
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        do {
+            try await installer.install(v84)
+            XCTFail("expected a failure")
+        } catch let error as PHPInstallError {
+            XCTAssertEqual(error, .buildMissing(v84, file: "php-8.4.28-cli-macos-x86_64.tar.gz"))
+        }
+        XCTAssertEqual(NoNetworkURLProtocol.requests, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.phpDir(v84).path))
+        XCTAssertTrue(leftoverTempDirs().isEmpty)
+    }
+
+    func testUpdateReplacesAnOldStyleInstallAndKeepsPhpIni() throws {
+        try makeOldStyleInstall(v84)
+        let local = try makeLocalBuilds()
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        let log = Lines()
+        installer.updateOutdatedBuilds { log.lines.append($0) }
+        XCTAssertEqual(try phpText(v84), "#!/bin/sh\necho php new\n")
+        XCTAssertEqual(installer.buildRecord(v84)?.patch, "8.4.28")
+        XCTAssertEqual(installer.buildRecord(v84)?.cliSHA256, local.build.cli.sha256)
+        XCTAssertTrue(installer.isInstalled(v84))
+        XCTAssertEqual(try String(contentsOf: paths.phpIni(v84), encoding: .utf8), "memory_limit=3G\n")
+        XCTAssertEqual(log.lines, ["updated PHP 8.4 to build 8.4.28"])
+        XCTAssertTrue(leftoverTempDirs().isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: paths.phpDir(v84).deletingLastPathComponent().path),
+                       ["default"], "no stray directories beside the build")
+    }
+
+    func testUpdateReplacesAnInstallFromAnotherBuild() async throws {
+        let old = try makeLocalBuilds(patch: "8.4.27", tag: "older")
+        try await PHPInstaller(paths: paths, manifest: old.manifest, session: noNetworkSession(),
+                               environment: old.environment).install(v84)
+        let current = try makeLocalBuilds()
+        let installer = PHPInstaller(paths: paths, manifest: current.manifest, session: noNetworkSession(),
+                                     environment: current.environment)
+        installer.updateOutdatedBuilds { _ in }
+        XCTAssertEqual(try phpText(v84), "#!/bin/sh\necho php new\n")
+        XCTAssertEqual(installer.buildRecord(v84)?.patch, "8.4.28")
+    }
+
+    func testUpdateLeavesACurrentInstallAlone() async throws {
+        let local = try makeLocalBuilds()
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        try await installer.install(v84)
+        let marker = paths.phpDir(v84).appendingPathComponent("marker")
+        try Data().write(to: marker)
+        let log = Lines()
+        installer.updateOutdatedBuilds { log.lines.append($0) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertEqual(log.lines, [])
+    }
+
+    func testUpdateWithoutALocalArchiveKeepsTheOldBuildAndLogsOneLine() throws {
+        NoNetworkURLProtocol.requests = 0
+        try makeOldStyleInstall(v84)
+        let local = try makeLocalBuilds(archivesPresent: false)
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        let log = Lines()
+        installer.updateOutdatedBuilds { log.lines.append($0) }
+        XCTAssertEqual(try phpText(v84), "#!/bin/sh\necho php old\n")
+        XCTAssertNil(installer.buildRecord(v84))
+        XCTAssertEqual(log.lines.count, 1, "\(log.lines)")
+        XCTAssertTrue(log.lines.first?.contains("PHP 8.4") ?? false, "\(log.lines)")
+        XCTAssertEqual(NoNetworkURLProtocol.requests, 0)
+        XCTAssertEqual(try String(contentsOf: paths.phpIni(v84), encoding: .utf8), "memory_limit=3G\n")
+        XCTAssertTrue(leftoverTempDirs().isEmpty)
+    }
+
+    func testUpdateNeverDownloads() throws {
+        NoNetworkURLProtocol.requests = 0
+        try makeOldStyleInstall(v84)
+        let build = PHPManifest.Build(
+            version: v84, patch: "8.4.28", variant: "default",
+            cli: .init(url: URL(string: "https://stub.test/php-cli.tar.gz")!, sha256: String(repeating: "1", count: 64)),
+            fpm: .init(url: URL(string: "https://stub.test/php-fpm.tar.gz")!, sha256: String(repeating: "2", count: 64)))
+        let installer = PHPInstaller(paths: paths, manifest: PHPManifest(builds: [build]), session: noNetworkSession(),
+                                     environment: [:])
+        let log = Lines()
+        installer.updateOutdatedBuilds { log.lines.append($0) }
+        XCTAssertEqual(NoNetworkURLProtocol.requests, 0)
+        XCTAssertEqual(try phpText(v84), "#!/bin/sh\necho php old\n")
+        XCTAssertEqual(log.lines.count, 1, "\(log.lines)")
+    }
+
+    func testUpdateIgnoresVersionsTheManifestDoesNotOffer() throws {
+        let v83 = PHPVersion("8.3")!
+        try makeOldStyleInstall(v83)
+        let local = try makeLocalBuilds()
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        let log = Lines()
+        installer.updateOutdatedBuilds { log.lines.append($0) }
+        XCTAssertEqual(try phpText(v83), "#!/bin/sh\necho php old\n")
+        XCTAssertEqual(log.lines, [])
+        XCTAssertFalse(installer.isInstalled(v84), "an update installs nothing new")
+    }
+
+    func testInstallBundledCopiesTheBuildRecord() throws {
+        let resources = scratch.appendingPathComponent("res", isDirectory: true)
+        let src = resources.appendingPathComponent("php/8.5/default", isDirectory: true)
+        try FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
+        for name in ["php", "php-fpm"] {
+            let file = src.appendingPathComponent(name)
+            try Data("#!/bin/sh\n".utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+        let record = PHPBuildRecord(patch: "8.5.13", cliSHA256: "aa", fpmSHA256: "bb")
+        try JSONEncoder().encode(record).write(to: src.appendingPathComponent("build.json"))
+        let installer = PHPInstaller(paths: paths, manifest: PHPManifest(builds: []),
+                                     session: stubSession(), bundledResources: resources)
+        let v85 = PHPVersion("8.5")!
+        XCTAssertEqual(try installer.installBundled(), v85)
+        XCTAssertEqual(installer.buildRecord(v85), record)
     }
 }

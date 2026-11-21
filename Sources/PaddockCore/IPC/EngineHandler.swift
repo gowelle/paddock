@@ -227,7 +227,7 @@ extension Engine {
     private func install(_ version: PHPVersion) async -> Response {
         if installer.isInstalled(version) { return .ok(status()) }
         guard installAction != nil || installer.isAvailable(version) else {
-            return error(ErrorCode.phpNotAvailable, "PHP \(version) is not in the build list")
+            return error(ErrorCode.phpNotAvailable, Messages.phpNotAvailable(version))
         }
         let installer = installer
         let installAction = installAction
@@ -246,7 +246,10 @@ extension Engine {
         } catch is CancellationError {
             return error(ErrorCode.internal, Messages.phpInstallCancelled(version))
         } catch PHPInstallError.notInManifest {
-            return error(ErrorCode.phpNotAvailable, "PHP \(version) is not in the build list")
+            return error(ErrorCode.phpNotAvailable, Messages.phpNotAvailable(version))
+        } catch PHPInstallError.buildMissing(_, let file) {
+            log("cannot install PHP \(version): its build \(file) isn't on this Mac")
+            return error(ErrorCode.phpNotAvailable, Messages.phpNotAvailable(version))
         } catch {
             return self.error(ErrorCode.internal, "Could not install PHP \(version): \(describe(error))")
         }

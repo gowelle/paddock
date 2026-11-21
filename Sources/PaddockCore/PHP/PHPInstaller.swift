@@ -1,25 +1,54 @@
-import CryptoKit
+import Darwin
 import Foundation
 
 public enum PHPInstallError: Error, Equatable {
     case notInManifest(PHPVersion)
     case checksumMismatch(PHPVersion, file: String)
     case downloadFailed(PHPVersion, reason: String)
+    /// The manifest names a `paddock-builds://` archive that is not on this Mac.
+    case buildMissing(PHPVersion, file: String)
     case inUse(PHPVersion)
+}
+
+/// What an installed version directory was installed from: `build.json` beside the binaries. Builds
+/// installed before Paddock recorded this have none.
+public struct PHPBuildRecord: Codable, Equatable, Sendable {
+    public static let fileName = "build.json"
+
+    public var patch: String
+    public var cliSHA256: String
+    public var fpmSHA256: String
+
+    public init(patch: String, cliSHA256: String, fpmSHA256: String) {
+        self.patch = patch
+        self.cliSHA256 = cliSHA256
+        self.fpmSHA256 = fpmSHA256
+    }
+
+    public init(_ build: PHPManifest.Build) {
+        self.init(patch: build.patch, cliSHA256: build.cli.sha256.lowercased(), fpmSHA256: build.fpm.sha256.lowercased())
+    }
+
+    /// Whether this records exactly the archives `build` names.
+    func matches(_ build: PHPManifest.Build) -> Bool {
+        cliSHA256.lowercased() == build.cli.sha256.lowercased() && fpmSHA256.lowercased() == build.fpm.sha256.lowercased()
+    }
 }
 
 /// Installs PHP builds under `paths.phpRoot`.
 public final class PHPInstaller {
     private let paths: Paths
     private let manifest: PHPManifest
-    private let session: URLSession
+    private let downloader: ArtifactDownloader
     private let bundledResources: URL
 
+    /// `environment` decides where `paddock-builds://` archives are found (`BuildSource`).
     public init(paths: Paths, manifest: PHPManifest, session: URLSession = .shared,
-                bundledResources: URL = Bundled.resources) {
+                bundledResources: URL = Bundled.resources,
+                environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.paths = paths
         self.manifest = manifest
-        self.session = session
+        self.downloader = ArtifactDownloader(session: session, environment: environment)
         self.bundledResources = bundledResources
     }
 
@@ -73,35 +102,59 @@ public final class PHPInstaller {
         return v
     }
 
-    /// Downloads, verifies and places a build. Cancelling the calling task stops the download and throws
-    /// `CancellationError`; like any failure, it leaves nothing behind.
+    /// Fetches (downloads, or copies from Paddock's own builds on this Mac), verifies and places a build.
+    /// Cancelling the calling task stops the download and throws `CancellationError`; like any failure, it
+    /// leaves nothing behind.
     public func install(_ v: PHPVersion, progress: ((Double) -> Void)? = nil) async throws {
         guard let build = manifest.build(for: v) else { throw PHPInstallError.notInManifest(v) }
         let fm = FileManager.default
         let staging = try makeStagingDirectory()
         defer { try? fm.removeItem(at: staging) }
-        let stage = staging.appendingPathComponent("stage", isDirectory: true)
-        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
 
-        let assets: [(Asset, String)] = [(build.cli, "php"), (build.fpm, "php-fpm")]
         progress?(0)
-        for (index, (asset, name)) in assets.enumerated() {
-            let archive = staging.appendingPathComponent("\(name).tar.gz")
+        var archives: [URL] = []
+        for (index, (asset, name)) in assets(of: build).enumerated() {
             try Task.checkCancellation()
-            try await download(asset, to: archive, version: v)
-            try verify(archive, expected: asset.sha256, version: v, file: name)
-            try extract(archive, into: stage, version: v)
-            let binary = stage.appendingPathComponent(name)
-            guard fm.fileExists(atPath: binary.path) else {
-                throw PHPInstallError.downloadFailed(v, reason: "\(name) archive did not contain \(name)")
+            do {
+                archives.append(try await downloader.fetch(asset, into: staging, progress: nil))
+            } catch let error as ArtifactError {
+                throw installError(error, version: v, asset: asset, binary: name)
             }
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
-            progress?(Double(index + 1) / Double(assets.count))
-            try Task.checkCancellation()
+            progress?(Double(index + 1) / 2)
         }
-
+        try Task.checkCancellation()
+        let stage = try assemble(build, from: archives, in: staging)
+        try Task.checkCancellation()
         try place(stage, at: paths.phpDir(v))
         try ensurePhpIni(v)
+    }
+
+    /// The record of the build installed for `v`, if it has one.
+    public func buildRecord(_ v: PHPVersion) -> PHPBuildRecord? {
+        guard let data = try? Data(contentsOf: paths.phpDir(v).appendingPathComponent(PHPBuildRecord.fileName))
+        else { return nil }
+        return try? JSONDecoder().decode(PHPBuildRecord.self, from: data)
+    }
+
+    /// Brings every installed version the manifest offers up to the manifest's build, when that build's
+    /// archives are on this Mac (`paddock-builds://`): updating the app updates the PHP it installed. It
+    /// never downloads. A version whose record already matches is left alone; one whose build isn't here
+    /// is kept as it is, with one line in `log`. The directory is swapped in one step and the user's
+    /// php.ini (kept outside it) is untouched.
+    public func updateOutdatedBuilds(log: (String) -> Void) {
+        for v in installed() {
+            guard let build = manifest.build(for: v) else { continue }
+            if let record = buildRecord(v), record.matches(build) { continue }
+            do {
+                try replaceFromLocalBuild(build)
+                log("updated PHP \(v) to build \(build.patch)")
+            } catch PHPInstallError.buildMissing(_, let file) {
+                log("PHP \(v) is not Paddock's current build \(build.patch), whose \(file) isn't on this Mac; "
+                    + "keeping the installed one")
+            } catch {
+                log("could not update PHP \(v) to build \(build.patch), keeping the installed one: \(error)")
+            }
+        }
     }
 
     /// Deletes the version's directory; fine if it is absent.
@@ -116,41 +169,64 @@ public final class PHPInstaller {
 
     private typealias Asset = PHPManifest.Asset
 
+    private func assets(of build: PHPManifest.Build) -> [(Asset, String)] {
+        [(build.cli, "php"), (build.fpm, "php-fpm")]
+    }
+
+    private func installError(_ error: ArtifactError, version v: PHPVersion, asset: Asset,
+                              binary name: String) -> Error {
+        switch error {
+        case .checksumMismatch: return PHPInstallError.checksumMismatch(v, file: name)
+        case .downloadFailed(let reason): return PHPInstallError.downloadFailed(v, reason: reason)
+        case .notAvailable:
+            return PHPInstallError.buildMissing(v, file: BuildSource.fileName(asset.url) ?? asset.url.lastPathComponent)
+        case .cancelled: return CancellationError()
+        }
+    }
+
+    /// Copies the build's archives from this Mac, verifies them and swaps the version's directory for it.
+    private func replaceFromLocalBuild(_ build: PHPManifest.Build) throws {
+        let v = build.version
+        let fm = FileManager.default
+        let staging = try makeStagingDirectory()
+        defer { try? fm.removeItem(at: staging) }
+        var archives: [URL] = []
+        for (asset, name) in assets(of: build) {
+            do {
+                archives.append(try downloader.fetchLocal(asset, into: staging))
+            } catch let error as ArtifactError {
+                throw installError(error, version: v, asset: asset, binary: name)
+            }
+        }
+        let stage = try assemble(build, from: archives, in: staging)
+        try place(stage, at: paths.phpDir(v))
+        try ensurePhpIni(v)
+    }
+
+    /// Unpacks the verified cli and fpm archives into `staging/stage` with the build's record; returns it.
+    private func assemble(_ build: PHPManifest.Build, from archives: [URL], in staging: URL) throws -> URL {
+        let v = build.version
+        let fm = FileManager.default
+        let stage = staging.appendingPathComponent("stage", isDirectory: true)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        for (archive, (_, name)) in zip(archives, assets(of: build)) {
+            try extract(archive, into: stage, version: v)
+            try? fm.removeItem(at: archive)
+            let binary = stage.appendingPathComponent(name)
+            guard fm.fileExists(atPath: binary.path) else {
+                throw PHPInstallError.downloadFailed(v, reason: "\(name) archive did not contain \(name)")
+            }
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+        }
+        let record = try JSONEncoder().encode(PHPBuildRecord(build))
+        try record.write(to: stage.appendingPathComponent(PHPBuildRecord.fileName))
+        return stage
+    }
+
     private func makeStagingDirectory() throws -> URL {
         let dir = paths.home.appendingPathComponent(".php-install-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
-    }
-
-    private func download(_ asset: Asset, to destination: URL, version v: PHPVersion) async throws {
-        do {
-            let (tmp, response) = try await session.download(from: asset.url)
-            defer { try? FileManager.default.removeItem(at: tmp) }
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw PHPInstallError.downloadFailed(v, reason: "HTTP \(http.statusCode)")
-            }
-            try FileManager.default.moveItem(at: tmp, to: destination)
-        } catch let error as PHPInstallError {
-            throw error
-        } catch {
-            if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
-                throw CancellationError()
-            }
-            throw PHPInstallError.downloadFailed(v, reason: error.localizedDescription)
-        }
-    }
-
-    private func verify(_ file: URL, expected: String, version v: PHPVersion, file name: String) throws {
-        var hasher = SHA256()
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
-            hasher.update(data: chunk)
-        }
-        let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        guard actual == expected.lowercased() else {
-            throw PHPInstallError.checksumMismatch(v, file: name)
-        }
     }
 
     private func extract(_ archive: URL, into directory: URL, version v: PHPVersion) throws {
@@ -173,12 +249,22 @@ public final class PHPInstaller {
         }
     }
 
-    /// Moves a finished directory into place with one rename, replacing any previous one.
+    /// Moves a finished directory into place in one step. A previous directory is swapped out
+    /// atomically (`stage` then holds it, and goes away with the staging directory), so a running `php`
+    /// or PHP-FPM never sees a half-replaced build.
     private func place(_ stage: URL, at target: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
-        try fm.moveItem(at: stage, to: target)
+        guard fm.fileExists(atPath: target.path) else {
+            try fm.moveItem(at: stage, to: target)
+            return
+        }
+        let swapped = stage.withUnsafeFileSystemRepresentation { from in
+            target.withUnsafeFileSystemRepresentation { to in
+                renamex_np(from!, to!, UInt32(RENAME_SWAP)) == 0
+            }
+        }
+        guard swapped else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
 
     /// Writes the default php.ini if none exists; never overwrites.

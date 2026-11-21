@@ -5,17 +5,19 @@ separate program except swift-argument-parser, which is linked into the
 Paddock command-line tool.
 
   Caddy                  Apache-2.0   https://github.com/caddyserver/caddy
-  PHP (static builds)    PHP License  https://www.php.net  (static-php-cli builds)
+  PHP (static builds)    PHP License  https://www.php.net  (Paddock's own builds)
   Composer               MIT          https://github.com/composer/composer
   Laravel Valet (router) MIT          https://github.com/laravel/valet
   swift-argument-parser  Apache-2.0   https://github.com/apple/swift-argument-parser
 
-The bundled PHP programs (php and php-fpm) are static builds made with
-static-php-cli; they contain the libraries and extensions listed in the
-section "Libraries inside the PHP builds" at the end of this file.
+The bundled PHP programs (php and php-fpm, PHP 8.4 and 8.5) are static
+builds Paddock makes itself with static-php-cli; the recipe is
+Scripts/build-php.sh in Paddock's source. They contain the libraries and
+extensions listed in the section "Libraries inside the PHP builds" at the end
+of this file.
 
-Note on PHP: the PHP License text below is the one that ships with PHP 8.4
-and earlier; PHP 8.5 is distributed under the BSD 3-Clause form shown after it.
+Note on PHP: the PHP License text below is the one that ships with PHP 8.4;
+PHP 8.5 is distributed under the BSD 3-Clause form shown after it.
 
 
 
@@ -443,7 +445,7 @@ swift-argument-parser - Apache License 2.0
     otherwise be required by Sections 4(a), 4(b) and 4(d) of the License.
 
 ================================================================================
-PHP 8.1 - 8.4 - PHP License
+PHP 8.4 - PHP License
 ================================================================================
 
 --------------------------------------------------------------------
@@ -603,84 +605,63 @@ THE SOFTWARE.
 Libraries inside the PHP builds
 ================================================================================
 
-The php and php-fpm programs Paddock bundles (PHP 8.5.8, built by
-static-php-cli 2.8.6, https://github.com/crazywhalecc/static-php-cli) and the
-other versions it downloads on request are static builds: the libraries and
-extensions below are compiled into those two programs. They run as separate
-programs; none of this code is linked into Paddock's own binaries. Versions
-are those the bundled build reports (php -i, php -m) where it reports one.
-Each component's licence text is at the URL given, and in that project's
-source distribution. Where a licence identifier is given as "A OR B", the
-component is offered under either.
+The php and php-fpm programs Paddock ships (PHP 8.4.28 and PHP 8.5.13) are
+static builds Paddock makes itself with static-php-cli 2.8.6
+(https://github.com/crazywhalecc/static-php-cli); the complete recipe is
+Scripts/build-php.sh in Paddock's source. The libraries and extensions below
+are compiled into those two programs. They run as separate programs; none of
+this code is linked into Paddock's own binaries. Versions are those the builds
+report (php -i, php -m) or that the recipe fetches. Each component's licence
+text is at the URL given, and in that project's source distribution. Where a
+licence identifier is given as "A OR B", the component is offered under
+either.
 
   Component                  Version     Licence (SPDX)                 Upstream
   -------------------------  ----------  -----------------------------  ------------------------------------------
   OpenSSL                    3.6.2       Apache-2.0                     https://www.openssl.org
-  curl (libcurl)             8.20.0      curl                           https://curl.se
+  curl (libcurl)             8.23.0      curl                           https://curl.se
   zlib                       1.3.2       Zlib                           https://zlib.net
-  libxml2                    2.15.3      MIT                            https://gitlab.gnome.org/GNOME/libxml2
+  libxml2                    2.15.4      MIT                            https://gitlab.gnome.org/GNOME/libxml2
   libxslt / libexslt         1.1.45      MIT                            https://gitlab.gnome.org/GNOME/libxslt
   SQLite                     3.45.2      blessing (public domain)       https://sqlite.org
-  PCRE2                      10.44       BSD-3-Clause                   https://github.com/PCRE2Project/pcre2
+  PCRE2 (bundled in PHP)     10.44       BSD-3-Clause                   https://github.com/PCRE2Project/pcre2
   Oniguruma                  6.9.10      BSD-2-Clause                   https://github.com/kkos/oniguruma
   ICU                        77.1        Unicode-3.0                    https://icu.unicode.org
   libsodium                  1.0.20      ISC                            https://libsodium.org
   GMP                        6.3.0       LGPL-3.0-or-later OR GPL-2.0-or-later  https://gmplib.org
-  libiconv                   1.19        LGPL-2.1-or-later              https://www.gnu.org/software/libiconv
-  libidn2                    2.3.8       LGPL-3.0-or-later OR GPL-2.0-or-later  https://gitlab.com/libidn/libidn2
-  libunistring (with libidn2)            LGPL-3.0-or-later OR GPL-2.0-or-later  https://www.gnu.org/software/libunistring
+  GNU libiconv (libiconv,    1.19        LGPL-2.1-or-later              https://www.gnu.org/software/libiconv
+    libcharset)
   bzip2                      1.0.8       bzip2-1.0.6                    https://sourceware.org/bzip2
-  xz (liblzma)                           0BSD                           https://tukaani.org/xz
-  Zstandard (zstd)                       BSD-3-Clause OR GPL-2.0-only   https://github.com/facebook/zstd
-  LZ4                                    BSD-2-Clause                   https://github.com/lz4/lz4
-  Brotli                     1.2.0       MIT                            https://github.com/google/brotli
-  nghttp2                                MIT                            https://nghttp2.org
-  ngtcp2 / nghttp3                       MIT                            https://github.com/ngtcp2
-  c-ares                     1.34.6      MIT                            https://c-ares.org
-  libssh2                    1.11.1      BSD-3-Clause                   https://libssh2.org
-  libzip                     1.11.4      BSD-3-Clause                   https://libzip.org
-  libevent                   2.1.12      BSD-3-Clause                   https://libevent.org
-  libedit (Editline)                     BSD-3-Clause                   https://thrysoee.dk/editline
+  libzip                     1.12.1      BSD-3-Clause                   https://libzip.org
+  libedit (Editline)         20260512-3.1  BSD-3-Clause                 https://thrysoee.dk/editline
   ncurses                                X11-distribute-modifications-variant (MIT-style)  https://invisible-island.net/ncurses
-  PostgreSQL client (libpq)  18.3        PostgreSQL                     https://www.postgresql.org
-  OpenLDAP (libldap, liblber)            OLDAP-2.8                      https://www.openldap.org
-  UW IMAP c-client           2007f       Apache-2.0                     https://github.com/uw-imap/imap
-  QDBM                                   LGPL-2.1-or-later              https://dbmx.net/qdbm
-  lexbor                     2.7.0       Apache-2.0                     https://github.com/lexbor/lexbor
-  FreeType                   2.14.3      FTL OR GPL-2.0-or-later        https://freetype.org
-  libjpeg (IJG / libjpeg-turbo)  6b API  IJG AND BSD-3-Clause AND Zlib  https://libjpeg-turbo.org
+  PostgreSQL client (libpq)  18.7        PostgreSQL                     https://www.postgresql.org
+  lexbor (bundled in PHP 8.5)  2.7.0     Apache-2.0                     https://github.com/lexbor/lexbor
+  FreeType                   2.15.0      FTL OR GPL-2.0-or-later        https://freetype.org
+  libjpeg-turbo              3.2.1       IJG AND BSD-3-Clause AND Zlib  https://libjpeg-turbo.org
   libpng                     1.6.57      libpng-2.0                     http://www.libpng.org
   libwebp                                BSD-3-Clause                   https://chromium.googlesource.com/webm/libwebp
-  libavif                                BSD-2-Clause                   https://github.com/AOMediaCodec/libavif
-  libaom (AV1 codec for libavif)         BSD-2-Clause (+ AOM patent licence)  https://aomedia.googlesource.com/aom
-  ImageMagick                7.1.2-21    ImageMagick                    https://imagemagick.org
-  libheif (ImageMagick)                  LGPL-3.0-or-later              https://github.com/strukturag/libheif
-  libde265 (with libheif)                LGPL-3.0-or-later              https://github.com/strukturag/libde265
-  libjxl (ImageMagick)                   BSD-3-Clause                   https://github.com/libjxl/libjxl
-  Highway (with libjxl)                  Apache-2.0 OR BSD-3-Clause     https://github.com/google/highway
-  LibTIFF (ImageMagick)                  libtiff                        https://libtiff.gitlab.io/libtiff
-  JBIG-KIT (ImageMagick)                 GPL-2.0-or-later               https://www.cl.cam.ac.uk/~mgk25/jbigkit
   GD (bundled in PHP)        2.1.0-compat  GD                           https://libgd.github.io
 
   PHP extensions from PECL and other projects compiled into the builds:
   APCu                       5.1.28      PHP-3.01                       https://pecl.php.net/package/APCu
-  event                      3.1.4       PHP-3.01                       https://pecl.php.net/package/event
-  imagick                    3.8.1       PHP-3.01                       https://pecl.php.net/package/imagick
+  igbinary                   3.2.17RC1   BSD-3-Clause                   https://github.com/igbinary/igbinary
   redis (phpredis)           6.3.0       PHP-3.01                       https://github.com/phpredis/phpredis
-  Swoole                     6.2.0       Apache-2.0                     https://github.com/swoole/swoole-src
-  protobuf                   5.34.1      BSD-3-Clause                   https://github.com/protocolbuffers/protobuf
-  OpenTelemetry              1.2.1       Apache-2.0                     https://github.com/open-telemetry/opentelemetry-php-instrumentation
+  zip                        1.22.8      PHP-3.01                       https://pecl.php.net/package/zip
 
 Library versions left blank are not reported by the build. The Apache
 License 2.0 text under "Caddy" above applies to the Apache-2.0 components
 here. Short licence texts for the most widely used of these libraries follow.
-The LGPL and GPL components (GMP, libiconv, libidn2, libunistring, QDBM,
-libheif, libde265, JBIG-KIT) are statically linked into the PHP programs
-Paddock bundles. Those programs are prebuilt by the static-php-cli project;
-its source and build recipe, including how each library is fetched and
-built, are at https://github.com/crazywhalecc/static-php-cli (release 2.8.6
-for the bundled build), and each library's source is at the upstream URL
-above.
+
+GMP and GNU libiconv are licensed under the GNU Lesser General Public License
+(GMP under LGPL-3.0-or-later, or GPL-2.0-or-later at your option; GNU libiconv
+under LGPL-2.1-or-later) and are statically linked into the php and php-fpm
+programs. Their source code is at the upstream URLs above (GMP 6.3.0, GNU
+libiconv 1.19). Scripts/build-php.sh in Paddock's source is the complete
+build recipe for those programs: it fetches every component, builds it and
+links the programs, so anyone can rebuild them, or relink them against a
+modified GMP or libiconv. The full LGPL and GPL texts are at
+https://www.gnu.org/licenses/. No GPL-only code is included.
 
 
 --------------------------------------------------------------------------------
@@ -778,3 +759,32 @@ OpenSSL - Apache License 2.0
 OpenSSL 3 is licensed under the Apache License 2.0; the full text is under
 "Caddy" above. Copyright (c) 1998-2026 The OpenSSL Project Authors.
 Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson. All rights reserved.
+
+
+--------------------------------------------------------------------------------
+Oniguruma - BSD 2-Clause
+--------------------------------------------------------------------------------
+
+Copyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.

@@ -1,22 +1,29 @@
 #!/bin/bash
-# Downloads the programs Paddock bundles into Vendor/.
+# Prepares the programs Paddock bundles in Vendor/.
 #
-# First run: resolves the latest Caddy 2.x, composer.phar and PHP 8.5 (cli + fpm),
-# downloads them and records "name<TAB>url<TAB>sha256" in Scripts/versions.lock.
-# Later runs: downloads exactly the URLs in the lock and fails on a checksum mismatch.
-# To upgrade, delete the relevant lines (or the whole file) and run again.
+# Caddy and composer.phar are downloaded. First run: resolves the latest Caddy 2.x and composer.phar,
+# downloads them and records "name<TAB>url<TAB>sha256" in Scripts/versions.lock. Later runs download
+# exactly the URLs in the lock and fail on a checksum mismatch. To upgrade, delete the relevant lines
+# (or the whole file) and run again.
+#
+# PHP is never downloaded: Paddock ships its own builds (no Swoole), made by Scripts/build-php.sh into
+# Vendor/builds/. The lock names each archive (php-<series>-cli / -fpm, paddock-builds://<file>) with its
+# checksum; this script requires those archives in Vendor/builds/, verifies them, and unpacks each
+# series into Vendor/php/<series>/default/ with a build.json recording what it was unpacked from.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK="$ROOT/Scripts/versions.lock"
 VENDOR="$ROOT/Vendor"
-PHP_SERIES="8.5"
-STATIC_PHP_BASE="https://dl.static-php.dev/static-php-cli/bulk"
+BUILDS="$VENDOR/builds"
+MANIFEST="$ROOT/Resources/php-manifest.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 mkdir -p "$VENDOR"
 touch "$LOCK"
+
+fail() { echo "fetch-vendor.sh: $*" >&2; exit 1; }
 
 sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
 
@@ -59,16 +66,6 @@ resolve_composer() { # versioned URL, so the locked checksum stays valid
   echo "https://getcomposer.org$path"
 }
 
-resolve_php() { # $1 = cli|fpm
-  curl -fsSL "$STATIC_PHP_BASE/?format=json" \
-    | grep -o "\"name\": *\"php-$PHP_SERIES\.[0-9]*-$1-macos-x86_64\.tar\.gz\"" \
-    | sed -E 's/.*"(php-[^"]*)"/\1/' \
-    | sort -t. -k3 -n | tail -n 1 \
-    | sed "s#^#$STATIC_PHP_BASE/#"
-}
-resolve_php_cli() { resolve_php cli; }
-resolve_php_fpm() { resolve_php fpm; }
-
 # Caddy
 fetch caddy resolve_caddy
 mkdir -p "$TMP/caddy-x" && tar -xzf "$FETCHED" -C "$TMP/caddy-x" caddy
@@ -78,18 +75,55 @@ install -m 755 "$TMP/caddy-x/caddy" "$VENDOR/caddy"
 fetch composer resolve_composer
 install -m 644 "$FETCHED" "$VENDOR/composer.phar"
 
-# PHP
-PHP_DIR="$VENDOR/php/$PHP_SERIES/default"
-mkdir -p "$PHP_DIR"
-for kind in cli fpm; do
-  fetch "php-$PHP_SERIES-$kind" "resolve_php_$kind"
-  mkdir -p "$TMP/php-$kind-x" && tar -xzf "$FETCHED" -C "$TMP/php-$kind-x"
-  bin="php"; [ "$kind" = fpm ] && bin="php-fpm"
-  install -m 755 "$TMP/php-$kind-x/$bin" "$PHP_DIR/$bin"
+# PHP: Paddock's own builds, from Vendor/builds/
+SERIES="$(awk -F'\t' '$1 ~ /^php-[0-9]+\.[0-9]+-cli$/ { s = $1; sub(/^php-/, "", s); sub(/-cli$/, "", s); print s }' "$LOCK")"
+[ -n "$SERIES" ] || fail "Scripts/versions.lock names no PHP build (php-<series>-cli lines)."
+
+# verified_build NAME -> sets ARCHIVE (verified path in Vendor/builds) and ARCHIVE_SHA
+verified_build() {
+  local name="$1" url sha file actual
+  url="$(lock_field "$name" 2)"
+  sha="$(lock_field "$name" 3)"
+  [ -n "$url" ] && [ -n "$sha" ] || fail "Scripts/versions.lock has no $name line."
+  case "$url" in
+    paddock-builds://*) file="${url#paddock-builds://}" ;;
+    *) fail "$name in Scripts/versions.lock is $url; PHP must come from Paddock's own builds (paddock-builds://)." ;;
+  esac
+  ARCHIVE="$BUILDS/$file"
+  [ -f "$ARCHIVE" ] || fail "Vendor/builds/$file is missing. Build it with: Scripts/build-php.sh ${name%-*}" \
+    "(about 30 minutes), or copy the archive there."
+  actual="$(sha256 "$ARCHIVE")"
+  [ "$actual" = "$sha" ] || fail "Vendor/builds/$file has checksum $actual; Scripts/versions.lock expects $sha."
+  grep -q "\"$sha\"" "$MANIFEST" || fail "Resources/php-manifest.json does not list $file with checksum $sha."
+  ARCHIVE_SHA="$sha"
+}
+
+bin_name() { if [ "$1" = fpm ]; then echo php-fpm; else echo php; fi; }
+
+for series in $SERIES; do
+  stage="$TMP/php-$series"
+  mkdir -p "$stage"
+  patch=""
+  for kind in cli fpm; do
+    verified_build "php-$series-$kind"
+    tar -xzf "$ARCHIVE" -C "$stage" "$(bin_name $kind)"
+    chmod 755 "$stage/$(bin_name $kind)"
+    if [ "$kind" = cli ]; then CLI_SHA="$ARCHIVE_SHA"; else FPM_SHA="$ARCHIVE_SHA"; fi
+    patch="$(basename "$ARCHIVE" | sed -E 's/^php-([0-9.]+)-(cli|fpm)-.*/\1/')"
+  done
+  # What this directory was unpacked from; Paddock copies it with the binaries (PHPBuildRecord).
+  printf '{"patch":"%s","cliSHA256":"%s","fpmSHA256":"%s"}\n' "$patch" "$CLI_SHA" "$FPM_SHA" > "$stage/build.json"
+  dest="$VENDOR/php/$series/default"
+  mkdir -p "$(dirname "$dest")"
+  rm -rf "$dest.old"
+  if [ -e "$dest" ]; then mv "$dest" "$dest.old"; fi
+  mv "$stage" "$dest"
+  rm -rf "$dest.old"
+  echo "PHP $patch unpacked into Vendor/php/$series/default."
 done
 
 # Router and manifest
 ln -sfn ../Resources/router "$VENDOR/router"
-cp "$ROOT/Resources/php-manifest.json" "$VENDOR/php-manifest.json"
+cp "$MANIFEST" "$VENDOR/php-manifest.json"
 
 echo "Vendor/ is ready."

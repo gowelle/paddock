@@ -134,6 +134,18 @@ final class EngineHandleTests: XCTestCase {
         _ = try await st(.installPHP(version: v85)) // already installed
     }
 
+    /// No Swoole-free build exists for 8.1-8.3: asking for one is the ordinary "not available" answer.
+    func testInstallingAVersionWithoutAPaddockBuildIsNotAvailable() async throws {
+        for minor in 1...3 {
+            let v = PHPVersion(major: 8, minor: minor)
+            let response = await engine.handle(.installPHP(version: v))
+            guard case .error(let code, let message) = response else { return XCTFail("\(response)") }
+            XCTAssertEqual(code, ErrorCode.phpNotAvailable)
+            XCTAssertEqual(message, "PHP 8.\(minor) isn't available for Intel Macs yet.")
+            XCTAssertFalse(engine.installer.isInstalled(v))
+        }
+    }
+
     // MARK: - Running state
 
     func testBlockedPortsStillAcceptStateChanges() async throws {

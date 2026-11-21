@@ -54,6 +54,14 @@ final class CLITests: XCTestCase {
 
     // MARK: - With a daemon
 
+    func testUseAVersionWithoutAPaddockBuildSaysItIsNotAvailable() throws {
+        try launchDaemon()
+        let use = try run(["use", "8.3"])
+        XCTAssertEqual(use.status, 1)
+        XCTAssertTrue(use.err.contains("PHP 8.3 isn't available for Intel Macs yet."), use.err)
+        XCTAssertFalse(use.err.contains("checksum"), use.err)
+    }
+
     func testParkAndParkedListsPath() throws {
         try launchDaemon()
         let more = try home.makeDirectory("more")

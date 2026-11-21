@@ -3,7 +3,9 @@
 #   Contents/MacOS/{PaddockApp,paddockd,paddock,paddock-ports}
 # (The app's executable is not called "Paddock": on a case-insensitive disk it would be the same file
 # as the "paddock" command.)
-#   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,php-manifest.json,THIRD-PARTY-NOTICES,AppIcon.icns}
+#   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,builds/,php-manifest.json,THIRD-PARTY-NOTICES,AppIcon.icns}
+# builds/ holds Paddock's own PHP archives (every version in the manifest, from Vendor/builds/), so
+# installing another version needs no network; php/<bundled>/default/ is the newest one, unpacked.
 # then signs it ad hoc and verifies the signature.
 set -euo pipefail
 
@@ -14,11 +16,15 @@ APP="$ROOT/dist/Paddock.app"
 
 fail() { echo "bundle.sh: $*" >&2; exit 1; }
 
-# The one PHP series the app bundles is the one fetch-vendor.sh locked (php-<series>-cli).
-PHP_SERIES="$(awk -F'\t' '$1 ~ /^php-[0-9]+\.[0-9]+-cli$/ { sub(/^php-/, "", $1); sub(/-cli$/, "", $1); print $1; exit }' "$LOCK" 2>/dev/null || true)"
+# The PHP series the app ships unpacked is the newest one locked (php-<series>-cli).
+PHP_SERIES="$(awk -F'\t' '$1 ~ /^php-[0-9]+\.[0-9]+-cli$/ { sub(/^php-/, "", $1); sub(/-cli$/, "", $1); print $1 }' "$LOCK" 2>/dev/null \
+  | sort -t. -k1,1n -k2,2n | tail -n 1 || true)"
 [ -n "$PHP_SERIES" ] || fail "Scripts/versions.lock names no PHP build. Run Scripts/fetch-vendor.sh first."
+# Every PHP archive the lock names (paddock-builds://<file>), with its checksum.
+PHP_ARCHIVES="$(awk -F'\t' '$1 ~ /^php-[0-9]+\.[0-9]+-(cli|fpm)$/ && $2 ~ /^paddock-builds:\/\// { sub(/^paddock-builds:\/\//, "", $2); print $2 "\t" $3 }' "$LOCK")"
+[ -n "$PHP_ARCHIVES" ] || fail "Scripts/versions.lock names no paddock-builds:// PHP archive."
 
-for item in caddy composer.phar php-manifest.json router/server.php "php/$PHP_SERIES/default/php" "php/$PHP_SERIES/default/php-fpm"; do
+for item in caddy composer.phar php-manifest.json router/server.php "php/$PHP_SERIES/default/php" "php/$PHP_SERIES/default/php-fpm" "php/$PHP_SERIES/default/build.json"; do
   [ -e "$VENDOR/$item" ] || fail "Vendor/$item is missing. Run Scripts/fetch-vendor.sh first."
 done
 [ -f "$ROOT/VERSION" ] || fail "VERSION is missing at the repository root."
@@ -31,7 +37,7 @@ BIN="$(swift build --package-path "$ROOT" -c release --arch x86_64 --show-bin-pa
 
 echo "Assembling ${APP}…"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/php/$PHP_SERIES/default"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/php/$PHP_SERIES/default" "$APP/Contents/Resources/builds"
 
 install -m 755 "$BIN/PaddockApp" "$APP/Contents/MacOS/PaddockApp"
 install -m 755 "$BIN/paddockd" "$APP/Contents/MacOS/paddockd"
@@ -51,6 +57,18 @@ cp -RL "$VENDOR/router" "$RES/router"
 # Only the bundled series: Vendor/php may hold other versions cached for tests.
 install -m 755 "$VENDOR/php/$PHP_SERIES/default/php" "$RES/php/$PHP_SERIES/default/php"
 install -m 755 "$VENDOR/php/$PHP_SERIES/default/php-fpm" "$RES/php/$PHP_SERIES/default/php-fpm"
+install -m 644 "$VENDOR/php/$PHP_SERIES/default/build.json" "$RES/php/$PHP_SERIES/default/build.json"
+BUNDLED_MODULES="$("$RES/php/$PHP_SERIES/default/php" -n -m)"
+if grep -qix swoole <<< "$BUNDLED_MODULES"; then
+  fail "the bundled PHP contains Swoole; Paddock ships only its own builds (Scripts/build-php.sh)."
+fi
+# Paddock's own PHP archives, verified against the lock.
+while IFS=$'\t' read -r file sha; do
+  [ -f "$VENDOR/builds/$file" ] || fail "Vendor/builds/$file is missing. Build it with Scripts/build-php.sh."
+  [ "$(shasum -a 256 "$VENDOR/builds/$file" | awk '{print $1}')" = "$sha" ] \
+    || fail "Vendor/builds/$file does not match the checksum in Scripts/versions.lock."
+  install -m 644 "$VENDOR/builds/$file" "$RES/builds/$file"
+done <<< "$PHP_ARCHIVES"
 
 sed "s/VERSION_PLACEHOLDER/$VERSION/g" "$ROOT/Resources/Info.plist" > "$APP/Contents/Info.plist"
 plutil -lint -s "$APP/Contents/Info.plist"
