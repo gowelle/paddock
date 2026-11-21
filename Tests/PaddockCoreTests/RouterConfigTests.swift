@@ -21,13 +21,14 @@ final class RouterConfigTests: XCTestCase {
 
     private var sitesDir: String { paths.routerHome.appendingPathComponent("Sites").path }
 
-    func testConfigHasTldLoopbackAndParkedPathsPlusSites() throws {
+    func testConfigHasTldLoopbackAndSitesThenParkedPaths() throws {
         let state = State(parked: ["/a/b", "/c d"])
         try RouterConfig.write(state: state, paths: paths, settings: Settings())
         let json = try config()
         XCTAssertEqual(json["tld"] as? String, "test")
         XCTAssertEqual(json["loopback"] as? String, "127.0.0.1")
-        XCTAssertEqual(json["paths"] as? [String], ["/a/b", "/c d", sitesDir])
+        // Sites first: links (and normalized-name links) win over parked folders.
+        XCTAssertEqual(json["paths"] as? [String], [sitesDir, "/a/b", "/c d"])
     }
 
     func testLinksBecomeSymlinks() throws {
@@ -47,5 +48,53 @@ final class RouterConfigTests: XCTestCase {
         XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: sitesDir + "/a"), "/tmp/a2")
         XCTAssertFalse(fm.fileExists(atPath: sitesDir + "/b"))
         XCTAssertNil(try? fm.destinationOfSymbolicLink(atPath: sitesDir + "/b"))
+    }
+
+    private func makeParked(_ folders: [String], in name: String = "parked") throws -> String {
+        let dir = home.appendingPathComponent(name, isDirectory: true)
+        for folder in folders {
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent(folder),
+                                                    withIntermediateDirectories: true)
+        }
+        return dir.path
+    }
+
+    func testParkedFolderWithNonNormalizedNameGetsNormalizedSymlink() throws {
+        let parked = try makeParked(["My App", "blog", ".hidden dir"])
+        try Data().write(to: URL(fileURLWithPath: parked + "/Some File"))
+        try RouterConfig.write(state: State(parked: [parked]), paths: paths, settings: Settings())
+        let fm = FileManager.default
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: sitesDir + "/my-app"), parked + "/My App")
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: sitesDir).sorted(), ["my-app"],
+                       "only folders whose name differs from the site name get a link")
+    }
+
+    func testLinkWinsOverParkedFolderWithSameNormalizedName() throws {
+        let parked = try makeParked(["My App"])
+        let state = State(parked: [parked], links: ["my-app": "/tmp/linked"])
+        try RouterConfig.write(state: state, paths: paths, settings: Settings())
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: sitesDir + "/my-app"),
+                       "/tmp/linked")
+    }
+
+    func testEarlierParkedPathWinsAndExactlyNamedFolderNeedsNoLink() throws {
+        let first = try makeParked(["Shop", "news"], in: "first")
+        let second = try makeParked(["shop", "News"], in: "second")
+        try RouterConfig.write(state: State(parked: [first, second]), paths: paths, settings: Settings())
+        let fm = FileManager.default
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: sitesDir + "/shop"), first + "/Shop")
+        XCTAssertNil(try? fm.destinationOfSymbolicLink(atPath: sitesDir + "/news"),
+                     "the earlier exactly named folder is found by the router without a link")
+    }
+
+    func testRemovedFolderLinkIsDeletedButRealDirectoryKept() throws {
+        let parked = try makeParked(["My App"])
+        try RouterConfig.write(state: State(parked: [parked]), paths: paths, settings: Settings())
+        try FileManager.default.removeItem(atPath: parked + "/My App")
+        try FileManager.default.createDirectory(atPath: sitesDir + "/real", withIntermediateDirectories: true)
+        try RouterConfig.write(state: State(parked: [parked]), paths: paths, settings: Settings())
+        let fm = FileManager.default
+        XCTAssertNil(try? fm.destinationOfSymbolicLink(atPath: sitesDir + "/my-app"))
+        XCTAssertTrue(fm.fileExists(atPath: sitesDir + "/real"))
     }
 }
