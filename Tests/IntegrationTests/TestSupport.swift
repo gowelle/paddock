@@ -178,11 +178,12 @@ extension Engine {
     static func development(paths: Paths, settings: Settings, trust: CertificateTrust? = nil,
                             installAction: (@Sendable (PHPVersion) async throws -> Void)? = nil,
                             backoffScale: TimeInterval = 1,
+                            phpEnvironment: [String: String] = ProcessInfo.processInfo.environment,
                             log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) })
         -> Engine {
         Engine(paths: paths, settings: settings, installAction: installAction, trust: trust,
                backoffScale: backoffScale, managesPortHelper: true, portHelper: TestSupport.portHelper,
-               portHolders: TestSupport.portHoldersWithoutProbes, log: log)
+               portHolders: TestSupport.portHoldersWithoutProbes, phpEnvironment: phpEnvironment, log: log)
     }
 }
 

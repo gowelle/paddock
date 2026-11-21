@@ -59,6 +59,57 @@ final class EngineTests: XCTestCase {
         XCTAssertTrue(r.body.hasPrefix("plain:\(manifestBuild.patch)"), r.body)
     }
 
+    /// A build left from an older Paddock without its record, beside the real default 8.5.
+    private func makeOldStyle84() throws {
+        let dir = paths.phpDir(PHPVersion("8.4")!)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for name in ["php", "php-fpm"] {
+            let file = dir.appendingPathComponent(name)
+            try Data("#!/bin/sh\nexit 1\n".utf8).write(to: file)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+        }
+    }
+
+    func testReloadDoesNotUpdateBuildsButTheNextStartDoes() async throws {
+        let v84 = PHPVersion("8.4")!
+        try startEngine()
+        let engine = try XCTUnwrap(self.engine)
+        try makeOldStyle84()
+        try engine.reload()
+        _ = await engine.handle(.park(path: parked.path))
+        XCTAssertNil(engine.installer.buildRecord(v84), "reload must not update builds")
+        engine.stop()
+        try engine.start()
+        XCTAssertEqual(engine.installer.buildRecord(v84)?.patch, try PHPManifest.bundled().build(for: v84)?.patch)
+    }
+
+    func testAnUnavailableBuildIsTriedAndLoggedOncePerDaemon() throws {
+        let lines = Locked<[String]>([])
+        // No builds anywhere for the installer: the 8.4 update can never resolve.
+        let environment = ["PADDOCK_RESOURCES": try home.makeDirectory("no-builds").path]
+        let engine = Engine.development(paths: paths, settings: settings, phpEnvironment: environment,
+                                        log: { line in lines.value.append(line) })
+        self.engine = engine
+        try engine.installer.installBundled()
+        try makeOldStyle84()
+        try engine.start()
+        try engine.reload()
+        engine.stop()
+        try engine.start()
+        XCTAssertTrue(engine.status().running)
+        let about84 = lines.value.filter { $0.contains("PHP 8.4") }
+        XCTAssertEqual(about84.count, 1, "\(lines.value)")
+        XCTAssertNil(engine.installer.buildRecord(PHPVersion("8.4")!))
+    }
+
+    func testStartSweepsStaleStagingFolders() throws {
+        let stale = paths.home.appendingPathComponent(".php-install-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stale.appendingPathComponent("stage"),
+                                                withIntermediateDirectories: true)
+        try startEngine()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    }
+
     func testServesLaravelFrontController() throws {
         try startEngine()
         let r = try get("laravel-like.test", "/users/7")

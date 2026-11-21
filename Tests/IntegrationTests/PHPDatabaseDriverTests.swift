@@ -24,6 +24,12 @@ final class PHPDatabaseDriverTests: XCTestCase {
                     throw XCTSkip("PHP \(v) not vendored")
                 }
             }
+            // A stale Vendor/php (unpacked from other archives than the manifest names) must not pass.
+            let recordFile = dir.appendingPathComponent(PHPBuildRecord.fileName)
+            let record = try? JSONDecoder().decode(PHPBuildRecord.self, from: Data(contentsOf: recordFile))
+            let build = try XCTUnwrap(manifest.build(for: v))
+            XCTAssertEqual(record, PHPBuildRecord(build),
+                           "Vendor/php/\(v)/default is not the manifest's build; run Scripts/fetch-vendor.sh")
             return (v, dir)
         }
     }

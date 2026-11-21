@@ -68,9 +68,21 @@ final class BuildSourceTests: XCTestCase {
         // A file one level up from the builds directory must never be reachable through the scheme.
         try Data("x".utf8).write(to: scratch.appendingPathComponent("secret.tar.gz"))
         for text in ["paddock-builds://../secret.tar.gz", "paddock-builds://a/../../secret.tar.gz",
-                     "paddock-builds://", "paddock-builds://.."] {
+                     "paddock-builds://", "paddock-builds://..",
+                     // percent-encoded separators and dots
+                     "paddock-builds://..%2Fsecret.tar.gz", "paddock-builds://%2E%2E%2Fsecret.tar.gz",
+                     "paddock-builds://%2e%2e/secret.tar.gz",
+                     // absolute paths
+                     "paddock-builds:///\(scratch.path)/secret.tar.gz",
+                     "paddock-builds://%2F\(scratch.path.dropFirst())%2Fsecret.tar.gz"] {
             guard let bad = URL(string: text) else { continue }
             XCTAssertNil(BuildSource.resolve(bad, environment: environment()), text)
         }
+    }
+
+    func testAPercentEncodedNameOfAnExistingFileIsNotDecoded() throws {
+        // A file literally named with a space resolves only through its plain name; encodings are refused.
+        try Data("x".utf8).write(to: buildsDir.appendingPathComponent("a%20b.tar.gz"))
+        XCTAssertNil(BuildSource.resolve(URL(string: "paddock-builds://a%20b.tar.gz")!, environment: environment()))
     }
 }

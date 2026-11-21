@@ -143,6 +143,10 @@ public final class Engine: @unchecked Sendable {
     private var installInProgress: Task<Void, Error>?
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
+    /// Versions whose build update failed in this daemon: not tried (or logged) again. `operationLock`.
+    private var failedBuildUpdates: Set<PHPVersion> = []
+    /// Whether this engine has cleared stale install staging folders. `operationLock`.
+    private var sweptStaleStaging = false
     /// Replaces the real download in `installPHP` requests; tests use it to make installs slow.
     let installAction: (@Sendable (PHPVersion) async throws -> Void)?
     /// Serializes requests that change state, so each one's update and reload finish before the next.
@@ -171,6 +175,7 @@ public final class Engine: @unchecked Sendable {
          portHelper: URL? = PortHelperLocator.binary(),
          portHelperInstalled: @escaping @Sendable () -> Bool = { false },
          portHolders: @escaping @Sendable ([Int]) -> [PortHolder] = { PortCheck.holders(of: $0) },
+         phpEnvironment: [String: String] = ProcessInfo.processInfo.environment,
          log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
         self.managesPortHelper = managesPortHelper
@@ -187,7 +192,8 @@ public final class Engine: @unchecked Sendable {
         self.paths = paths
         self.settings = settings
         store = StateStore(paths: paths)
-        installer = PHPInstaller(paths: paths, manifest: (try? PHPManifest.bundled()) ?? PHPManifest(builds: []))
+        installer = PHPInstaller(paths: paths, manifest: (try? PHPManifest.bundled()) ?? PHPManifest(builds: []),
+                                 environment: phpEnvironment)
         dns = DNSResponder(port: settings.dnsPort, tld: settings.tld)
     }
 
@@ -212,7 +218,12 @@ public final class Engine: @unchecked Sendable {
         do { try installShims() } catch {
             log("could not install the php and composer commands: \(error.localizedDescription)")
         }
-        let state = try prepareState()
+        if !sweptStaleStaging {
+            // A daemon killed mid-install or mid-update leaves its staging folder; nothing installs yet.
+            installer.removeStaleStaging()
+            sweptStaleStaging = true
+        }
+        let state = try prepareState(updatingBuilds: true)
         replaceDefaultNamedAuthority()
 
         var helper: URL?
@@ -331,7 +342,7 @@ public final class Engine: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         try paths.ensureDirectories()
-        let state = try prepareState()
+        let state = try prepareState(updatingBuilds: false)
         try writeConfigs(state)
         guard flags.running else { return }
 
@@ -387,16 +398,19 @@ public final class Engine: @unchecked Sendable {
 
     // MARK: - State and configs
 
-    /// Installs the bundled PHP if none is installed, brings installed builds up to the app's own (before
-    /// any PHP-FPM starts, so the pools run the new binaries), makes sure the default PHP is installed,
-    /// and creates the first parked directory if it can (it may be on a volume that isn't mounted).
-    private func prepareState() throws -> State {
+    /// Installs the bundled PHP if none is installed; with `updatingBuilds` (on start only) brings
+    /// installed builds up to the app's own before any PHP-FPM starts, so the pools run the new binaries,
+    /// trying a version that failed only once per daemon. Makes sure the default PHP is installed, and
+    /// creates the first parked directory if it can (it may be on a volume that isn't mounted).
+    private func prepareState(updatingBuilds: Bool) throws -> State {
         var installed = installer.installed()
         if installed.isEmpty {
             try installer.installBundled()
             installed = installer.installed()
         }
-        installer.updateOutdatedBuilds(log: log)
+        if updatingBuilds {
+            failedBuildUpdates.formUnion(installer.updateOutdatedBuilds(skipping: failedBuildUpdates, log: log))
+        }
         let state = try store.update { state in
             if state.defaultPHP.map({ !installed.contains($0) }) ?? true {
                 state.defaultPHP = installed.max()

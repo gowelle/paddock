@@ -139,21 +139,41 @@ public final class PHPInstaller {
     /// Brings every installed version the manifest offers up to the manifest's build, when that build's
     /// archives are on this Mac (`paddock-builds://`): updating the app updates the PHP it installed. It
     /// never downloads. A version whose record already matches is left alone; one whose build isn't here
-    /// is kept as it is, with one line in `log`. The directory is swapped in one step and the user's
-    /// php.ini (kept outside it) is untouched.
-    public func updateOutdatedBuilds(log: (String) -> Void) {
-        for v in installed() {
+    /// is kept as it is, with one line in `log`. The directory is swapped in one step; its `ext/` folder
+    /// (extensions such as Xdebug) is carried over, and the user's php.ini (kept outside it) is untouched.
+    /// Versions in `skipping` are left alone. Returns the versions that could not be updated.
+    @discardableResult
+    public func updateOutdatedBuilds(skipping: Set<PHPVersion> = [], log: (String) -> Void) -> Set<PHPVersion> {
+        var failed: Set<PHPVersion> = []
+        for v in installed() where !skipping.contains(v) {
             guard let build = manifest.build(for: v) else { continue }
             if let record = buildRecord(v), record.matches(build) { continue }
             do {
                 try replaceFromLocalBuild(build)
                 log("updated PHP \(v) to build \(build.patch)")
             } catch PHPInstallError.buildMissing(_, let file) {
+                failed.insert(v)
                 log("PHP \(v) is not Paddock's current build \(build.patch), whose \(file) isn't on this Mac; "
                     + "keeping the installed one")
             } catch {
+                failed.insert(v)
                 log("could not update PHP \(v) to build \(build.patch), keeping the installed one: \(error)")
             }
+        }
+        return failed
+    }
+
+    /// Deletes staging folders an interrupted install or update left in the home (`.php-install-<UUID>`).
+    /// Only call it when no install is running.
+    public func removeStaleStaging() {
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: paths.home.path)) ?? []
+        for name in names where name.hasPrefix(Self.stagingPrefix)
+            && UUID(uuidString: String(name.dropFirst(Self.stagingPrefix.count))) != nil {
+            let url = paths.home.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+            try? fm.removeItem(at: url)
         }
     }
 
@@ -223,8 +243,10 @@ public final class PHPInstaller {
         return stage
     }
 
+    private static let stagingPrefix = ".php-install-"
+
     private func makeStagingDirectory() throws -> URL {
-        let dir = paths.home.appendingPathComponent(".php-install-\(UUID().uuidString)", isDirectory: true)
+        let dir = paths.home.appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -251,7 +273,9 @@ public final class PHPInstaller {
 
     /// Moves a finished directory into place in one step. A previous directory is swapped out
     /// atomically (`stage` then holds it, and goes away with the staging directory), so a running `php`
-    /// or PHP-FPM never sees a half-replaced build.
+    /// or PHP-FPM never sees a half-replaced build. The previous directory's `ext/` (the php.ini's
+    /// `extension_dir`, where Xdebug and the user's extensions live) is copied into the new one first:
+    /// extensions are built per minor version, so they still load after a patch update.
     private func place(_ stage: URL, at target: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -259,12 +283,17 @@ public final class PHPInstaller {
             try fm.moveItem(at: stage, to: target)
             return
         }
-        let swapped = stage.withUnsafeFileSystemRepresentation { from in
+        let ext = target.appendingPathComponent("ext", isDirectory: true)
+        let stagedExt = stage.appendingPathComponent("ext", isDirectory: true)
+        if fm.fileExists(atPath: ext.path), !fm.fileExists(atPath: stagedExt.path) {
+            try fm.copyItem(at: ext, to: stagedExt)
+        }
+        let failure: Int32 = stage.withUnsafeFileSystemRepresentation { from in
             target.withUnsafeFileSystemRepresentation { to in
-                renamex_np(from!, to!, UInt32(RENAME_SWAP)) == 0
+                renamex_np(from!, to!, UInt32(RENAME_SWAP)) == 0 ? 0 : errno
             }
         }
-        guard swapped else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard failure == 0 else { throw POSIXError(POSIXErrorCode(rawValue: failure) ?? .EIO) }
     }
 
     /// Writes the default php.ini if none exists; never overwrites.

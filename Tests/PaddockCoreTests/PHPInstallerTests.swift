@@ -493,4 +493,62 @@ final class PHPInstallerTests: XCTestCase {
         XCTAssertEqual(try installer.installBundled(), v85)
         XCTAssertEqual(installer.buildRecord(v85), record)
     }
+
+    func testUpdateCarriesTheExtFolderIntoTheNewBuild() throws {
+        try makeOldStyleInstall(v84)
+        let ext = paths.phpDir(v84).appendingPathComponent("ext", isDirectory: true)
+        try FileManager.default.createDirectory(at: ext, withIntermediateDirectories: true)
+        try Data("xdebug".utf8).write(to: ext.appendingPathComponent("xdebug.so"))
+        let local = try makeLocalBuilds()
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        installer.updateOutdatedBuilds { _ in }
+        XCTAssertEqual(try phpText(v84), "#!/bin/sh\necho php new\n")
+        XCTAssertEqual(try String(contentsOf: ext.appendingPathComponent("xdebug.so"), encoding: .utf8), "xdebug")
+    }
+
+    func testUpdateWithACorruptArchiveKeepsTheOldBuildAndWritesNoRecord() throws {
+        try makeOldStyleInstall(v84)
+        let local = try makeLocalBuilds()
+        // Resolvable, but not the archive the manifest names.
+        let dir = URL(fileURLWithPath: local.environment["PADDOCK_BUILDS_DIR"]!)
+        try Data("corrupt".utf8).write(to: dir.appendingPathComponent("php-8.4.28-cli-macos-x86_64.tar.gz"))
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        let log = Lines()
+        let failed = installer.updateOutdatedBuilds { log.lines.append($0) }
+        XCTAssertEqual(failed, [v84])
+        XCTAssertEqual(try phpText(v84), "#!/bin/sh\necho php old\n")
+        XCTAssertNil(installer.buildRecord(v84))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: paths.phpDir(v84).appendingPathComponent(PHPBuildRecord.fileName).path))
+        XCTAssertEqual(log.lines.count, 1, "\(log.lines)")
+        XCTAssertTrue(leftoverTempDirs().isEmpty)
+    }
+
+    func testUpdateLeavesSkippedVersionsAloneAndReportsFailures() throws {
+        try makeOldStyleInstall(v84)
+        let local = try makeLocalBuilds(archivesPresent: false)
+        let installer = PHPInstaller(paths: paths, manifest: local.manifest, session: noNetworkSession(),
+                                     environment: local.environment)
+        let log = Lines()
+        XCTAssertEqual(installer.updateOutdatedBuilds { log.lines.append($0) }, [v84])
+        XCTAssertEqual(installer.updateOutdatedBuilds(skipping: [v84]) { log.lines.append($0) }, [])
+        XCTAssertEqual(log.lines.count, 1, "\(log.lines)")
+    }
+
+    func testRemoveStaleStagingDeletesOnlyStagingFolders() throws {
+        let fm = FileManager.default
+        let stale = home.appendingPathComponent(".php-install-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: stale.appendingPathComponent("stage"), withIntermediateDirectories: true)
+        let notUUID = home.appendingPathComponent(".php-install-mine", isDirectory: true)
+        try fm.createDirectory(at: notUUID, withIntermediateDirectories: true)
+        let file = home.appendingPathComponent(".php-install-\(UUID().uuidString)")
+        try Data().write(to: file)
+        let other = home.appendingPathComponent("php-install-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: other, withIntermediateDirectories: true)
+        PHPInstaller(paths: paths, manifest: PHPManifest(builds: [])).removeStaleStaging()
+        XCTAssertFalse(fm.fileExists(atPath: stale.path))
+        for kept in [notUUID, file, other] { XCTAssertTrue(fm.fileExists(atPath: kept.path), kept.lastPathComponent) }
+    }
 }
