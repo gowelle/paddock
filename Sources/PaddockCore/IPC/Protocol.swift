@@ -25,9 +25,10 @@ public enum Request: Codable, Equatable, Sendable {
     /// Creates a database in a running service (answered with `.databaseCreated`); one already there is not
     /// an error.
     case serviceCreateDatabase(name: String, database: String)
-    /// Approves the site's `paddock.json` as it is now, provided its hash is `hash` (what the user was shown),
-    /// and starts its tasks.
-    case tasksApprove(site: String, hash: String)
+    /// Approves the site's `paddock.json` as it is now, provided its hash is `hash` (what the user was shown) and,
+    /// when given, the site's folder (symlinks resolved) is still `folder` (where the user was shown it), and starts
+    /// its tasks.
+    case tasksApprove(site: String, hash: String, folder: String? = nil)
     /// Stops the site's tasks and withdraws the approval.
     case tasksRevoke(site: String)
     /// Start, stop or restart one approved task. A stop is remembered (across restarts) until a start.

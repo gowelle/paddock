@@ -50,6 +50,7 @@ final class IPCTests: XCTestCase {
             .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
             .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
             .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail"),
+            .tasksApprove(site: "shop", hash: "v1:abc", folder: "/Users/me/Code/shop"),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -59,6 +60,10 @@ final class IPCTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 8, "ServiceStatus.notes is new: the build number moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 15, "serviceEnv is new and status leaves secrets out")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 16, "catalog entries say why they can't run here")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 17, "approvals name their folder; tasksApprove may too")
+        // An approval from a client that doesn't name the folder still reads.
+        let older = try JSONDecoder().decode(Request.self, from: Data(#"{"tasksApprove":{"site":"shop","hash":"v1:x"}}"#.utf8))
+        XCTAssertEqual(older, .tasksApprove(site: "shop", hash: "v1:x", folder: nil))
     }
 
     // MARK: - What a development build may send

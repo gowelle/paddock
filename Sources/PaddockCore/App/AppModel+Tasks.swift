@@ -36,6 +36,11 @@ public struct SiteTasksSection: Identifiable, Equatable, Sendable {
     public let notice: String?
 }
 
+extension ApprovalPrompt {
+    /// The request that approves exactly this: its hash and its folder.
+    public var approveRequest: Request { .tasksApprove(site: site, hash: hash, folder: resolvedFolder) }
+}
+
 /// What the approval sheet shows.
 public enum ApprovalSheetState: Equatable, Sendable {
     /// Reading the site's `paddock.json` again.
@@ -60,6 +65,8 @@ public struct ApprovalPrompt: Equatable, Sendable {
     public let hash: String
     /// The file changed since it was approved (the approved version keeps running until this is approved).
     public let isChange: Bool
+    /// The site's folder as the daemon read it (symlinks resolved): approving names it. Nil from an older daemon.
+    public let resolvedFolder: String?
 }
 
 extension AppModel {
@@ -111,10 +118,10 @@ extension AppModel {
         guard let site = sites.first(where: { $0.name == siteName }), let tasks = site.tasks,
               tasks.approval == .needsApproval || tasks.approval == .changed,
               !tasks.pending.isEmpty, let hash = tasks.pendingHash else { return nil }
-        let folder = Self.folder(of: site)
+        let folder = Messages.displayName(tasks.folder ?? site.path, limit: 256) ?? "?"
         return ApprovalPrompt(site: site.name, folder: folder, heading: "\(folder)/\(SiteTasksFile.fileName) would run:",
                               lines: Messages.approvalLines(tasks.pending, site: site), hash: hash,
-                              isChange: tasks.approval == .changed)
+                              isChange: tasks.approval == .changed, resolvedFolder: tasks.folder)
     }
 
     /// The prompt the open sheet shows, once loaded and while there is something to approve.
@@ -166,7 +173,7 @@ extension AppModel {
     /// decide on again.
     public func approveTasks(site: String) async {
         guard canApprove, approvalSite == site, let shown = shownApproval, shown.site == site else { return }
-        let response = await act(.tasksApprove(site: site, hash: shown.hash))
+        let response = await act(shown.approveRequest)
         if case .error(let code, let message)? = response {
             approvalError = message
             if code == ErrorCode.tasksChanged, approvalSite == site { await loadApproval(site: site) }

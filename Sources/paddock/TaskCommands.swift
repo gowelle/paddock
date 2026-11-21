@@ -162,10 +162,10 @@ struct TasksOn: ParsableCommand {
             }
         }
         guard !show else { return print("Approve it with: paddock tasks on") }
-        let status = try CLI.send(.tasksApprove(site: target.name, hash: hash))
+        let status = try CLI.send(.tasksApprove(site: target.name, hash: hash, folder: folder.path))
         print("Approved.")
         for task in status.sites.first(where: { $0.name == target.name })?.tasks?.tasks ?? [] {
-            print("  \(task.name): \(Messages.taskState(task.state))")
+            print("  \(task.name): \(Messages.taskState(task.state, task: task.name))")
         }
     }
 }

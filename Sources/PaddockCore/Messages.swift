@@ -524,6 +524,14 @@ public enum Messages {
             + "Review the change with: paddock tasks on --show"
     }
 
+    /// An approval for this path whose folder is not the one approved (deleted and made again, or another folder
+    /// moved into its place): nothing of it runs or forwards.
+    public static let tasksFolderReplaced =
+        "This folder was replaced since its tasks were approved. Review and approve again."
+
+    /// `tasksApprove` named another folder than the site has now.
+    public static let tasksFolderChanged = "This site now points at a different folder. Review and approve again."
+
     public static func tasksFileRemoved(site: String) -> String {
         "\(site): paddock.json is gone; the approved tasks keep running. Stop them with: paddock tasks off"
     }
@@ -761,6 +769,8 @@ public enum Messages {
         case .leftoverProcesses(_, let task):
             return "\(task) is already running (processes left from an earlier run), not started by this Paddock. "
                 + "Stop them with: paddock tasks restart \(task) --force"
+        case .folderChanged:
+            return tasksFolderChanged
         case .changedSinceShown(let site):
             return "\(site)'s paddock.json changed after it was shown, so Paddock approved nothing. "
                 + "Review it again with: paddock tasks on --show"

@@ -349,6 +349,119 @@ final class SiteTasksTests: XCTestCase {
         XCTAssertNil(pid(engine, "shop", "queue"))
     }
 
+    /// A different folder put where the approved one was (deleted and cloned again, or another folder renamed into
+    /// its place) runs nothing of the approval, and the site says why; approving again runs it.
+    func testAReplacedFolderRunsNothingUntilApprovedAgain() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}, "proxy": {"/app": 48123}}"#
+        let folder = try home.makeSite("shop", tasks: text)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        XCTAssertNotNil(StateStore(paths: home.paths).load().taskApprovals["shop"]?.folder, "the folder is remembered")
+
+        // Deleted and made again with the same file, while the daemon runs.
+        try FileManager.default.removeItem(at: folder)
+        try home.makeSite("shop", tasks: text)
+        engine.tasks.refresh()
+        XCTAssertTrue(waitFor(10) { !self.alive(first) }, "stopped")
+        var status = try XCTUnwrap(tasks(engine, "shop"))
+        XCTAssertEqual(status.approval, .needsApproval)
+        XCTAssertEqual(status.routes, [:], "nothing forwards")
+        XCTAssertTrue(status.notice?.contains(Messages.tasksFolderReplaced) ?? false, status.notice ?? "no notice")
+        XCTAssertEqual(engine.desiredRoutes(), [:])
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertNil(pid(engine, "shop", "queue"))
+
+        try await approve(engine, "shop")
+        let second = try XCTUnwrap(waitForRunning(engine, "shop", "queue"), "approved again: it runs")
+
+        // Another folder renamed into its place.
+        let other = try home.makeSite("other", tasks: text, parent: home.otherSites)
+        let aside = home.root.appendingPathComponent("aside", isDirectory: true)
+        try FileManager.default.moveItem(at: folder, to: aside)
+        try FileManager.default.moveItem(at: other, to: folder)
+        engine.tasks.refresh()
+        XCTAssertTrue(waitFor(10) { !self.alive(second) })
+        status = try XCTUnwrap(tasks(engine, "shop"))
+        XCTAssertEqual(status.approval, .needsApproval)
+        XCTAssertTrue(status.notice?.contains(Messages.tasksFolderReplaced) ?? false, status.notice ?? "no notice")
+    }
+
+    /// Approving names the folder that was shown: a site that now points elsewhere is refused, and nothing runs.
+    func testAnApprovalForAnotherFolderThanShownIsRefused() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let engine = try await makeEngine()
+        engine.tasks.refresh()
+        let status = try XCTUnwrap(tasks(engine, "shop"))
+        let real = try XCTUnwrap(SiteTasksFile.realPath(folder.path))
+        XCTAssertEqual(status.folder, real, "the status says which folder it read")
+        let hash = try XCTUnwrap(status.pendingHash)
+        guard case .error(let code, let message) = await engine.handle(.tasksApprove(site: "shop", hash: hash,
+                                                                                      folder: "/somewhere/else")) else {
+            return XCTFail("approved")
+        }
+        XCTAssertEqual(code, ErrorCode.tasksChanged)
+        XCTAssertEqual(message, "This site now points at a different folder. Review and approve again.")
+        XCTAssertNil(StateStore(paths: home.paths).load().taskApprovals["shop"])
+        guard case .ok = await engine.handle(.tasksApprove(site: "shop", hash: hash, folder: real)) else {
+            return XCTFail("the folder shown")
+        }
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"))
+    }
+
+    /// Replaced while the daemon was stopped: at the next start nothing runs.
+    func testAFolderReplacedWhileTheDaemonWasStoppedRunsNothing() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#
+        let folder = try home.makeSite("shop", tasks: text)
+        var engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        engine.shutdown()
+        XCTAssertFalse(alive(first))
+
+        // An ordinary restart with the same folder keeps the approval.
+        engine = try await makeEngine()
+        let again = try XCTUnwrap(waitForRunning(engine, "shop", "queue"), "the same folder: it runs")
+        engine.shutdown()
+        XCTAssertFalse(alive(again))
+
+        try FileManager.default.removeItem(at: folder)
+        try home.makeSite("shop", tasks: text)
+        engine = try await makeEngine()
+        let status = try XCTUnwrap(tasks(engine, "shop"))
+        XCTAssertEqual(status.approval, .needsApproval)
+        XCTAssertTrue(status.notice?.contains(Messages.tasksFolderReplaced) ?? false, status.notice ?? "no notice")
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertNil(pid(engine, "shop", "queue"))
+    }
+
+    /// An approval stored before folders were remembered adopts the folder the site is served from at the next
+    /// start (once, logged); one whose site is gone never comes back for a folder that reappears there.
+    func testOlderApprovalsAdoptTheServedFolderOnceAndGoneOnesNeverRevive() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#
+        let shop = try home.makeSite("shop", tasks: text)
+        let stored = SiteTasksFile(tasks: ["queue": TaskDefinition(run: "exec sleep 600", restartOnChange: nil,
+                                                                   autostart: nil, stopSeconds: nil)], proxy: [:])
+        let shopPath = try XCTUnwrap(SiteTasksFile.realPath(shop.path))
+        let blogPath = try XCTUnwrap(SiteTasksFile.realPath(home.sites.path)) + "/blog"
+        try StateStore(paths: home.paths).update {
+            $0.taskApprovals["shop"] = ApprovedTasks(hash: stored.hash, file: stored, sitePath: shopPath, stopped: [])
+            $0.taskApprovals["blog"] = ApprovedTasks(hash: stored.hash, file: stored, sitePath: blogPath, stopped: [],
+                                                     goneSince: Date().addingTimeInterval(-86400))
+        }
+        let engine = try await makeEngine()
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"), "adopted: it runs")
+        XCTAssertEqual(StateStore(paths: home.paths).load().taskApprovals["shop"]?.folder, FolderIdentity.of(path: shopPath))
+
+        // A blog folder appears where the gone one was: its old approval is dropped, nothing runs.
+        try home.makeSite("blog", tasks: text)
+        engine.tasks.refresh()
+        XCTAssertNil(StateStore(paths: home.paths).load().taskApprovals["blog"])
+        XCTAssertEqual(tasks(engine, "blog")?.approval, .needsApproval)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertNil(pid(engine, "blog", "queue"))
+    }
+
     /// A process a pid record names that still runs but can't be proved Paddock's own (here: its parent, this
     /// test, is alive) is left alone, and no second copy starts.
     func testAProcessThatIsNotProvablyOursIsLeftAlone() async throws {

@@ -41,6 +41,7 @@ extension SiteTaskManager {
             let showsPending = evaluation.approval == .needsApproval || evaluation.approval == .changed
             let pending = showsPending ? evaluation.pending : nil
             var notices: [String] = []
+            if evaluation.folderReplaced { notices.append(Messages.tasksFolderReplaced) }
             if evaluation.approval == .changed {
                 if let problem = evaluation.problem {
                     notices.append(Messages.tasksFileBroken(site: view.name, reason: problem))
@@ -70,7 +71,7 @@ extension SiteTaskManager {
                 approval: evaluation.approval, tasks: tasks,
                 pending: pending.map(SiteTasksStatus.pendingLines) ?? [], pendingHash: pending?.hash,
                 notice: notices.isEmpty ? nil : notices.joined(separator: " "),
-                routes: approvedRoutes.filter { !reserved.contains($0.value) })
+                routes: approvedRoutes.filter { !reserved.contains($0.value) }, folder: view.folder)
         }
         return result
     }

@@ -13,6 +13,8 @@ public enum SiteTaskError: Error, Equatable, Sendable {
     case notShowable(site: String, task: String, problem: CommandProblem)
     /// The file's hash isn't the one the user was shown.
     case changedSinceShown(site: String)
+    /// The site's folder isn't the one the user was shown.
+    case folderChanged(site: String)
     case alreadyRunning(site: String, task: String, pid: Int32)
     /// Processes an earlier run left in the task's group still run.
     case leftoverProcesses(site: String, task: String)
@@ -256,6 +258,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         guard !isShuttingDown else { return }
+        adoptFolderIdentitiesLocked()
         refreshLocked()
         guard let refreshInterval else { return }
         stateLock.lock()
@@ -266,6 +269,33 @@ public final class SiteTaskManager: @unchecked Sendable {
         timer.setEventHandler { [weak self] in self?.refresh() }
         timer.resume()
         self.timer = timer
+    }
+
+    /// Approvals stored before Paddock remembered the approved folder's identity adopt the folder their site is
+    /// served from now, when it is served from that very path (logged). Any other such approval is marked gone by the
+    /// refresh that follows and so is never adopted later: it holds for no folder, and is dropped if one reappears.
+    func adoptFolderIdentitiesLocked() {
+        let state = store.load()
+        var adopted: [String: FolderIdentity] = [:]
+        let served = sites()
+        for (name, approval) in state.taskApprovals where approval.folder == nil && approval.goneSince == nil {
+            guard let site = served.first(where: { $0.name == name }), let folder = SiteTasksFile.realPath(site.path),
+                  folder == approval.sitePath, let identity = FolderIdentity.of(path: folder) else { continue }
+            adopted[name] = identity
+        }
+        guard !adopted.isEmpty else { return }
+        do {
+            try store.update { state in
+                for (name, identity) in adopted where state.taskApprovals[name]?.folder == nil {
+                    state.taskApprovals[name]?.folder = identity
+                }
+            }
+            for name in adopted.keys.sorted() {
+                log("site \(name): its task approval now also names the folder it was approved for (one-time update)")
+            }
+        } catch {
+            log("could not save site task approvals: \(error.localizedDescription)")
+        }
     }
 
     func removeRecordsFromEarlierBoots() {
@@ -351,11 +381,12 @@ public final class SiteTaskManager: @unchecked Sendable {
         cache[name] = nil
         let result = load(site: name, folder: folder)
         let approved = store.load().taskApprovals[name]
-        let evaluation = TaskApproval.evaluate(current: result, approved: approved, sitePath: folder)
+        let identity = FolderIdentity.of(path: folder)
+        let evaluation = TaskApproval.evaluate(current: result, approved: approved, sitePath: folder, folderIdentity: identity)
         stateLock.lock()
         if approved != nil || result != .none {
             views[name] = SiteView(name: name, folder: folder, evaluation: evaluation,
-                                   stopped: approved?.sitePath == folder ? approved?.stopped ?? [] : [])
+                                   stopped: approved?.holds(at: folder, identity: identity) == true ? approved?.stopped ?? [] : [])
         } else {
             views[name] = nil
         }
@@ -381,44 +412,55 @@ public final class SiteTaskManager: @unchecked Sendable {
         let now = Date()
         let state = store.load()
         var views: [String: SiteView] = [:]
-        var present: [String: String] = [:]
+        var present: [String: (folder: String, identity: FolderIdentity?)] = [:]
         for site in sites() {
             guard let folder = SiteTasksFile.realPath(site.path) else { continue }
-            present[site.name] = folder
+            let identity = FolderIdentity.of(path: folder)
+            present[site.name] = (folder, identity)
             let result = load(site: site.name, folder: folder)
-            let approved = state.taskApprovals[site.name]
-            let evaluation = TaskApproval.evaluate(current: result, approved: approved, sitePath: folder)
+            var approved = state.taskApprovals[site.name]
+            // An approval whose site went away never comes back for a folder that isn't the one it was made for.
+            if let gone = approved, gone.goneSince != nil, !gone.holds(at: folder, identity: identity) { approved = nil }
+            let evaluation = TaskApproval.evaluate(current: result, approved: approved, sitePath: folder,
+                                                   folderIdentity: identity)
             guard approved != nil || result != .none else { continue }
-            let stopped = approved?.sitePath == folder ? approved?.stopped ?? [] : []
+            let stopped = approved?.holds(at: folder, identity: identity) == true ? approved?.stopped ?? [] : []
             views[site.name] = SiteView(name: site.name, folder: folder, evaluation: evaluation, stopped: stopped)
         }
-        cache = cache.filter { present[$0.key] == $0.value.folder }
+        cache = cache.filter { present[$0.key]?.folder == $0.value.folder }
 
-        // Approvals whose site is gone (or is now another folder) are kept a while, then dropped.
+        // Approvals whose site is gone (or is now another folder) are kept a while, then dropped; one whose folder
+        // reappears as another folder (or one it can't tell) is dropped then.
         var gone: [String] = []
         var back: [String] = []
         var expired: [String] = []
+        var replaced: [String] = []
         for (name, approval) in state.taskApprovals {
-            if present[name] == approval.sitePath {
-                if approval.goneSince != nil { back.append(name) }
+            if let here = present[name], here.folder == approval.sitePath {
+                if approval.goneSince != nil {
+                    if approval.holds(at: here.folder, identity: here.identity) { back.append(name) } else { replaced.append(name) }
+                }
             } else if let since = approval.goneSince {
                 if now.timeIntervalSince(since) > ApprovedTasks.keptAfterSiteGone { expired.append(name) }
             } else {
                 gone.append(name)
             }
         }
-        if !(gone.isEmpty && back.isEmpty && expired.isEmpty) {
+        if !(gone.isEmpty && back.isEmpty && expired.isEmpty && replaced.isEmpty) {
             do {
                 try store.update { state in
                     for name in gone { state.taskApprovals[name]?.goneSince = now }
                     for name in back { state.taskApprovals[name]?.goneSince = nil }
-                    for name in expired { state.taskApprovals[name] = nil }
+                    for name in expired + replaced { state.taskApprovals[name] = nil }
                 }
             } catch {
                 log("could not save site task approvals: \(error.localizedDescription)")
             }
             for name in gone { log("site \(name) is gone; its tasks were stopped and its approval is kept for 30 days") }
             for name in expired { log("dropped the task approval of site \(name), gone for 30 days") }
+            for name in replaced {
+                log("dropped the task approval of site \(name): its folder came back as another folder")
+            }
         }
 
         stateLock.lock()

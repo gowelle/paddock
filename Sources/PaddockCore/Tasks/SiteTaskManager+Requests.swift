@@ -5,25 +5,29 @@ import Foundation
 extension SiteTaskManager {
     // MARK: - Requests
 
-    /// Approves the site's `paddock.json` as it is now, if it still has the hash the user was shown, and starts
-    /// its tasks. Refuses a file with a command that can't be shown as it runs. Doesn't wait for tasks of an
-    /// earlier approved version to stop: the new ones start when they have.
+    /// Approves the site's `paddock.json` as it is now, if it still has the hash the user was shown (and, when
+    /// `shownFolder` is given, the site is still that folder), and starts its tasks; the approval names the folder's
+    /// identity, so it holds for that very folder only. Refuses a file with a command that can't be shown as it
+    /// runs. Doesn't wait for tasks of an earlier approved version to stop: the new ones start when they have.
     @discardableResult
-    public func approve(site name: String, hash: String) throws -> SiteTasksStatus {
+    public func approve(site name: String, hash: String, folder shownFolder: String? = nil) throws -> SiteTasksStatus {
         guard !isShuttingDown else { throw SiteTaskError.shuttingDown }
-        _ = try approvable(site: name, hash: hash)
+        _ = try approvable(site: name, hash: hash, shownFolder: shownFolder)
         let captured = captureEnvironment()
         log("site tasks: \(captured.description)")
         operationLock.lock()
         defer { operationLock.unlock() }
         // The daemon may have begun shutting down while the shell was being read.
         guard !isShuttingDown else { throw SiteTaskError.shuttingDown }
-        let (folder, file) = try approvable(site: name, hash: hash)
+        let (folder, file) = try approvable(site: name, hash: hash, shownFolder: shownFolder)
+        let identity = FolderIdentity.of(path: folder)
         update { _ in self.environment = captured }
         try store.update { state in
             let previous = state.taskApprovals[name]
-            let stopped = previous?.sitePath == folder ? previous!.stopped.intersection(file.tasks.keys) : []
-            state.taskApprovals[name] = ApprovedTasks(hash: hash, file: file, sitePath: folder, stopped: stopped)
+            let stopped = previous?.holds(at: folder, identity: identity) == true
+                ? previous!.stopped.intersection(file.tasks.keys) : []
+            state.taskApprovals[name] = ApprovedTasks(hash: hash, file: file, sitePath: folder, stopped: stopped,
+                                                      folder: identity)
         }
         clearSettled(site: name)
         log("approved the tasks of site \(name): \(file.tasks.keys.sorted().joined(separator: ", "))")
@@ -31,9 +35,10 @@ extension SiteTaskManager {
         return statuses()[name] ?? SiteTasksStatus(approval: .approved, tasks: [], pending: [], pendingHash: nil, notice: nil)
     }
 
-    /// The site's folder and current file, if it can be approved with `hash`.
-    func approvable(site name: String, hash: String) throws -> (String, SiteTasksFile) {
+    /// The site's folder and current file, if it can be approved with `hash` (and is still `shownFolder`).
+    func approvable(site name: String, hash: String, shownFolder: String? = nil) throws -> (String, SiteTasksFile) {
         let folder = try folder(of: name)
+        if let shownFolder, shownFolder != folder { throw SiteTaskError.folderChanged(site: name) }
         switch SiteTasksFile.load(siteFolder: URL(fileURLWithPath: folder, isDirectory: true)) {
         case .none: throw SiteTaskError.noTasksFile(site: name)
         case .invalid(let reason): throw SiteTaskError.invalid(site: name, reason: reason)

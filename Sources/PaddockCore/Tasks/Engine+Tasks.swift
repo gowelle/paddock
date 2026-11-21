@@ -17,9 +17,9 @@ extension Engine {
         let tasks = self.tasks
         do {
             switch request {
-            case .tasksApprove(let site, let hash):
+            case .tasksApprove(let site, let hash, let folder):
                 let asked = Date()
-                try await ServiceManager.offPool { _ = try tasks.approve(site: site, hash: hash) }
+                try await ServiceManager.offPool { _ = try tasks.approve(site: site, hash: hash, folder: folder) }
                 await applyProxyRoutes(since: asked)
             case .tasksRevoke(let site):
                 let asked = Date()
@@ -67,7 +67,7 @@ extension Engine {
         case .invalid, .notShowable: code = ErrorCode.tasksInvalid
         case .notApproved: code = ErrorCode.tasksNotApproved
         case .unknownTask: code = ErrorCode.unknownTask
-        case .changedSinceShown: code = ErrorCode.tasksChanged
+        case .changedSinceShown, .folderChanged: code = ErrorCode.tasksChanged
         case .alreadyRunning, .leftoverProcesses: code = ErrorCode.taskAlreadyRunning
         case .stillStopping: code = ErrorCode.internal
         case .fileExists: code = ErrorCode.tasksFileExists
