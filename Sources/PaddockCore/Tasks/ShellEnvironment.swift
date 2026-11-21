@@ -30,6 +30,24 @@ public struct ShellEnvironment: Sendable, CustomStringConvertible {
 
     public static let timeout: TimeInterval = 5
 
+    /// A JSON file of `NAME: value` that a development home's daemon uses instead of asking the shell (tests
+    /// never run the owner's startup files). A real home ignores it.
+    public static let overrideVariable = "PADDOCK_TASK_ENVIRONMENT"
+
+    /// The daemon's: the user's shell asked as `capture` does, or in a development home the override file.
+    public static func forDaemon(environment: [String: String]) -> ShellEnvironment {
+        let shell = userShell(environment: environment)
+        if !SystemIntegration.isEnabled(environment: environment), let path = environment[overrideVariable],
+           !path.isEmpty {
+            if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+               let variables = try? JSONDecoder().decode([String: String].self, from: data) {
+                return ShellEnvironment(variables: variables.filter { !isDropped($0.key) }, usedFallback: false, shell: shell)
+            }
+            fputs("paddockd: ignoring \(path): not a JSON object of strings\n", stderr)
+        }
+        return capture(shell: shell, environment: environment)
+    }
+
     /// Shell bookkeeping and what Paddock sets itself: never passed on to tasks.
     static func isDropped(_ name: String) -> Bool {
         name.hasPrefix("PADDOCK_") || ["OLDPWD", "PWD", "SHLVL", "_"].contains(name)

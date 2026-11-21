@@ -93,7 +93,8 @@ print("paddockd: listening on \(paths.daemonSocket.path)")
 engine.startDNS()
 
 // Start the engine through the same path as a client's `start`, so it queues with other requests. Then the
-// services that start with Paddock, whatever happened to the web side (its ports may be taken).
+// services that start with Paddock and the sites' approved tasks, whatever happened to the web side (its ports
+// may be taken).
 Task {
     switch await engine.handle(.start) {
     case .ok(let status):
@@ -104,6 +105,8 @@ Task {
         break
     }
     await engine.startAutostartServices()
+    // Then the sites' approved tasks (a queue worker wants its database up first).
+    await engine.startTasks()
 }
 
 dispatchMain()

@@ -453,6 +453,136 @@ public enum Messages {
         isShowable(command) ? command : (displayName(command, limit: SiteTasksFile.maximumRunLength) ?? "?")
     }
 
+    /// `paddock status`'s line for a site whose `paddock.json` nobody approved yet.
+    public static func tasksWaitingForApproval(site: String) -> String {
+        "\(site): paddock.json has tasks waiting for your approval. Review them with: paddock tasks on --show"
+    }
+
+    public static func tasksChanged(site: String) -> String {
+        "\(site): paddock.json changed since you approved it; the approved version keeps running. "
+            + "Review the change with: paddock tasks on --show"
+    }
+
+    public static func tasksFileRemoved(site: String) -> String {
+        "\(site): paddock.json is gone; the approved tasks keep running. Stop them with: paddock tasks off"
+    }
+
+    public static func tasksFileBroken(site: String, reason: String) -> String {
+        "\(site): paddock.json can't be used (\(reason)); the approved version keeps running."
+    }
+
+    public static func tasksFileInvalid(site: String, reason: String) -> String {
+        "\(site): paddock.json can't be used: \(reason)."
+    }
+
+    public static func commandNotShowable(task: String) -> String {
+        "The command of task \"\(task)\" contains characters that cannot be shown, so Paddock won't approve it. "
+            + "Make it plain text in paddock.json."
+    }
+
+    public static let tasksUseBasicEnvironment = "Paddock couldn't read your shell's environment, so tasks run with a "
+        + "basic PATH. Check your shell's startup files, then run: paddock tasks on"
+
+    /// A task that kept finishing by itself.
+    public static let taskKeepsExiting = "It finished by itself \(SiteTaskManager.exitedLimit) times within "
+        + "\(Int(SiteTaskManager.exitedWindow)) seconds, so Paddock stopped restarting it. A task should be a command "
+        + "that keeps running."
+
+    public static func taskRestarting(status: Int32) -> String {
+        "exited with status \(status); Paddock restarts it in a moment"
+    }
+
+    public static func taskGaveUp(status: Int32, task: String) -> String {
+        "exited with status \(status) \(Supervisor.maxFailures) times within a minute, so Paddock stopped restarting it. "
+            + "See: paddock tasks logs \(task)"
+    }
+
+    public static func taskCouldNotRun(shell: String) -> String { "Paddock couldn't run \(shell)" }
+
+    /// Lines Paddock adds to a task's own log.
+    public static func taskCutShort(after seconds: Int, allowed: Int) -> String {
+        "Paddock was shutting down, so it stopped this task after \(seconds) seconds instead of waiting the "
+            + "\(allowed) its stopSeconds allow."
+    }
+
+    public static let taskSiteGone = "The site's folder is gone, so Paddock stopped this task."
+
+    /// `running (pid 12)`, `stopped by you`…
+    public static func taskState(_ state: TaskState) -> String {
+        switch state {
+        case .running(let pid): return "running (pid \(pid))"
+        case .starting: return "starting"
+        case .stopped(let reason):
+            switch reason {
+            case .byYou?: return "stopped by you"
+            case .exited?: return "stopped: it keeps finishing by itself"
+            case .notAutostart?: return "stopped (doesn't start with Paddock)"
+            case .unknown?, nil: return "stopped"
+            }
+        case .crashed(let reason): return "crashed: \(reason)"
+        case .waitingForApproval: return "waiting for your approval"
+        case .alreadyRunning(let pid): return "already running (pid \(pid)), not started by this Paddock"
+        }
+    }
+
+    /// `paddock status`'s lines about sites' tasks: each site's tasks and their states, and a line for each site
+    /// whose `paddock.json` needs looking at.
+    public static func siteTasksLines(_ sites: [Site]) -> [String] {
+        var lines: [String] = []
+        for site in sites {
+            guard let tasks = site.tasks else { continue }
+            switch tasks.approval {
+            case .none: break
+            case .needsApproval: lines.append(tasksWaitingForApproval(site: site.name))
+            case .invalid(let reason): lines.append(tasksFileInvalid(site: site.name, reason: reason))
+            case .approved, .changed:
+                for task in tasks.tasks { lines.append("\(site.name)/\(task.name): \(taskState(task.state))") }
+                if tasks.approval == .changed, let notice = tasks.notice { lines.append(notice) }
+            }
+        }
+        return lines
+    }
+
+    /// What approving shows: every task with its command, then every proxy line.
+    public static func approvalLines(_ pending: [PendingTask]) -> [String] {
+        pending.map { line in
+            if let port = line.port { return "proxy \(line.name) → 127.0.0.1:\(port)" }
+            return "\(line.name): \(line.run ?? "")"
+        }
+    }
+
+    public static func taskError(_ error: SiteTaskError) -> String {
+        switch error {
+        case .unknownSite(let name):
+            return "Paddock doesn't serve a site named \(printable(name) ?? "?")."
+        case .noTasksFile(let site):
+            return "\(site) has no paddock.json. Start one with: paddock tasks init"
+        case .invalid(let site, let reason):
+            return "\(site)'s paddock.json can't be used: \(reason)."
+        case .notApproved(let site):
+            return "\(site)'s tasks aren't approved yet. Review and approve them with: paddock tasks on"
+        case .unknownTask(let site, let task):
+            return "\(site) has no task named \"\(printable(task) ?? "?")\". See: paddock tasks"
+        case .notShowable(_, let task):
+            return commandNotShowable(task: task)
+        case .changedSinceShown(let site):
+            return "\(site)'s paddock.json changed after it was shown, so Paddock approved nothing. "
+                + "Review it again with: paddock tasks on --show"
+        case .alreadyRunning(_, let task, let pid):
+            return "\(task) is already running (pid \(pid)), not started by this Paddock. Stop that process first."
+        case .couldNotStart(_, let task, let reason):
+            return "Couldn't start \(task): \(reason)."
+        case .fileExists(_, let path):
+            return "\(path) already exists; Paddock never overwrites it."
+        case .notLaravel(let site):
+            return "\(site) isn't a Laravel project, so Paddock has no starter paddock.json for it."
+        case .couldNotWrite(_, let reason):
+            return "Couldn't write paddock.json: \(reason)"
+        case .shuttingDown:
+            return "Paddock is shutting down."
+        }
+    }
+
     /// Columns: site name, URL, PHP version, secured.
     public static func siteTable(_ sites: [Site]) -> String {
         let header = ["SITE", "URL", "PHP", "SECURED"]

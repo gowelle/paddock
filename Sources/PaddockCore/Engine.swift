@@ -141,6 +141,9 @@ public final class Engine: @unchecked Sendable {
     /// Added services (databases, mail…). They have their own supervisor: stopping the web side leaves
     /// them running; only `shutdown` stops them.
     public let services: ServiceManager
+    /// Sites' own tasks (`paddock.json`), once approved. Their own supervisor too: they run whatever the web
+    /// side does, and stop only in `shutdown`.
+    public let tasks: SiteTaskManager
     /// Held for the whole of `start`, `stop` and `reload`, including slow waits. Never taken by `status`.
     private let operationLock = NSLock()
     /// Guards only the fields `status` reads; held for an instant, never across slow work.
@@ -187,6 +190,8 @@ public final class Engine: @unchecked Sendable {
          portHolders: @escaping @Sendable ([Int]) -> [PortHolder] = { PortCheck.holders(of: $0) },
          phpEnvironment: [String: String] = ProcessInfo.processInfo.environment,
          serviceSetup: ServiceSetup = .from(environment: ProcessInfo.processInfo.environment),
+         taskEnvironment: (@Sendable () -> ShellEnvironment)? = nil,
+         taskShutdownGrace: TimeInterval = SiteTaskManager.shutdownGraceCap,
          log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
         self.managesPortHelper = managesPortHelper
@@ -212,6 +217,15 @@ public final class Engine: @unchecked Sendable {
             portCheck: serviceSetup.portCheck,
             phpBinary: { [store, installer] in store.load().defaultPHP.map(installer.phpBinary) },
             portBase: serviceSetup.portBase, readyTimeout: serviceSetup.readyTimeout, environment: phpEnvironment, log: log)
+        tasks = SiteTaskManager(
+            paths: paths, store: store, supervisor: Supervisor(backoffScale: backoffScale),
+            environment: taskEnvironment ?? { ShellEnvironment.forDaemon(environment: ProcessInfo.processInfo.environment) },
+            sites: { [store, installer, settings] in
+                let state = store.load()
+                let php = state.defaultPHP ?? installer.installed().max() ?? PHPVersion(major: 8, minor: 1)
+                return SiteRegistry(state: state, defaultPHP: php, settings: settings).sites()
+            },
+            shutdownGrace: taskShutdownGrace, log: log)
     }
 
     deinit { shutdown() }
@@ -344,14 +358,18 @@ public final class Engine: @unchecked Sendable {
         setFlags(blockedBy: [])
     }
 
-    /// Stops the web stack, the DNS responder and every service; for the daemon's exit.
+    /// Stops the web stack, the DNS responder, and every service and site task (those two side by side); for
+    /// the daemon's exit.
     public func shutdown() {
         operationLock.lock()
         defer { operationLock.unlock() }
         stopLocked()
         dns.stop()
         setFlags(blockedBy: [], dnsRunning: false)
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) { [tasks] in tasks.stopAll() }
         services.stopAll()
+        group.wait()
     }
 
     /// Regenerates configs; when running, also starts/stops FPM pools to match the versions in use
@@ -383,9 +401,14 @@ public final class Engine: @unchecked Sendable {
     public func status() -> EngineStatus {
         let current = flags
         let state = store.load()
-        let sites = state.defaultPHP.map {
+        let taskStatuses = tasks.statuses()
+        let sites = (state.defaultPHP.map {
             SiteRegistry(state: state, defaultPHP: $0, settings: settings).sites()
-        } ?? []
+        } ?? []).map { site in
+            var site = site
+            site.tasks = taskStatuses[site.name]
+            return site
+        }
         var processes = services.processes
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
         return EngineStatus(running: current.running && !caddyCrashed && !helperCrashed,
@@ -634,6 +657,7 @@ public final class Engine: @unchecked Sendable {
         flagsLock.unlock()
         install?.cancel()
         services.cancelPendingWork()
+        tasks.beginShutdown()
     }
 
     /// Records the PHP install in progress (nil when it is over). One registered after shutting down

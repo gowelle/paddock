@@ -47,6 +47,8 @@ final class IPCTests: XCTestCase {
             .serviceRemove(name: "mail", deleteData: true), .serviceStart(name: "mail"), .serviceStop(name: "mail"),
             .serviceRestart(name: "mail"), .serviceCatalog, .serviceUpdate(name: "mail"),
             .serviceCreateDatabase(name: "postgres-18", database: "shop"),
+            .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
+            .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -67,7 +69,9 @@ final class IPCTests: XCTestCase {
          .unisolate(site: "blog"), .use(version: v84), .installPHP(version: v84), .removePHP(version: v84),
          .trust, .serviceAdd(kind: "mail", version: nil), .serviceRemove(name: "mail", deleteData: false),
          .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog,
-         .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop")]
+         .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop"),
+         .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
+         .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop")]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -97,11 +101,17 @@ final class IPCTests: XCTestCase {
         case .serviceCatalog: return "serviceCatalog"
         case .serviceUpdate: return "serviceUpdate"
         case .serviceCreateDatabase: return "serviceCreateDatabase"
+        case .tasksApprove: return "tasksApprove"
+        case .tasksRevoke: return "tasksRevoke"
+        case .taskStart: return "taskStart"
+        case .taskStop: return "taskStop"
+        case .taskRestart: return "taskRestart"
+        case .tasksInit: return "tasksInit"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 25, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 31, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }
@@ -122,7 +132,8 @@ final class IPCTests: XCTestCase {
         XCTAssertEqual(seen.value.map(caseName), ["status", "serviceCatalog"],
                        "exactly the read-only requests were sent")
         XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status", "serviceCatalog"],
-                       "listing the catalog only reads; every other service request changes something")
+                       "listing the catalog only reads; every other service request, and every site task request, "
+                           + "changes something")
 
         // A client of any other home, or of an installed build, sends everything.
         XCTAssertFalse(PaddockClient(paths: paths).readOnly, "not the real home")

@@ -155,6 +155,8 @@ extension Engine {
         case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog, .serviceUpdate,
              .serviceCreateDatabase:
             return await performService(request)
+        case .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit:
+            return await performTasks(request)
         }
     }
 
@@ -182,8 +184,16 @@ extension Engine {
         return .ok(current)
     }
 
-    /// Updates state, regenerates configs and reloads, then returns the fresh status.
+    /// Updates state, regenerates configs and reloads, then returns the fresh status. Sites' tasks follow
+    /// the change (a site that went away stops its tasks), even when the reload failed.
     private func change(_ body: @escaping @Sendable (inout State) -> Void) async -> Response {
+        let failure = await changeAndReload(body)
+        await blocking { self.tasks.refresh() }
+        return failure ?? .ok(status())
+    }
+
+    /// Nil when the change was saved and the web side reloaded; else the error to answer with.
+    private func changeAndReload(_ body: @escaping @Sendable (inout State) -> Void) async -> Response? {
         do {
             try await blocking {
                 try self.store.update(body)
@@ -196,7 +206,7 @@ extension Engine {
         } catch {
             return self.error(ErrorCode.internal, "\(error.localizedDescription)")
         }
-        return .ok(status())
+        return nil
     }
 
     /// Trusts Paddock's certificate authority if macOS does not yet. Nil when it is (or no trust

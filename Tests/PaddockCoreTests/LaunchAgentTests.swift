@@ -37,6 +37,11 @@ final class LaunchAgentTests: XCTestCase {
         XCTAssertEqual(LaunchAgent.exitTimeOut, 80)
         let longest = try ServiceCatalog.bundled().recipes.map(\.stopGraceSeconds).max() ?? 0
         XCTAssertGreaterThanOrEqual(LaunchAgent.exitTimeOut, Supervisor.defaultStopGrace + longest + 15)
+        // Site tasks stop side by side with services; at shutdown none waits longer than the longest service
+        // (a task's stopSeconds may be up to 300), so the timeout needn't grow.
+        XCTAssertLessThanOrEqual(SiteTaskManager.shutdownGraceCap, TimeInterval(longest))
+        XCTAssertGreaterThanOrEqual(TimeInterval(LaunchAgent.exitTimeOut),
+                                    TimeInterval(Supervisor.defaultStopGrace) + SiteTaskManager.shutdownGraceCap + 15)
     }
 
     /// Unloading waits as long as a daemon may take to stop its services, and no longer than it needs.

@@ -73,6 +73,19 @@ public struct Paths: Sendable {
 
     public func serviceLog(_ id: String) -> URL { log.appendingPathComponent("service-\(id).log") }
 
+    /// Site tasks' logs: `log/tasks/<site>/<task>.log` (site and task names are plain: letters, digits, dashes).
+    public var taskLogs: URL { log.appendingPathComponent("tasks", isDirectory: true) }
+
+    public func taskLog(site: String, task: String) -> URL {
+        taskLogs.appendingPathComponent(site, isDirectory: true).appendingPathComponent("\(task).log")
+    }
+
+    /// A site task's pid record folder, `run/tasks/<site>/<task>`.
+    public func taskRun(site: String, task: String) -> URL {
+        run.appendingPathComponent("tasks", isDirectory: true).appendingPathComponent(site, isDirectory: true)
+            .appendingPathComponent(task, isDirectory: true)
+    }
+
     /// User-edited PHP settings; unlike `config/`, never regenerated.
     public var userPHP: URL { home.appendingPathComponent("php", isDirectory: true) }
 

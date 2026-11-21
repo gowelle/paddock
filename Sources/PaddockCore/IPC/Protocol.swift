@@ -25,6 +25,15 @@ public enum Request: Codable, Equatable, Sendable {
     /// Creates a database in a running service (answered with `.databaseCreated`); one already there is not
     /// an error.
     case serviceCreateDatabase(name: String, database: String)
+    /// Approves the site's `paddock.json` as it is now, provided its hash is `hash` (what the user was shown),
+    /// and starts its tasks.
+    case tasksApprove(site: String, hash: String)
+    /// Stops the site's tasks and withdraws the approval.
+    case tasksRevoke(site: String)
+    /// Start, stop or restart one approved task. A stop is remembered (across restarts) until a start.
+    case taskStart(site: String, task: String), taskStop(site: String, task: String), taskRestart(site: String, task: String)
+    /// Writes the starter `paddock.json` for a Laravel site that has none; never overwrites.
+    case tasksInit(site: String)
 }
 
 extension Request {
@@ -37,7 +46,7 @@ extension Request {
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
              .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
              .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate,
-             .serviceCreateDatabase:
+             .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit:
             return false
         }
     }
@@ -79,6 +88,20 @@ public enum ErrorCode {
     public static let serviceCancelled = "service_cancelled"
     /// A value in the request isn't one Paddock accepts (a database name with a dash).
     public static let invalidArgument = "invalid_argument"
+    /// The site (or `paddock tasks`' task) has no task by that name.
+    public static let unknownTask = "unknown_task"
+    /// The site's tasks need approving first.
+    public static let tasksNotApproved = "tasks_not_approved"
+    /// The site's `paddock.json` breaks a rule, or has a command that can't be shown.
+    public static let tasksInvalid = "tasks_invalid"
+    /// The site has no `paddock.json`.
+    public static let noTasksFile = "no_tasks_file"
+    /// `paddock.json` changed after it was shown, so what was shown was not approved.
+    public static let tasksChanged = "tasks_changed"
+    /// The site already has a `paddock.json` (init never overwrites).
+    public static let tasksFileExists = "tasks_file_exists"
+    /// A process an earlier Paddock left running, not provably its own, holds the task.
+    public static let taskAlreadyRunning = "task_already_running"
     public static let `internal` = "internal"
 }
 
