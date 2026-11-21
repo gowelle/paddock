@@ -39,15 +39,15 @@ public final class SiteTaskManager: @unchecked Sendable {
     let paths: Paths
     let store: StateStore
     let supervisor: Supervisor
-    private let captureEnvironment: @Sendable () -> ShellEnvironment
-    private let sites: @Sendable () -> [Site]
-    private let inspector: ServiceProcessInspector
-    private let refreshInterval: TimeInterval?
+    let captureEnvironment: @Sendable () -> ShellEnvironment
+    let sites: @Sendable () -> [Site]
+    let inspector: ServiceProcessInspector
+    let refreshInterval: TimeInterval?
     /// The longest a task's stop may take once the daemon is shutting down.
     let shutdownGrace: TimeInterval
     /// Multiplies the windows in which clean exits are counted (tests shorten them with the restart delays).
-    private let timeScale: TimeInterval
-    private let log: @Sendable (String) -> Void
+    let timeScale: TimeInterval
+    let log: @Sendable (String) -> Void
 
     /// At daemon shutdown a task gets at most this long to stop (its `stopSeconds` may allow up to 300), so
     /// tasks and services, stopping side by side, fit inside the LaunchAgent's exit timeout.
@@ -66,30 +66,30 @@ public final class SiteTaskManager: @unchecked Sendable {
     static let listenerChecks: [TimeInterval] = [5, 30]
 
     /// Short-lived: held for decisions, never while a process is given its grace.
-    private let operationLock = NSLock()
+    let operationLock = NSLock()
     // Only touched while holding `operationLock`:
     /// Process name -> what was started under it.
-    private var launched: [String: Launched] = [:]
-    private var cache: [String: CachedFile] = [:]
-    private var nextGeneration = 1
+    var launched: [String: Launched] = [:]
+    var cache: [String: CachedFile] = [:]
+    var nextGeneration = 1
 
     /// Guards everything below; held only for an instant, and never while calling the supervisor (whose exit
     /// callbacks take it).
-    private let stateLock = NSLock()
-    private var views: [String: SiteView] = [:]
-    private var environment: ShellEnvironment?
-    private var runtime: [String: Runtime] = [:]
-    private var logs: [String: RotatingLog] = [:]
+    let stateLock = NSLock()
+    var views: [String: SiteView] = [:]
+    var environment: ShellEnvironment?
+    var runtime: [String: Runtime] = [:]
+    var logs: [String: RotatingLog] = [:]
     /// Tasks that don't start with Paddock but the user started (until the daemon exits).
-    private var startedByHand: Set<String> = []
-    private var shutdownStarted: Date?
-    private var timer: DispatchSourceTimer?
-    private var reconcilePending = false
+    var startedByHand: Set<String> = []
+    var shutdownStarted: Date?
+    var timer: DispatchSourceTimer?
+    var reconcilePending = false
     /// Site name -> the watcher of its folder, for every approved site.
-    private var watchers: [String: SiteWatcher] = [:]
-    private let refreshQueue = DispatchQueue(label: "app.paddock.tasks.refresh")
+    var watchers: [String: SiteWatcher] = [:]
+    let refreshQueue = DispatchQueue(label: "app.paddock.tasks.refresh")
 
-    private struct SiteView {
+    struct SiteView {
         let name: String
         /// The site's folder, symlinks resolved.
         let folder: String
@@ -97,12 +97,12 @@ public final class SiteTaskManager: @unchecked Sendable {
         let stopped: Set<String>
     }
 
-    private enum Settled: Equatable {
+    enum Settled: Equatable {
         case exited
         case gaveUp(status: Int32)
     }
 
-    private enum Held: Equatable {
+    enum Held: Equatable {
         /// A live process the record names that Paddock can't prove its own.
         case process(Int32)
         /// Processes left in the recorded group, whose first process is gone.
@@ -110,7 +110,7 @@ public final class SiteTaskManager: @unchecked Sendable {
     }
 
     /// What Paddock knows of one task beyond what the supervisor says.
-    private struct Runtime {
+    struct Runtime {
         var cleanExits: [Date] = []
         var settled: Settled?
         var lastExit: Int32?
@@ -125,7 +125,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         var listening: String?
     }
 
-    private struct Launched {
+    struct Launched {
         let site: String
         let task: String
         let definition: TaskDefinition
@@ -138,14 +138,14 @@ public final class SiteTaskManager: @unchecked Sendable {
         }
     }
 
-    private struct CachedFile {
+    struct CachedFile {
         let folder: String
         let stamp: SiteTasksFile.Stamp?
         let result: SiteTasksFile.LoadResult
     }
 
     /// A stop (or an orphan's stop) in progress, which requests can wait for.
-    private final class Flight: @unchecked Sendable {
+    final class Flight: @unchecked Sendable {
         enum Kind { case stop, reclaim }
         let kind: Kind
         let began = Date()
@@ -213,7 +213,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         return writer
     }
 
-    private func recordFile(site: String, task: String) -> URL {
+    func recordFile(site: String, task: String) -> URL {
         paths.taskRun(site: site, task: task).appendingPathComponent("pid")
     }
 
@@ -241,7 +241,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         self.timer = timer
     }
 
-    private func removeRecordsFromEarlierBoots() {
+    func removeRecordsFromEarlierBoots() {
         guard let boot = ServiceProcessRecord.currentBoot() else { return }
         let root = paths.run.appendingPathComponent("tasks", isDirectory: true)
         let fm = FileManager.default
@@ -278,7 +278,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         }
     }
 
-    private var isShuttingDown: Bool {
+    var isShuttingDown: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
         return shutdownStarted != nil
@@ -333,7 +333,7 @@ public final class SiteTaskManager: @unchecked Sendable {
     }
 
     /// A refresh soon, off the caller's thread (after a stop finished, so what waited for it can start).
-    private func scheduleRefresh() {
+    func scheduleRefresh() {
         stateLock.lock()
         guard shutdownStarted == nil, !reconcilePending else { stateLock.unlock(); return }
         reconcilePending = true
@@ -347,7 +347,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         }
     }
 
-    private func refreshLocked() {
+    func refreshLocked() {
         let now = Date()
         let state = store.load()
         var views: [String: SiteView] = [:]
@@ -398,99 +398,8 @@ public final class SiteTaskManager: @unchecked Sendable {
         reconcileLocked(views: views)
     }
 
-    // MARK: - Watching the code
-
-    /// The watcher of an approved site's folder, if any (tests).
-    func watcher(site: String) -> SiteWatcher? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return watchers[site]
-    }
-
-    /// One watcher per approved site (its approval runs something), on the site's folder; the others stopped.
-    private func syncWatchers(_ views: [String: SiteView]) {
-        stateLock.lock()
-        guard shutdownStarted == nil else { stateLock.unlock(); return }
-        var stale: [SiteWatcher] = []
-        var fresh: [SiteWatcher] = []
-        for (site, watcher) in watchers {
-            guard let view = views[site], view.evaluation.running != nil,
-                  watcher.folder.path == view.folder else {
-                stale.append(watcher)
-                watchers[site] = nil
-                continue
-            }
-        }
-        for view in views.values where view.evaluation.running != nil && watchers[view.name] == nil {
-            let site = view.name
-            let watcher = SiteWatcher(folder: URL(fileURLWithPath: view.folder, isDirectory: true)) { [weak self] changes in
-                // Never on the watcher's own queue: the manager may be stopping that watcher.
-                self?.refreshQueue.async { self?.siteChanged(site, changes) }
-            }
-            watchers[site] = watcher
-            fresh.append(watcher)
-        }
-        stateLock.unlock()
-        for watcher in stale { watcher.stop() }
-        for watcher in fresh { watcher.start() }
-    }
-
-    /// The site's `paddock.json` changed: read it again. Its code changed: restart (gracefully, in the
-    /// background) every task with restart-on-change that isn't stopped by the user; a task given up on runs
-    /// again (fixing the code is how it recovers); one still stopping or starting is restarted once more after.
-    private func siteChanged(_ site: String, _ changes: SiteWatcher.Changes) {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        guard !isShuttingDown else { return }
-        if changes.tasksFile { refreshLocked() }
-        guard changes.code else { return }
-        stateLock.lock()
-        let view = views[site]
-        stateLock.unlock()
-        guard let view, let running = view.evaluation.running else { return }
-        for (task, definition) in running.tasks where definition.restartsOnChange && !view.stopped.contains(task) {
-            let name = Self.processName(site: site, task: task)
-            if flight(name) != nil {
-                update { $0[name, default: Runtime()].changePending = true }
-                continue
-            }
-            let gaveUp: Bool
-            if case .gaveUp? = settledState(name) { gaveUp = true } else { gaveUp = supervisor.hasGivenUp(name) }
-            if gaveUp { clearSettled(name) }
-            if let launch = launched[name] {
-                if case .stopped = supervisor.status(name), !gaveUp { continue }
-                beginStopLocked(name, launch, note: Messages.taskRestartingForChange)
-            }
-        }
-        reconcileLocked(views: views)
-    }
-
-    private func settledState(_ name: String) -> Settled? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return runtime[name]?.settled
-    }
-
-    /// Five and thirty seconds after a launch (and only for that launch): whether the task listens on anything
-    /// but 127.0.0.1 or [::1]. It is warned, not stopped; a check that can't list the listeners warns nothing.
-    private func checkListeners(_ name: String, generation: Int) {
-        operationLock.lock()
-        guard launched[name]?.generation == generation, case .running(let pid) = supervisor.status(name) else {
-            operationLock.unlock()
-            return
-        }
-        operationLock.unlock()
-        let addresses = try? ServiceManager.listeningAddresses(processGroup: pid, runner: SystemCommandRunner())
-        let warning = addresses?.first { !ServiceManager.isLoopback($0) }
-            .map { Messages.listeningEverywhere(port: SiteWatcher.port(of: $0) ?? 0) }
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        guard launched[name]?.generation == generation else { return }
-        update { $0[name, default: Runtime()].listening = warning }
-    }
-
     /// The file's last reading, read again only when its stamp changed.
-    private func load(site: String, folder: String) -> SiteTasksFile.LoadResult {
+    func load(site: String, folder: String) -> SiteTasksFile.LoadResult {
         let url = URL(fileURLWithPath: folder, isDirectory: true)
         let stamp = SiteTasksFile.stamp(siteFolder: url)
         if let cached = cache[site], cached.folder == folder, cached.stamp == stamp { return cached.result }
@@ -502,7 +411,7 @@ public final class SiteTaskManager: @unchecked Sendable {
     /// Begins stopping what should no longer run (unapproved, removed from the definition, its site gone,
     /// stopped by the user, or a definition that changed) and starts what should run and doesn't. Anything
     /// still stopping is left to the end of its stop (which refreshes again).
-    private func reconcileLocked(views: [String: SiteView]) {
+    func reconcileLocked(views: [String: SiteView]) {
         stateLock.lock()
         let byHand = startedByHand
         let settled = runtime.compactMapValues(\.settled)
@@ -549,7 +458,7 @@ public final class SiteTaskManager: @unchecked Sendable {
     /// Starts the task unless a pid record says something of an earlier run is still there: an orphan that is
     /// provably Paddock's own is stopped first (in the background; the task starts after); a process that
     /// isn't provably ours, or processes left in the recorded group, are left alone and the task doesn't start.
-    private func prepareLaunchLocked(_ name: String, _ task: Launched) {
+    func prepareLaunchLocked(_ name: String, _ task: Launched) {
         let file = recordFile(site: task.site, task: task.task)
         if let record = ServiceProcessRecord.read(from: file) {
             if let made = record.bootSeconds, let boot = ServiceProcessRecord.currentBoot(), made != boot {
@@ -583,7 +492,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         launchLocked(name, task)
     }
 
-    private func launchLocked(_ name: String, _ task: Launched) {
+    func launchLocked(_ name: String, _ task: Launched) {
         let environment = environmentLocked()
         let writer = logWriter(site: task.site, task: task.task)
         let record = recordFile(site: task.site, task: task.task)
@@ -643,7 +552,7 @@ public final class SiteTaskManager: @unchecked Sendable {
     /// backoff and counts toward the supervisor's give-up; a clean exit (status 0) is restarted with backoff but
     /// never counts as a failure, unless the task has finished `exitedLimit` times within `exitedWindow` seconds or
     /// `exitedLongLimit` times within `exitedLongWindow`: then it is left stopped.
-    private func exitDecision(_ name: String, status: Int32) -> ExitDecision {
+    func exitDecision(_ name: String, status: Int32) -> ExitDecision {
         stateLock.lock()
         defer { stateLock.unlock() }
         var state = runtime[name] ?? Runtime()
@@ -660,7 +569,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         return .restartUncounted(after: Supervisor.backoff(afterFailures: state.cleanExits.count))
     }
 
-    private func didExit(_ name: String, site: String, task: String, status: Int32, restarting: Bool) {
+    func didExit(_ name: String, site: String, task: String, status: Int32, restarting: Bool) {
         let writer = logWriter(site: site, task: task)
         if restarting {
             writer.append(Self.noteLine("Exited with status \(status); restarting."))
@@ -672,454 +581,9 @@ public final class SiteTaskManager: @unchecked Sendable {
         }
     }
 
-    // MARK: - Stopping
-
-    /// Begins stopping a launched task in the background with its grace (shortened, when the daemon is shutting
-    /// down, to what is left of `shutdownGrace`). The stop's flight is what requests wait for.
-    private func beginStopLocked(_ name: String, _ task: Launched, note: String? = nil) {
-        launched[name] = nil
-        let allowed = TimeInterval(task.definition.stopGrace)
-        stateLock.lock()
-        var grace = allowed
-        if let started = shutdownStarted { grace = max(0, min(allowed, shutdownGrace - Date().timeIntervalSince(started))) }
-        let flight = Flight(kind: .stop, grace: grace)
-        runtime[name, default: Runtime()].flight = flight
-        runtime[name]?.report = nil
-        stateLock.unlock()
-        let writer = logWriter(site: task.site, task: task.task)
-        let record = recordFile(site: task.site, task: task.task)
-        DispatchQueue.global().async { [weak self] in
-            guard let self else { return }
-            let outcome = self.supervisor.stop(name, grace: grace)
-            try? FileManager.default.removeItem(at: record)
-            if let note { writer.append(Self.noteLine(note)) }
-            if flight.wasCutShort || (outcome == .killed && grace < allowed) {
-                let note = Messages.taskCutShort(after: Int(Date().timeIntervalSince(flight.began).rounded()),
-                                                 allowed: task.definition.stopGrace)
-                writer.append(Self.noteLine(note))
-                self.log("task \(task.site)/\(task.task): \(note)")
-            }
-            self.endFlight(name, flight)
-        }
-    }
-
-    /// Stops an earlier daemon's orphan (provably ours) in the background: SIGTERM to its group, its grace (cut
-    /// to the shutdown deadline if the daemon is exiting), then SIGKILL. The task starts when it is gone.
-    private func beginReclaimLocked(_ name: String, _ task: Launched, _ record: ServiceProcessRecord) {
-        let grace = TimeInterval(task.definition.stopGrace)
-        let flight = Flight(kind: .reclaim, grace: grace)
-        update { $0[name, default: Runtime()].flight = flight }
-        log("stopping task \(task.site)/\(task.task) (process group \(record.pgid)), left running by an earlier Paddock")
-        let file = recordFile(site: task.site, task: task.task)
-        DispatchQueue.global().async { [weak self] in
-            guard let self else { return }
-            let pgid = record.pgid
-            kill(-pgid, SIGTERM)
-            while kill(-pgid, 0) == 0 {
-                if Date() >= self.deadline(of: flight) {
-                    kill(-pgid, SIGKILL)
-                    let end = Date().addingTimeInterval(5)
-                    while kill(-pgid, 0) == 0 && Date() < end { Thread.sleep(forTimeInterval: 0.05) }
-                    break
-                }
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            try? FileManager.default.removeItem(at: file)
-            self.endFlight(name, flight)
-        }
-    }
-
-    /// When a flight's grace ends: its own, or the shutdown deadline if that comes first.
-    private func deadline(of flight: Flight) -> Date {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        let own = flight.began.addingTimeInterval(flight.grace)
-        guard let started = shutdownStarted else { return own }
-        return min(own, started.addingTimeInterval(shutdownGrace))
-    }
-
-    private func endFlight(_ name: String, _ flight: Flight) {
-        update { runtime in
-            if runtime[name]?.flight === flight { runtime[name]?.flight = nil }
-        }
-        flight.finish()
-        scheduleRefresh()
-    }
-
-    private func flight(_ name: String) -> Flight? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return runtime[name]?.flight
-    }
-
-    /// Waits (outside every lock) for flights, side by side: each at most its grace and a few seconds more.
-    private func wait(for flights: [Flight]) {
-        for flight in flights { flight.wait(flight.grace + 10) }
-    }
-
-    // MARK: - Orphans
-
-    /// The processes of the recorded group that are provably left from that run: started no earlier than the
-    /// recorded process, in the same boot (the record must say which), working in the site's folder, and this
-    /// user's. Nothing else is ever counted, or signalled.
-    private func leftovers(of record: ServiceProcessRecord, in folder: String) -> [Int32] {
-        guard let made = record.bootSeconds, made == ServiceProcessRecord.currentBoot(),
-              let members = ServiceProcessRecord.members(ofGroup: record.pgid) else { return [] }
-        return members.filter { pid in
-            var info = proc_bsdinfo()
-            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-            guard pid > 1, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, info.pbi_uid == getuid(),
-                  getpgid(pid) == record.pgid else { return false }
-            let started = (Int64(info.pbi_start_tvsec), Int64(info.pbi_start_tvusec))
-            guard started >= (record.startSeconds, record.startMicroseconds),
-                  let directory = inspector.workingDirectory(pid).flatMap(SiteTasksFile.realPath) else { return false }
-            return directory == folder || directory.hasPrefix(folder + "/")
-        }
-    }
-
-    /// Brings a running task's pid record up to date: the shell usually hands over to the command (`exec`), so
-    /// the program recorded at spawn changes. Only for the same launch and the very process recorded.
-    private func updateRecord(_ name: String, generation: Int) {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        guard let task = launched[name], task.generation == generation,
-              case .running(let pid) = supervisor.status(name) else { return }
-        let file = recordFile(site: task.site, task: task.task)
-        guard let recorded = ServiceProcessRecord.read(from: file), recorded.pid == pid,
-              let now = ServiceProcessRecord.live(pid: pid), now.startSeconds == recorded.startSeconds,
-              now.startMicroseconds == recorded.startMicroseconds, !now.isSameProgram(as: recorded) else { return }
-        try? now.write(to: file)
-    }
-
-    /// `run/tasks/<site>/<task>`, owner-only like the rest of `run/`.
-    private func ensureRunFolder(_ folder: URL) throws {
-        let fm = FileManager.default
-        var current = paths.run
-        for component in ["tasks", folder.deletingLastPathComponent().lastPathComponent, folder.lastPathComponent] {
-            current = current.appendingPathComponent(component, isDirectory: true)
-            try fm.createDirectory(at: current, withIntermediateDirectories: true)
-            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: current.path)
-        }
-    }
-
-    // MARK: - Requests
-
-    /// Approves the site's `paddock.json` as it is now, if it still has the hash the user was shown, and starts
-    /// its tasks. Refuses a file with a command that can't be shown as it runs. Doesn't wait for tasks of an
-    /// earlier approved version to stop: the new ones start when they have.
-    @discardableResult
-    public func approve(site name: String, hash: String) throws -> SiteTasksStatus {
-        guard !isShuttingDown else { throw SiteTaskError.shuttingDown }
-        _ = try approvable(site: name, hash: hash)
-        let captured = captureEnvironment()
-        log("site tasks: \(captured.description)")
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        let (folder, file) = try approvable(site: name, hash: hash)
-        update { _ in self.environment = captured }
-        try store.update { state in
-            let previous = state.taskApprovals[name]
-            let stopped = previous?.sitePath == folder ? previous!.stopped.intersection(file.tasks.keys) : []
-            state.taskApprovals[name] = ApprovedTasks(hash: hash, file: file, sitePath: folder, stopped: stopped)
-        }
-        clearSettled(site: name)
-        log("approved the tasks of site \(name): \(file.tasks.keys.sorted().joined(separator: ", "))")
-        refreshLocked()
-        return statuses()[name] ?? SiteTasksStatus(approval: .approved, tasks: [], pending: [], pendingHash: nil, notice: nil)
-    }
-
-    /// The site's folder and current file, if it can be approved with `hash`.
-    private func approvable(site name: String, hash: String) throws -> (String, SiteTasksFile) {
-        let folder = try folder(of: name)
-        switch SiteTasksFile.load(siteFolder: URL(fileURLWithPath: folder, isDirectory: true)) {
-        case .none: throw SiteTaskError.noTasksFile(site: name)
-        case .invalid(let reason): throw SiteTaskError.invalid(site: name, reason: reason)
-        case .file(let current, let currentHash):
-            guard currentHash == hash else { throw SiteTaskError.changedSinceShown(site: name) }
-            for task in current.tasks.keys.sorted() {
-                if let (position, codePoint) = Messages.unshowableCharacter(in: current.tasks[task]!.run) {
-                    throw SiteTaskError.notShowable(site: name, task: task, position: position, codePoint: codePoint)
-                }
-            }
-            return (folder, current)
-        }
-    }
-
-    /// Stops the site's tasks (side by side, each with its grace) and withdraws its approval; returns once they
-    /// have stopped.
-    public func revoke(site name: String) throws {
-        operationLock.lock()
-        guard sites().contains(where: { $0.name == name }) || store.load().taskApprovals[name] != nil else {
-            operationLock.unlock()
-            throw SiteTaskError.unknownSite(name)
-        }
-        do { try store.update { $0.taskApprovals[name] = nil } } catch { operationLock.unlock(); throw error }
-        let prefix = Self.processName(site: name, task: "")
-        update { _ in self.startedByHand = self.startedByHand.filter { !$0.hasPrefix(prefix) } }
-        clearSettled(site: name)
-        refreshLocked()
-        let flights = siteFlights(name)
-        operationLock.unlock()
-        wait(for: flights)
-    }
-
-    /// Starts one approved task (and forgets that the user stopped it). If it is still stopping, starts it once
-    /// it has stopped.
-    public func start(site name: String, task: String) throws {
-        guard !isShuttingDown else { throw SiteTaskError.shuttingDown }
-        let process = Self.processName(site: name, task: task)
-        operationLock.lock()
-        do {
-            refreshLocked()
-            _ = try definition(site: name, task: task)
-            try setStopped(false, site: name, task: task)
-        } catch { operationLock.unlock(); throw error }
-        clearSettled(process)
-        update { _ in self.startedByHand.insert(process) }
-        let pending = flight(process)
-        operationLock.unlock()
-        if let pending { wait(for: [pending]) }
-        operationLock.lock()
-        refreshLocked()
-        operationLock.unlock()
-        try checkStarted(process, site: name, task: task)
-    }
-
-    /// Stops one task, and remembers (across daemon restarts) not to start it until the user does. Returns once
-    /// it has stopped, or after its grace (and SIGKILL) at most.
-    public func stop(site name: String, task: String) throws {
-        let process = Self.processName(site: name, task: task)
-        operationLock.lock()
-        do {
-            refreshLocked()
-            _ = try definition(site: name, task: task)
-            try setStopped(true, site: name, task: task)
-        } catch { operationLock.unlock(); throw error }
-        if let running = launched[process] { beginStopLocked(process, running, note: "Stopped by you.") }
-        refreshLocked()
-        let pending = flight(process)
-        operationLock.unlock()
-        if let pending, !pending.wait(pending.grace + 10) { throw SiteTaskError.stillStopping(task: task) }
-    }
-
-    /// Stops the task and starts it again (also when it had been stopped, or given up on). With `force`, first
-    /// stops the processes an earlier run left in its recorded group (only those: same group, started no earlier,
-    /// same boot, in the site's folder, this user's) and says which in the task's warning.
-    public func restart(site name: String, task: String, force: Bool = false) throws {
-        guard !isShuttingDown else { throw SiteTaskError.shuttingDown }
-        let process = Self.processName(site: name, task: task)
-        operationLock.lock()
-        let folder: String
-        do {
-            refreshLocked()
-            _ = try definition(site: name, task: task)
-            try setStopped(false, site: name, task: task)
-            folder = try self.folder(of: name)
-        } catch { operationLock.unlock(); throw error }
-        if let running = launched[process] { beginStopLocked(process, running, note: "Restarting.") }
-        clearSettled(process)
-        update { _ in self.startedByHand.insert(process) }
-        let pending = flight(process)
-        operationLock.unlock()
-        if let pending { wait(for: [pending]) }
-        if force { stopLeftovers(process, site: name, task: task, folder: folder) }
-        operationLock.lock()
-        refreshLocked()
-        operationLock.unlock()
-        try checkStarted(process, site: name, task: task)
-    }
-
-    private func stopLeftovers(_ process: String, site: String, task: String, folder: String) {
-        let file = recordFile(site: site, task: task)
-        var stopped: [Int32] = []
-        if let record = ServiceProcessRecord.read(from: file) {
-            stopped = leftovers(of: record, in: folder).sorted()
-            for pid in stopped { kill(pid, SIGKILL) }
-            let end = Date().addingTimeInterval(5)
-            while stopped.contains(where: { kill($0, 0) == 0 }) && Date() < end { Thread.sleep(forTimeInterval: 0.05) }
-            try? FileManager.default.removeItem(at: file)
-        }
-        let report = Messages.leftoversStopped(task: task, pids: stopped)
-        logWriter(site: site, task: task).append(Self.noteLine(report))
-        log("task \(site)/\(task): \(report)")
-        update {
-            $0[process, default: Runtime()].held = nil
-            $0[process]?.report = report
-        }
-    }
-
-    /// Writes the starter `paddock.json` into a Laravel site that has none (never over one, never through a
-    /// link), and returns where.
-    @discardableResult
-    public func writeStarter(site name: String) throws -> URL {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        let folder = URL(fileURLWithPath: try self.folder(of: name), isDirectory: true)
-        guard let text = SiteTasksFile.starter(forSiteAt: folder) else { throw SiteTaskError.notLaravel(site: name) }
-        let file = folder.appendingPathComponent(SiteTasksFile.fileName)
-        let fd = open(file.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
-        guard fd >= 0 else {
-            if errno == EEXIST { throw SiteTaskError.fileExists(site: name, path: file.path) }
-            throw SiteTaskError.couldNotWrite(site: name, reason: String(cString: strerror(errno)))
-        }
-        let bytes = Array(text.utf8)
-        let written = bytes.withUnsafeBytes { write(fd, $0.baseAddress!, $0.count) }
-        close(fd)
-        guard written == bytes.count else { throw SiteTaskError.couldNotWrite(site: name, reason: "short write") }
-        refreshLocked()
-        return file
-    }
-
-    private func folder(of name: String) throws -> String {
-        guard let site = sites().first(where: { $0.name == name }), let folder = SiteTasksFile.realPath(site.path) else {
-            throw SiteTaskError.unknownSite(name)
-        }
-        return folder
-    }
-
-    /// The task's approved definition, or why there is none.
-    private func definition(site name: String, task: String) throws -> TaskDefinition {
-        guard sites().contains(where: { $0.name == name }) else { throw SiteTaskError.unknownSite(name) }
-        stateLock.lock()
-        let view = views[name]
-        stateLock.unlock()
-        guard let view else { throw SiteTaskError.noTasksFile(site: name) }
-        guard let running = view.evaluation.running else {
-            switch view.evaluation.approval {
-            case .invalid(let reason): throw SiteTaskError.invalid(site: name, reason: reason)
-            case .none: throw SiteTaskError.noTasksFile(site: name)
-            default: throw SiteTaskError.notApproved(site: name)
-            }
-        }
-        guard let definition = running.tasks[task] else { throw SiteTaskError.unknownTask(site: name, task: task) }
-        return definition
-    }
-
-    private func setStopped(_ stopped: Bool, site: String, task: String) throws {
-        try store.update { state in
-            if stopped { state.taskApprovals[site]?.stopped.insert(task) } else { state.taskApprovals[site]?.stopped.remove(task) }
-        }
-    }
-
-    private func siteFlights(_ site: String) -> [Flight] {
-        let prefix = Self.processName(site: site, task: "")
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return runtime.filter { $0.key.hasPrefix(prefix) }.compactMap(\.value.flight)
-    }
-
-    private func checkStarted(_ process: String, site: String, task: String) throws {
-        stateLock.lock()
-        let state = runtime[process]
-        stateLock.unlock()
-        switch state?.held {
-        case .process(let pid)?: throw SiteTaskError.alreadyRunning(site: site, task: task, pid: pid)
-        case .leftovers?: throw SiteTaskError.leftoverProcesses(site: site, task: task)
-        case nil: break
-        }
-        if let failure = state?.startFailure { throw SiteTaskError.couldNotStart(site: site, task: task, reason: failure) }
-    }
-
-    // MARK: - Reporting
-
-    /// Every site with a `paddock.json` or an approval, by name. Never waits for a change in progress.
-    public func statuses() -> [String: SiteTasksStatus] {
-        stateLock.lock()
-        let views = self.views
-        let environment = self.environment
-        let runtime = self.runtime
-        let byHand = startedByHand
-        stateLock.unlock()
-
-        var result: [String: SiteTasksStatus] = [:]
-        for view in views.values {
-            let evaluation = view.evaluation
-            var tasks: [TaskStatus] = []
-            if let running = evaluation.running {
-                for name in running.tasks.keys.sorted() {
-                    let definition = running.tasks[name]!
-                    let process = Self.processName(site: view.name, task: name)
-                    let state = runtime[process] ?? Runtime()
-                    let (taskState, warning) = describe(process, task: name, definition: definition, state: state,
-                                                        stoppedByUser: view.stopped.contains(name),
-                                                        startedByHand: byHand.contains(process))
-                    tasks.append(TaskStatus(name: name, run: Messages.shownCommand(definition.run), state: taskState,
-                                            restartOnChange: definition.restartsOnChange,
-                                            logPath: logFile(site: view.name, task: name).path,
-                                            warning: state.report ?? warning ?? state.listening))
-                }
-            } else if let pending = evaluation.pending {
-                tasks = pending.tasks.keys.sorted().map { name in
-                    TaskStatus(name: name, run: Messages.shownCommand(pending.tasks[name]!.run), state: .waitingForApproval,
-                               restartOnChange: pending.tasks[name]!.restartsOnChange,
-                               logPath: logFile(site: view.name, task: name).path, warning: nil)
-                }
-            }
-            let showsPending = evaluation.approval == .needsApproval || evaluation.approval == .changed
-            let pending = showsPending ? evaluation.pending : nil
-            var notices: [String] = []
-            if evaluation.approval == .changed {
-                if let problem = evaluation.problem {
-                    notices.append(Messages.tasksFileBroken(site: view.name, reason: problem))
-                } else if pending == nil {
-                    notices.append(Messages.tasksFileRemoved(site: view.name))
-                } else {
-                    notices.append(Messages.tasksChanged(site: view.name))
-                }
-            }
-            if let pending {
-                for task in pending.tasks.keys.sorted() {
-                    guard let (position, codePoint) = Messages.unshowableCharacter(in: pending.tasks[task]!.run) else { continue }
-                    notices.append(Messages.commandNotShowable(task: task, position: position, codePoint: codePoint))
-                    break
-                }
-            }
-            if evaluation.running != nil, let reason = environment?.fallbackReason {
-                notices.append(Messages.tasksUseBasicEnvironment(reason))
-            }
-            result[view.name] = SiteTasksStatus(
-                approval: evaluation.approval, tasks: tasks,
-                pending: pending.map(SiteTasksStatus.pendingLines) ?? [], pendingHash: pending?.hash,
-                notice: notices.isEmpty ? nil : notices.joined(separator: " "))
-        }
-        return result
-    }
-
-    /// A task's state, always the truth: what the supervisor says, refined by why Paddock left it as it is.
-    private func describe(_ process: String, task: String, definition: TaskDefinition, state: Runtime,
-                          stoppedByUser: Bool, startedByHand: Bool) -> (TaskState, String?) {
-        if let flight = state.flight { return (flight.kind == .stop ? .stopping : .starting, nil) }
-        switch state.held {
-        case .process(let pid)?: return (.alreadyRunning(pid: pid), nil)
-        case .leftovers?: return (.leftFromEarlierRun, nil)
-        case nil: break
-        }
-        switch supervisor.status(process) {
-        case .running(let pid):
-            return (.running(pid: pid), nil)
-        case .crashed(let status):
-            if supervisor.hasGivenUp(process) || state.settled == .gaveUp(status: status) {
-                return (.crashed(reason: Messages.taskGaveUp(status: status, task: task)), nil)
-            }
-            // Finished cleanly and about to start again.
-            if status == 0 { return (.starting, nil) }
-            return (.crashed(reason: Messages.taskRestarting(status: status)), nil)
-        case .stopped:
-            if stoppedByUser { return (.stopped(reason: .byYou), nil) }
-            switch state.settled {
-            case .exited?: return (.stopped(reason: .exited), Messages.taskKeepsFinishing(task: task))
-            case .gaveUp(let status)?: return (.crashed(reason: Messages.taskGaveUp(status: status, task: task)), nil)
-            case nil: break
-            }
-            if let failure = state.startFailure { return (.crashed(reason: failure), nil) }
-            if !definition.startsWithPaddock && !startedByHand { return (.stopped(reason: .notAutostart), nil) }
-            return (.starting, nil)
-        }
-    }
-
     // MARK: - Small pieces
 
-    private func environmentLocked() -> ShellEnvironment {
+    func environmentLocked() -> ShellEnvironment {
         stateLock.lock()
         let current = environment
         stateLock.unlock()
@@ -1130,13 +594,13 @@ public final class SiteTaskManager: @unchecked Sendable {
         return captured
     }
 
-    private func update(_ body: (inout [String: Runtime]) -> Void) {
+    func update(_ body: (inout [String: Runtime]) -> Void) {
         stateLock.lock()
         body(&runtime)
         stateLock.unlock()
     }
 
-    private func clearSettled(_ name: String) {
+    func clearSettled(_ name: String) {
         update { runtime in
             runtime[name]?.settled = nil
             runtime[name]?.cleanExits = []
@@ -1145,7 +609,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         }
     }
 
-    private func clearSettled(site: String) {
+    func clearSettled(site: String) {
         let prefix = Self.processName(site: site, task: "")
         stateLock.lock()
         let names = runtime.keys.filter { $0.hasPrefix(prefix) }
