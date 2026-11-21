@@ -746,6 +746,10 @@ final class AppModelTests: XCTestCase {
 @MainActor
 private final class Outside {
     var copied: [String] = []
+    /// Whether each copy was marked concealed.
+    var concealed: [Bool] = []
+    /// Notice expiries the model scheduled, to run when a test chooses.
+    var expiries: [@MainActor () -> Void] = []
     var opened: [URL] = []
 }
 
@@ -783,7 +787,9 @@ extension AppModelTests {
         let services = FakeServices()
         services.refusal = refusal
         let model = AppModel(client: client, services: services,
-                             copyText: { outside.copied.append($0) }, open: { outside.opened.append($0) })
+                             copyText: { outside.copied.append($0); outside.concealed.append($1) },
+                             open: { outside.opened.append($0) })
+        model.scheduleNoticeExpiry = { _, expire in outside.expiries.append(expire) }
         return (model, client, outside)
     }
 
@@ -801,8 +807,6 @@ extension AppModelTests {
         XCTAssertEqual(rows.map(\.canStop), [true, false, false])
         XCTAssertEqual(rows.map(\.canOpen), [true, false, false], "a page opens only while the service runs")
         XCTAssertEqual(rows.map(\.canCreateDatabase), [false, false, false], "PostgreSQL only, and only while it runs")
-        XCTAssertEqual(rows[2].envText, "SCOUT_DRIVER=meilisearch\nMEILISEARCH_HOST=http://127.0.0.1:7700\n"
-                       + "# MEILISEARCH_KEY: run \"paddock service env meilisearch-1-57\"")
 
         var running = postgres
         running.state = .running
@@ -846,7 +850,9 @@ extension AppModelTests {
         XCTAssertNil(model.deleteDataQuestion)
 
         model.askToRemoveAndDeleteData("mail")
-        XCTAssertEqual(model.deleteDataQuestion, "Remove Mail and delete its data? This can't be undone.")
+        XCTAssertEqual(model.deleteDataQuestion, "Remove Mail and delete its data?")
+        XCTAssertEqual(model.deleteDataMessage,
+                       "Its data folder, /h/services/mail/data, will be deleted. The data can't be recovered.")
         await model.removeService("postgres-18", deleteData: true)
         XCTAssertEqual(client.requests.filter { $0 != .status }, [], "the confirmation is for that service only")
         model.cancelRemoveAndDeleteData()
@@ -875,6 +881,7 @@ extension AppModelTests {
         await model.copyEnv("meilisearch-1-57")
         XCTAssertEqual(client.requests.filter { $0 != .status }, [.serviceEnv(id: "meilisearch-1-57")])
         XCTAssertEqual(outside.copied, [full.joined(separator: "\n") + "\n"])
+        XCTAssertEqual(outside.concealed, [true], "a secret is copied marked concealed")
         XCTAssertEqual(model.serviceNotice, "Copied the .env lines of Meilisearch 1.57.")
         let published = [String(describing: model.status), String(describing: model.serviceRows),
                          model.serviceNotice ?? "", model.lastError ?? "", String(describing: model.catalog),
@@ -1067,7 +1074,9 @@ extension AppModelTests {
         let services = FakeServices()
         services.refusal = refusal
         let model = AppModel(client: client, services: services,
-                             copyText: { outside.copied.append($0) }, open: { outside.opened.append($0) })
+                             copyText: { outside.copied.append($0); outside.concealed.append($1) },
+                             open: { outside.opened.append($0) })
+        model.scheduleNoticeExpiry = { _, expire in outside.expiries.append(expire) }
         return (model, client, outside)
     }
 
@@ -1124,12 +1133,28 @@ extension AppModelTests {
                         .taskRestart(site: "shop", task: "queue"), .tasksRevoke(site: "shop")])
     }
 
-    func testOpenTaskLogOpensTheTasksLogFile() async {
-        let (model, _, outside) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: approvedShop)])) }
+    func testOpenTaskLogOpensTheTasksLogFileOrSaysThereIsNoneYet() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("paddock-log-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = folder.appendingPathComponent("queue.log")
+        try Data("started\n".utf8).write(to: log)
+        let shop = SiteTasksStatus(
+            approval: .approved,
+            tasks: [TaskStatus(name: "queue", run: "php artisan queue:work", state: .running(pid: 41), restartOnChange: true,
+                               logPath: log.path, warning: nil),
+                    TaskStatus(name: "vite", run: "bun run dev", state: .stopped(reason: .byYou), restartOnChange: false,
+                               logPath: folder.appendingPathComponent("vite.log").path, warning: nil)],
+            pending: [], pendingHash: nil, notice: nil)
+        let (model, _, outside) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: shop)])) }
         await model.refresh()
         model.openTaskLog(site: "shop", task: "queue")
         model.openTaskLog(site: "shop", task: "nope")
-        XCTAssertEqual(outside.opened, [URL(fileURLWithPath: "/h/log/tasks/shop/queue.log")])
+        XCTAssertEqual(outside.opened, [log])
+        XCTAssertNil(model.taskNotice)
+        model.openTaskLog(site: "shop", task: "vite")
+        XCTAssertEqual(outside.opened, [log], "nothing to open")
+        XCTAssertEqual(model.taskNotice, "vite hasn't written a log yet.")
     }
 
     /// The prompt lists every command and forwarding line exactly as the daemon reported them, in full.
@@ -1232,5 +1257,197 @@ extension AppModelTests {
         await model.approveTasks(site: "shop")
         XCTAssertEqual(model.lastError, Messages.developmentBuild)
         XCTAssertEqual(client.requests.filter { $0 != .status }, [.tasksStatus(site: "shop")])
+    }
+}
+
+// MARK: - Fix round 1
+
+extension AppModelTests {
+    private func sheetModel(_ handler: @escaping @Sendable (Request) throws -> Response)
+        -> (AppModel, FakeClient) {
+        let client = FakeClient(handler)
+        let model = AppModel(client: client, services: FakeServices())
+        return (model, client)
+    }
+
+    private func sheet(for tasks: SiteTasksStatus?, sites: [Site]? = nil) async -> AppModel {
+        let status = statusWith(sites: sites ?? [site("shop", tasks: tasks)])
+        let (model, _) = sheetModel { _ in .ok(status) }
+        await model.showApproval(site: "shop")
+        return model
+    }
+
+    /// Every outcome of loading the sheet sets a state the sheet shows; only `ready` enables Approve.
+    func testTheApprovalSheetSaysWhyThereIsNothingToApprove() async {
+        var model = await sheet(for: pendingShop())
+        guard case .ready(let prompt) = model.approvalState else { return XCTFail("\(model.approvalState)") }
+        XCTAssertEqual(prompt.hash, "v1:shown")
+        XCTAssertTrue(model.canApprove)
+
+        model = await sheet(for: approvedShop)
+        XCTAssertEqual(model.approvalState, .nothingToApprove("Nothing to approve."), "approved from the command line")
+        XCTAssertFalse(model.canApprove)
+
+        model = await sheet(for: nil)
+        XCTAssertEqual(model.approvalState,
+                       .nothingToApprove("shop has no paddock.json. Start one with: paddock tasks init"), "file missing")
+        XCTAssertFalse(model.canApprove)
+
+        model = await sheet(for: SiteTasksStatus(approval: .invalid(reason: "tasks.queue.run is empty"), tasks: [],
+                                                 pending: [], pendingHash: nil, notice: nil))
+        XCTAssertEqual(model.approvalState,
+                       .nothingToApprove("shop: paddock.json can't be used: tasks.queue.run is empty."), "file invalid")
+
+        let removed = Messages.tasksFileRemoved(site: "shop")
+        model = await sheet(for: SiteTasksStatus(approval: .changed, tasks: [task("queue")], pending: [], pendingHash: nil,
+                                                 notice: removed))
+        XCTAssertEqual(model.approvalState, .nothingToApprove(removed), "the approved file went away: the site's notice")
+
+        model = await sheet(for: nil, sites: [site("blog", tasks: nil)])
+        XCTAssertEqual(model.approvalState, .nothingToApprove(Messages.taskError(.unknownSite("shop"))))
+        XCTAssertFalse(model.canApprove)
+    }
+
+    func testTheApprovalSheetShowsWhyItCouldNotLoad() async {
+        let (model, _) = sheetModel { request in
+            if case .tasksStatus = request { return .error(code: ErrorCode.unknownSite, message: "No site named \"shop\"") }
+            return .ok(statusWith())
+        }
+        await model.showApproval(site: "shop")
+        XCTAssertEqual(model.approvalState, .failed("No site named \"shop\""))
+        XCTAssertFalse(model.canApprove)
+
+        let (stopped, _) = sheetModel { _ in throw ClientError.daemonNotRunning }
+        await stopped.showApproval(site: "shop")
+        XCTAssertEqual(stopped.approvalState, .failed(Messages.notRunning))
+
+        let (slow, _) = sheetModel { _ in throw ClientError.timedOut }
+        await slow.showApproval(site: "shop")
+        XCTAssertEqual(slow.approvalState, .failed(Messages.didNotAnswer))
+        XCTAssertFalse(slow.canApprove)
+    }
+
+    /// Refused because the file changed, and the change broke it: the sheet says so instead of spinning.
+    func testAStaleHashWhoseNewFileIsInvalidShowsWhyAndCannotApprove() async {
+        let current = Locked<EngineStatus>(statusWith(sites: [site("shop", tasks: pendingShop())]))
+        let refusal = Messages.taskError(.changedSinceShown(site: "shop"))
+        let (model, client) = sheetModel { request in
+            if case .tasksApprove = request {
+                current.withValue {
+                    $0 = statusWith(sites: [site("shop", tasks: SiteTasksStatus(
+                        approval: .invalid(reason: "it isn't valid JSON"), tasks: [], pending: [], pendingHash: nil,
+                        notice: nil))])
+                }
+                return .error(code: ErrorCode.tasksChanged, message: refusal)
+            }
+            return .ok(current.value)
+        }
+        await model.showApproval(site: "shop")
+        await model.approveTasks(site: "shop")
+        XCTAssertEqual(model.approvalState, .nothingToApprove("shop: paddock.json can't be used: it isn't valid JSON."))
+        XCTAssertEqual(model.approvalError, refusal, "the refusal shows in the sheet")
+        XCTAssertEqual(model.lastError, refusal, "and on the tab's error line")
+        XCTAssertFalse(model.canApprove)
+        await model.approveTasks(site: "shop")
+        XCTAssertEqual(client.requests.filter { if case .tasksApprove = $0 { return true }; return false }.count, 1)
+    }
+
+    /// The sheet has its own error line: it opens clean, whatever the tab's error line says.
+    func testTheApprovalSheetOpensWithoutAnEarlierError() async {
+        let (model, _) = sheetModel { _ in .ok(statusWith(sites: [site("shop", tasks: pendingShop())])) }
+        model.lastError = "Mail can't start: port 1025 is in use by Herd."
+        await model.showApproval(site: "shop")
+        XCTAssertNil(model.approvalError)
+        model.dismissApproval()
+        XCTAssertEqual(model.approvalState, .loading)
+        XCTAssertNil(model.approvalSite)
+    }
+
+    /// An error stays until dismissed, replaced, or the same action succeeds on the same item.
+    func testAnErrorIsClearedOnlyByItsOwnActionSucceedingOrByDismissing() async {
+        let failing = Locked<Bool>(true)
+        let (model, client, _) = servicesModel { request in
+            if request == .serviceStart(name: "mail"), failing.value {
+                return .error(code: ErrorCode.servicePortInUse, message: "Mail can't start: port 1025 is in use by Herd.")
+            }
+            return .ok(statusWith(services: [mail, postgres]))
+        }
+        await model.startService("mail")
+        XCTAssertEqual(model.lastError, "Mail can't start: port 1025 is in use by Herd.")
+        await model.startService("postgres-18")
+        await model.stopService("mail")
+        await model.startTask(site: "blog", task: "queue")
+        await model.refresh()
+        XCTAssertEqual(model.lastError, "Mail can't start: port 1025 is in use by Herd.", "unrelated successes leave it")
+
+        failing.withValue { $0 = false }
+        await model.startService("mail")
+        XCTAssertNil(model.lastError, "the same action on the same service worked")
+
+        failing.withValue { $0 = true }
+        await model.startService("mail")
+        client.handler = { request in
+            if case .serviceRestart = request { return .error(code: ErrorCode.serviceFailed, message: "Mail didn't start.") }
+            return .ok(statusWith(services: [mail]))
+        }
+        await model.restartService("mail")
+        XCTAssertEqual(model.lastError, "Mail didn't start.", "a newer error replaces it")
+        await model.startService("mail")
+        XCTAssertEqual(model.lastError, "Mail didn't start.", "and is the restart's now")
+        model.dismissError()
+        XCTAssertNil(model.lastError)
+    }
+
+    /// A notice shows until another replaces it or its time is up.
+    func testANoticeClearsItselfAfterItsTimeOrWhenReplaced() async {
+        let (model, _, outside) = servicesModel { request in
+            if case .serviceEnv = request { return .envLines(["MAIL_PORT=1025"]) }
+            return .ok(statusWith(services: [mail, postgres]))
+        }
+        await model.refresh()
+        await model.copyEnv("mail")
+        XCTAssertEqual(model.serviceNotice, "Copied the .env lines of Mail.")
+        XCTAssertEqual(outside.concealed, [false], "no secret: an ordinary copy")
+        await model.copyEnv("postgres-18")
+        XCTAssertEqual(model.serviceNotice, "Copied the .env lines of PostgreSQL 18.", "replaced")
+        XCTAssertEqual(outside.expiries.count, 2)
+        outside.expiries[0]()
+        XCTAssertEqual(model.serviceNotice, "Copied the .env lines of PostgreSQL 18.", "the first one's time is not this one's")
+        outside.expiries[1]()
+        XCTAssertNil(model.serviceNotice)
+    }
+
+    /// The destructive button confirms the id it was asked about at once, so the dialog's dismissal right after it
+    /// can't withdraw it; a dismissal by any other route withdraws the question.
+    func testConfirmingDeleteDataIsCheckedAtOnceAndUsedUp() async {
+        let (model, client, _) = servicesModel { request in
+            if case .serviceRemove = request { return .removed(dataPath: "/h/services/mail/data", status: statusWith()) }
+            return .ok(statusWith(services: [mail, postgres]))
+        }
+        await model.refresh()
+        XCTAssertNil(model.confirmRemoveAndDeleteData("mail"), "never without asking")
+        model.askToRemoveAndDeleteData("mail")
+        XCTAssertNil(model.confirmRemoveAndDeleteData("postgres-18"), "only the service asked about")
+        let removal = model.confirmRemoveAndDeleteData("mail")
+        XCTAssertNil(model.dataDeletionAsked, "used up at once")
+        model.cancelRemoveAndDeleteData()  // the dialog's dismissal, right after the button
+        await removal?.value
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.serviceRemove(name: "mail", deleteData: true)])
+        XCTAssertNil(model.confirmRemoveAndDeleteData("mail"), "and only once")
+    }
+
+    func testUnavailableCatalogEntriesSayWhy() async {
+        let reason = "PostgreSQL 18 needs macOS 15 or later."
+        let entries = [CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL",
+                                    versions: ["18.7.0"], downloadBytes: nil,
+                                    series: [CatalogSeries(series: "18", version: "18.7.0", downloadBytes: nil,
+                                                           needsDownload: true, unavailableReason: reason)],
+                                    unavailableReason: reason)]
+        let (model, _, _) = servicesModel { request in
+            if case .serviceCatalog = request { return .catalog(entries) }
+            return .ok(statusWith())
+        }
+        await model.loadCatalog()
+        XCTAssertEqual(model.catalog.map(\.unavailableReason), [reason])
     }
 }

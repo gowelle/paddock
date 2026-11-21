@@ -10,8 +10,6 @@ public struct ServiceRow: Identifiable, Equatable, Sendable {
     public let portText: String
     /// Its last add's notice and its recipe's notes, one sentence each.
     public let notes: [String]
-    /// Its `.env` lines as `paddock service add` prints them: a secret only as a comment saying how to get it.
-    public let envText: String
     public let canStart: Bool
     public let canStop: Bool
     /// It has a page (Mail's inbox) and runs.
@@ -31,6 +29,8 @@ public struct CatalogRow: Identifiable, Equatable, Sendable {
     public let licence: String
     /// An add of it is in flight.
     public let isAdding: Bool
+    /// Why this Mac can't run it (the add would be refused with this); nil when it can.
+    public let unavailableReason: String?
 }
 
 extension AppModel {
@@ -53,7 +53,6 @@ extension AppModel {
                 .compactMap { Messages.printable($0, limit: 200) }
             return ServiceRow(id: service.id, name: service.name, stateText: Messages.serviceState(service.state),
                               portText: Messages.servicePorts(service), notes: notes,
-                              envText: Messages.addedEnvLines(service).joined(separator: "\n"),
                               canStart: startable, canStop: stoppable, canOpen: running && service.openURL != nil,
                               canCreateDatabase: running && service.kind == "postgres")
         }
@@ -64,7 +63,8 @@ extension AppModel {
         catalogEntries.flatMap { entry in
             entry.series.map { series in
                 CatalogRow(kind: entry.kind, version: series.series, title: "\(entry.displayName) \(series.version)",
-                           licence: entry.licence, isAdding: isAdding(kind: entry.kind, version: series.series))
+                           licence: entry.licence, isAdding: isAdding(kind: entry.kind, version: series.series),
+                           unavailableReason: series.unavailableReason)
             }
         }
     }
@@ -73,9 +73,17 @@ extension AppModel {
         isBusy(.serviceAdd(kind: kind, version: version))
     }
 
-    /// The question `Remove and Delete Data…` asks, while it is being asked.
+    /// The question `Remove and Delete Data…` asks, while it is being asked: its title names the service.
     public var deleteDataQuestion: String? {
-        dataDeletionAsked.map { id in "Remove \(serviceName(id)) and delete its data? This can't be undone." }
+        dataDeletionAsked.map { id in "Remove \(serviceName(id)) and delete its data?" }
+    }
+
+    /// What the question explains: the data folder is deleted for good.
+    public var deleteDataMessage: String? {
+        dataDeletionAsked.map { id in
+            let folder = status?.services.first { $0.id == id }.map { Messages.displayName($0.dataPath, limit: 256) ?? "?" }
+            return "Its data folder\(folder.map { ", \($0)," } ?? "") will be deleted. The data can't be recovered."
+        }
     }
 
     /// The rule the daemon applies (`ServiceManager.isValidDatabaseName`).
@@ -104,13 +112,24 @@ extension AppModel {
     public func stopService(_ id: String) async { await serviceAction(.serviceStop(name: id)) }
     public func restartService(_ id: String) async { await serviceAction(.serviceRestart(name: id)) }
 
-    /// `Remove and Delete Data…`: asks first; only the answer (`removeService(id, deleteData: true)`) deletes.
+    /// `Remove and Delete Data…`: asks first; only the answer (`confirmRemoveAndDeleteData`) deletes.
     public func askToRemoveAndDeleteData(_ id: String) {
         dataDeletionAsked = id
     }
 
+    /// The question went away (Cancel, Escape, the window closed): nothing is confirmed.
     public func cancelRemoveAndDeleteData() {
         dataDeletionAsked = nil
+    }
+
+    /// The user confirmed deleting `id`'s data. Checked and used up at once (before the dialog's dismissal
+    /// withdraws the question); the removal runs in the returned task. Nil, doing nothing, unless the question
+    /// asked was about `id`.
+    @discardableResult
+    public func confirmRemoveAndDeleteData(_ id: String) -> Task<Void, Never>? {
+        guard dataDeletionAsked == id else { return nil }
+        dataDeletionAsked = nil
+        return Task { await self.remove(id, deleteData: true) }
     }
 
     /// Removes the service, keeping its data unless `deleteData`, which needs the user's confirmation of
@@ -120,25 +139,26 @@ extension AppModel {
             guard dataDeletionAsked == id else { return }
             dataDeletionAsked = nil
         }
+        await remove(id, deleteData: deleteData)
+    }
+
+    private func remove(_ id: String, deleteData: Bool) async {
         let name = serviceName(id)
-        guard let response = await send(.serviceRemove(name: id, deleteData: deleteData)) else { return }
-        if case .removed(let path, _) = response {
-            serviceNotice = Messages.serviceRemoved(name, dataPath: path, deletedData: deleteData)
+        if case .removed(let path, _)? = await act(.serviceRemove(name: id, deleteData: deleteData)) {
+            showNotice(Messages.serviceRemoved(name, dataPath: path, deletedData: deleteData))
         }
-        finish(response)
         await refresh()
     }
 
-    /// Fetches the service's full `.env` lines (secrets included) now and puts them on the pasteboard; they are
-    /// kept nowhere else.
+    /// Fetches the service's full `.env` lines (secrets included) now and puts them on the pasteboard, marked
+    /// concealed when they hold a secret; they are kept nowhere else.
     public func copyEnv(_ id: String) async {
-        let name = serviceName(id)
-        guard let response = await send(.serviceEnv(id: id), timeout: 30) else { return }
-        if case .envLines(let lines) = response {
-            copyText?(lines.joined(separator: "\n") + "\n")
-            serviceNotice = "Copied the .env lines of \(name)."
+        let service = status?.services.first { $0.id == id }
+        let name = service?.name ?? id
+        if case .envLines(let lines)? = await act(.serviceEnv(id: id), timeout: 30) {
+            copyText?(lines.joined(separator: "\n") + "\n", !(service?.secretEnvNames ?? []).isEmpty)
+            showNotice("Copied the .env lines of \(name).")
         }
-        finish(response)
     }
 
     public func openService(_ id: String) {
@@ -149,32 +169,23 @@ extension AppModel {
 
     /// Creates a database in a running PostgreSQL; a name the daemon would refuse is refused here first.
     public func createDatabase(in id: String, named database: String) async {
+        // One action per service, whatever the name typed: creating any database there clears its earlier error.
+        let key = "create database in \(id)"
         guard Self.isValidDatabaseName(database) else {
-            lastError = Messages.serviceError(.invalidParameter(parameter: "database", value: database))
+            showError(Messages.serviceError(.invalidParameter(parameter: "database", value: database)), from: key)
             return
         }
-        guard let response = await send(.serviceCreateDatabase(name: id, database: database), timeout: 120) else { return }
-        if case .databaseCreated(let created, let existed, _) = response {
-            serviceNotice = Messages.databaseCreated(created, in: serviceName(id), alreadyExisted: existed)
+        if case .databaseCreated(let created, let existed, _)? = await act(
+            .serviceCreateDatabase(name: id, database: database), timeout: 120, errorKey: key) {
+            showNotice(Messages.databaseCreated(created, in: serviceName(id), alreadyExisted: existed))
         }
-        finish(response)
         await refresh()
     }
 
     // MARK: - Pieces
 
     private func serviceAction(_ request: Request, timeout: TimeInterval = 600) async {
-        guard let response = await send(request, timeout: timeout) else { return }
-        finish(response)
+        _ = await act(request, timeout: timeout)
         await refresh()
-    }
-
-    /// An answer's error goes to the error line; any other answer clears it.
-    func finish(_ response: Response) {
-        if case .error(_, let message) = response {
-            lastError = message
-        } else {
-            lastError = nil
-        }
     }
 }
