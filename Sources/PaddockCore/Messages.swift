@@ -109,7 +109,7 @@ public enum Messages {
         } else if status.hasReplacedRootsToClean {
             lines.append(olderCertificateStillTrusted)
         }
-        return lines
+        return lines + status.notices
     }
 
     public static let securedSitesNeedTrust = "Secured sites need your approval once: run paddock trust"
@@ -327,6 +327,16 @@ public enum Messages {
     /// What `paddock service remove` prints (and the app shows).
     public static func serviceRemoved(_ name: String, dataPath: String, deletedData: Bool) -> String {
         deletedData ? "Removed \(name) and deleted its data." : "Removed \(name). Its data is still at \(dataPath)."
+    }
+
+    /// A log a running process holds has grown very large (it is never cut while it runs).
+    public static func logVeryLarge(megabytes: Int, path: String) -> String {
+        "Its log is very large (\(megabytes) MB): \(path). Restart it to start a fresh log."
+    }
+
+    /// A service whose saved key was gone while its data stayed got a new one.
+    public static func serviceNewKey(name: String, id: String) -> String {
+        "\(name) has a new key because its saved key was missing. Update your project's .env: paddock service env \(id)."
     }
 
     /// What `paddock service create-db` prints.

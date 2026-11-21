@@ -19,6 +19,8 @@ if SystemIntegration.thisProcessIsDevelopmentBuild {
 
 let paths = Paths.current
 let settings = Settings.current
+// Its own log (stdout and stderr, when they go to <home>/log/paddockd.log): a large one is set aside now.
+LogFiles.rotateHeldLog(paths.log.appendingPathComponent("paddockd.log"), descriptors: [STDOUT_FILENO, STDERR_FILENO])
 
 // A second instance has nothing to do while the first one answers.
 if PaddockClient(paths: paths).daemonIsRunning {
@@ -107,6 +109,7 @@ Task {
     await engine.startAutostartServices()
     // Then the sites' approved tasks (a queue worker wants its database up first).
     await engine.startTasks()
+    engine.startLogSizeChecks()
 }
 
 dispatchMain()

@@ -405,6 +405,56 @@ final class ServiceLifecycleTests: XCTestCase {
         XCTAssertEqual(try after.env("fake").last, "FAKE_SECRET=\(key)")
     }
 
+    /// The saved key gone while the data stays: a new key is made, it is logged, and the service says the project's
+    /// .env needs the new lines, until they are next read (`paddock service env`).
+    func testANewKeyForExistingDataIsLoggedAndNoted() async throws {
+        let lines = LockedBox<[String]>([])
+        let manager = makeManager([FakeService.keyedRecipe()], log: { line in lines.value.append(line) })
+        _ = try await manager.add(kind: "fake", version: nil)
+        XCTAssertNil(status(manager)?.notice, "a new service's first key is no news")
+        manager.stop("fake")
+        let secrets = ServiceSecrets.file(in: home.paths.serviceConfig("fake"))
+        let old = try XCTUnwrap(try ServiceSecrets.load(from: home.paths.serviceConfig("fake"))["master_key"])
+        try FileManager.default.removeItem(at: secrets)
+
+        try manager.start("fake")
+        let fresh = try XCTUnwrap(try ServiceSecrets.load(from: home.paths.serviceConfig("fake"))["master_key"])
+        XCTAssertNotEqual(fresh, old)
+        let sentence = "Fake has a new key because its saved key was missing. Update your project's .env: "
+            + "paddock service env fake."
+        XCTAssertEqual(status(manager)?.notice, sentence)
+        XCTAssertTrue(lines.value.contains { $0.contains("saved key was missing") }, "\(lines.value)")
+        XCTAssertFalse(lines.value.joined().contains(fresh), "never the key itself")
+        manager.stop("fake")
+        try manager.start("fake")
+        XCTAssertEqual(status(manager)?.notice, sentence, "kept until the lines are read")
+        _ = try manager.env("fake")
+        XCTAssertNil(status(manager)?.notice)
+    }
+
+    /// A service's log grown very large while it runs is noted, never cut; its next start begins a fresh log.
+    func testAVeryLargeLogIsNotedAndANewStartBeginsAFreshOne() async throws {
+        let manager = makeManager()
+        _ = try await manager.add(kind: "fake", version: nil)
+        let log = home.paths.serviceLog("fake")
+        let handle = try FileHandle(forWritingTo: log)
+        try handle.truncate(atOffset: 201 * 1024 * 1024)
+        try handle.close()
+        manager.checkLogSizes()
+        XCTAssertEqual(status(manager)?.notice,
+                       "Its log is very large (201 MB): \(log.path). Restart it to start a fresh log.")
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: log.path)[.size] as? UInt64, 201 * 1024 * 1024,
+                       "never cut while it runs")
+
+        try manager.restart("fake")
+        let old = URL(fileURLWithPath: log.path + ".1")
+        XCTAssertGreaterThanOrEqual(try FileManager.default.attributesOfItem(atPath: old.path)[.size] as? UInt64 ?? 0,
+                                    201 * 1024 * 1024, "set aside at the start (with the stop's own lines)")
+        XCTAssertLessThan(try FileManager.default.attributesOfItem(atPath: log.path)[.size] as? UInt64 ?? .max, 1024 * 1024)
+        manager.checkLogSizes()
+        XCTAssertNil(status(manager)?.notice)
+    }
+
     /// A secrets file Paddock can't use is left alone and the service doesn't start.
     func testADamagedSecretsFileIsLeftAlone() async throws {
         let manager = makeManager([FakeService.keyedRecipe()])

@@ -142,6 +142,37 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(r.body, "fresh:ok")
     }
 
+    /// The web stack's logs over 20 MB are set aside before Caddy and PHP-FPM open them; one grown very large while
+    /// its process runs is noted in the status, never cut.
+    func testWebStackLogsAreSetAsideAtStartAndNotedWhenVeryLarge() throws {
+        let log = paths.log
+        try FileManager.default.createDirectory(at: log, withIntermediateDirectories: true)
+        let caddy = log.appendingPathComponent("caddy.log")
+        let fpm = log.appendingPathComponent("php-fpm-8.5.log")
+        for file in [caddy, fpm] {
+            FileManager.default.createFile(atPath: file.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: file)
+            try handle.truncate(atOffset: 21 * 1024 * 1024)
+            try handle.close()
+        }
+        try startEngine()
+        for file in [caddy, fpm] {
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: file.path + ".1")[.size] as? UInt64,
+                           21 * 1024 * 1024, file.lastPathComponent)
+            XCTAssertLessThan(try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? UInt64 ?? .max,
+                              1024 * 1024, file.lastPathComponent)
+        }
+        XCTAssertEqual(engine?.status().notices, [])
+
+        let handle = try FileHandle(forWritingTo: caddy)
+        try handle.truncate(atOffset: 205 * 1024 * 1024)
+        try handle.close()
+        engine?.checkLogSizes()
+        XCTAssertEqual(engine?.status().notices,
+                       ["Its log is very large (205 MB): \(caddy.path). Restart it to start a fresh log."])
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: caddy.path)[.size] as? UInt64, 205 * 1024 * 1024)
+    }
+
     func testBlockedPortsReportedWhileDNSKeepsAnswering() throws {
         let holder = try TestSupport.listen(port: settings.httpPort)
         defer { close(holder) }

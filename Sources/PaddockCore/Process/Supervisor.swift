@@ -323,6 +323,8 @@ public final class Supervisor: @unchecked Sendable {
         } else {
             try FileManager.default.createDirectory(at: spec.logFile.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
+            // Nothing holds it until the process starts: a large one is set aside now.
+            LogFiles.setAsideIfLarge(spec.logFile)
         }
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)

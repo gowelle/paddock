@@ -115,6 +115,10 @@ public final class ServiceManager: @unchecked Sendable {
     private var runtime: [String: ServiceState] = [:]
     /// A sentence about an instance's last add or update, until it is stopped.
     private var notices: [String: String] = [:]
+    /// Instances that got a new key while their data stayed (cleared when their .env lines are next read), and
+    /// their very large logs (`checkLogSizes`). Both under `runtimeLock`.
+    private var keyNotices: [String: String] = [:]
+    private var logNotices: [String: String] = [:]
     /// Set while shutting down: readiness waits and initialise steps give up at once.
     private var cancelled = false
     /// Problems already logged (one line each): invalid saved instances, invalid stored recipes.
@@ -1334,13 +1338,29 @@ public final class ServiceManager: @unchecked Sendable {
         })
     }
 
-    /// The `.env` lines of an added service.
+    /// The `.env` lines of an added service (reading them clears the notice of a new key).
     public func env(_ name: String) throws -> [String] {
         let instance = try find(name)
         guard let recipe = describingRecipe(instance) else {
             throw ServiceError.unavailable(name: instance.name, reason: "Paddock no longer knows how to run it")
         }
-        return envLines(recipe, context: try context(instance, recipe: recipe), includingSecrets: true)
+        let lines = envLines(recipe, context: try context(instance, recipe: recipe), includingSecrets: true)
+        runtimeLock.lock()
+        keyNotices[instance.id] = nil
+        runtimeLock.unlock()
+        return lines
+    }
+
+    /// Notes each running service whose log has grown very large, and forgets the notes of the others.
+    public func checkLogSizes() {
+        var found: [String: String] = [:]
+        for instance in instances() {
+            guard case .running = supervisor.status(Self.processName(instance.id)) else { continue }
+            if let notice = LogFiles.veryLargeNotice(paths.serviceLog(instance.id)) { found[instance.id] = notice }
+        }
+        runtimeLock.lock()
+        logNotices = found
+        runtimeLock.unlock()
     }
 
     /// Each service process the supervisor runs -> its status, as in `EngineStatus.processes`.
@@ -1361,6 +1381,8 @@ public final class ServiceManager: @unchecked Sendable {
         runtimeLock.lock()
         let known = runtime[instance.id]
         let notice = notices[instance.id]
+        let keyNotice = keyNotices[instance.id]
+        let logNotice = logNotices[instance.id]
         runtimeLock.unlock()
         let state: ServiceState
         if known == .starting {
@@ -1386,7 +1408,7 @@ public final class ServiceManager: @unchecked Sendable {
             id: instance.id, name: instance.name, kind: instance.kind, version: instance.version,
             displayName: recipe?.displayName ?? instance.kind, state: state, ports: instance.ports, env: env,
             openURL: openURL, dataPath: paths.serviceData(instance.id).path, autostart: instance.autostart,
-            mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: notice ?? skipped,
+            mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: [notice ?? skipped, keyNotice, logNotice].compactMap { $0 }.joined(separator: " ").nonEmpty,
             updateAvailable: update, series: instance.series, notes: recipe?.notes,
             secretEnvNames: recipe.map(Self.secretEnvNames).flatMap { $0.isEmpty ? nil : $0 })
     }
@@ -1425,8 +1447,22 @@ public final class ServiceManager: @unchecked Sendable {
     /// protected by the values in it.
     private func ensureSecrets(_ instance: ServiceInstance, _ recipe: ServiceRecipe) throws {
         guard !recipe.secrets.isEmpty else { return }
+        let config = paths.serviceConfig(instance.id)
+        let missing = !FileManager.default.fileExists(atPath: ServiceSecrets.file(in: config).path)
+        let data = paths.serviceData(instance.id)
+        let hasData = !((try? FileManager.default.contentsOfDirectory(atPath: data.path)) ?? []).isEmpty
+        defer {
+            // A key made now for data that was already there: what the project's .env holds no longer works.
+            if missing, hasData, FileManager.default.fileExists(atPath: ServiceSecrets.file(in: config).path) {
+                let notice = Messages.serviceNewKey(name: instance.name, id: instance.id)
+                log("\(instance.name): its saved key was missing, so Paddock made a new one; the project's .env needs it")
+                runtimeLock.lock()
+                keyNotices[instance.id] = notice
+                runtimeLock.unlock()
+            }
+        }
         do {
-            _ = try ServiceSecrets.ensure(recipe.secrets, in: paths.serviceConfig(instance.id))
+            _ = try ServiceSecrets.ensure(recipe.secrets, in: config)
         } catch ServiceSecretsError.damaged(let path) {
             throw ServiceError.unavailable(name: instance.name, reason: "its secrets file \(path) isn't one Paddock "
                                            + "can use; Paddock left it alone")

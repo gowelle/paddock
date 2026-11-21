@@ -42,11 +42,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var hasReplacedRootsToClean: Bool
     /// Added services and what each is doing.
     public var services: [ServiceStatus]
+    /// Sentences about Paddock itself (a web-stack log grown very large); empty from an older daemon.
+    public var notices: [String]
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
                 needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false, services: [ServiceStatus] = [],
+                notices: [String] = [],
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -61,6 +64,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.needsTrust = needsTrust
         self.hasReplacedRootsToClean = hasReplacedRootsToClean
         self.services = services
+        self.notices = notices
         self.version = version
         self.executablePath = executablePath
     }
@@ -68,7 +72,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
         case dnsRunning, portHelperInstalled, needsTrust, hasReplacedRootsToClean, version, executablePath
-        case services
+        case services, notices
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -90,6 +94,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         // One service this build can't read never costs the whole status.
         services = (try? c.decodeIfPresent([Lenient<ServiceStatus>].self, forKey: .services))?
             .compactMap(\.value) ?? []
+        notices = (try? c.decodeIfPresent([String].self, forKey: .notices)) ?? []
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -165,6 +170,9 @@ public final class Engine: @unchecked Sendable {
     private var rendered: (routes: [String: [String: Int]], refusal: String?) = ([:], nil)
     /// Whether a routes apply is queued (`flagsLock`).
     private var routesApplyQueued = false
+    /// The web stack's very large logs, as the last `checkLogSizes` found them (`flagsLock`).
+    private var logNotices: [String] = []
+    private var logCheckTimer: DispatchSourceTimer?
     /// Applies sites' routes one at a time, off every lock but the engine's own.
     let routesQueue = DispatchQueue(label: "app.paddock.routes")
     /// Multiplies the backoff between retries of a failing apply (tests shorten it).
@@ -520,7 +528,13 @@ public final class Engine: @unchecked Sendable {
                             portHelperInstalled: managesPortHelper || portHelperInstalled(),
                             needsTrust: needsTrust(sites: sites),
                             hasReplacedRootsToClean: hasReplacedRootsToClean,
-                            services: services.statuses())
+                            services: services.statuses(), notices: currentLogNotices)
+    }
+
+    private var currentLogNotices: [String] {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        return logNotices
     }
 
     /// A replaced root on disk that macOS (as last checked) still trusts. Never waits.
@@ -637,6 +651,48 @@ public final class Engine: @unchecked Sendable {
 
     private static func fpmName(_ v: PHPVersion) -> String { "php-fpm-\(v)" }
 
+    /// The logs PHP-FPM writes itself (`FPMConfig`): its error log and the pool's PHP errors.
+    private func fpmOwnLogs(_ v: PHPVersion) -> [URL] {
+        [paths.log.appendingPathComponent("php-fpm-\(v).log"), paths.log.appendingPathComponent("php-\(v).log")]
+    }
+
+    /// Every web-stack process's logs: its output and the files it writes itself.
+    private func webStackLogs() -> [(process: String, log: URL)] {
+        var logs = [(Self.caddyName, caddyLog), (Self.portHelperName, portHelperLog)]
+        for v in fpmVersions.sorted() {
+            logs.append((Self.fpmName(v), paths.log.appendingPathComponent("\(Self.fpmName(v)).out.log")))
+            logs += fpmOwnLogs(v).map { (Self.fpmName(v), $0) }
+        }
+        return logs
+    }
+
+    /// How often `checkLogSizes` runs in the daemon.
+    public static let logCheckInterval: TimeInterval = 3600
+
+    /// Notes every log a running process holds that has grown very large (services on the service; the web stack
+    /// in the status), and forgets the notes of those that no longer are. Never cuts or renames a held file.
+    public func checkLogSizes() {
+        services.checkLogSizes()
+        let notices = webStackLogs().compactMap { process, log -> String? in
+            guard case .running = supervisor.status(process) else { return nil }
+            return LogFiles.veryLargeNotice(log)
+        }
+        flagsLock.lock()
+        logNotices = notices
+        flagsLock.unlock()
+    }
+
+    /// Runs `checkLogSizes` every `logCheckInterval` for as long as the daemon runs.
+    public func startLogSizeChecks() {
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + Self.logCheckInterval, repeating: Self.logCheckInterval, leeway: .seconds(60))
+        timer.setEventHandler { [weak self] in self?.checkLogSizes() }
+        timer.resume()
+        flagsLock.lock()
+        logCheckTimer = timer
+        flagsLock.unlock()
+    }
+
     private func isFPMRunning(_ v: PHPVersion) -> Bool {
         if case .running = supervisor.status(Self.fpmName(v)) { return true }
         return false
@@ -644,6 +700,8 @@ public final class Engine: @unchecked Sendable {
 
     private func startFPM(_ v: PHPVersion) throws {
         let conf = try FPMConfig.write(version: v, paths: paths)
+        // PHP-FPM's own logs, opened by it: set aside before it starts when large.
+        for log in fpmOwnLogs(v) { LogFiles.setAsideIfLarge(log) }
         try? FileManager.default.removeItem(at: paths.fpmSocket(v))
         try supervisor.start(ProcessSpec(
             name: Self.fpmName(v), executable: installer.fpmBinary(v),
