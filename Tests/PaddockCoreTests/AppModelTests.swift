@@ -548,6 +548,21 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.blockedExplanation, Messages.portsBlocked([holder]))
     }
 
+    func testARootServerNamedByLaunchdGetsTheSentenceAndNoQuitButton() async {
+        let holder = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false,
+                                executablePath: "/opt/local/sbin/nginx", serverHeader: "nginx/1.30.6",
+                                serviceName: "MacPorts nginx", stopCommand: "sudo port unload nginx")
+        let services = FakeServices()
+        services.startError = DaemonLaunchError.portsBlocked([holder])
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) },
+                             services: services, quitter: FakeQuitter(quittable: ["/opt/local"]))
+        await model.start()
+        XCTAssertFalse(model.canQuitBlockingHolder)
+        XCTAssertEqual(model.blockedExplanation, "Paddock can't start: port 80 is in use by MacPorts nginx "
+                       + "(nginx/1.30.6). Stop it with: sudo port unload nginx")
+        XCTAssertEqual(model.statusLine, "Can't start: port 80 in use by MacPorts nginx (nginx/1.30.6)")
+    }
+
     // MARK: - Retrying setup
 
     func testSetupActionIsOfferedEvenWithAQuitButton() async {

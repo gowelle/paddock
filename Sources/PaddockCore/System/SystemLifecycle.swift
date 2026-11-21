@@ -46,7 +46,8 @@ public struct SystemLifecycle: Sendable {
     let daemonIsRunning: @Sendable () -> Bool
     /// Talks to the daemon; uninstall uses it to shut down a daemon the LaunchAgent didn't run.
     let client: ClientProtocol
-    /// Who answers on the given TCP ports (`PortCheck.holders`); tests substitute it.
+    /// Who answers on the given TCP ports (`PortCheck.holders`, asking launchd through `services.runner`);
+    /// tests substitute it.
     let portHolders: @Sendable ([Int]) -> [PortHolder]
     /// The effective user id; 0 (`sudo`) is refused on the real system.
     let effectiveUID: uid_t
@@ -62,7 +63,7 @@ public struct SystemLifecycle: Sendable {
                 portHolders: (@Sendable ([Int]) -> [PortHolder])? = nil, effectiveUID: uid_t = geteuid()) {
         self.services = services
         self.effectiveUID = effectiveUID
-        self.portHolders = portHolders ?? { PortCheck.holders(of: $0) }
+        self.portHolders = portHolders ?? { [runner = services.runner] in PortCheck.holders(of: $0, runner: runner) }
         self.paths = paths
         self.settings = SystemIntegration.isEnabled(environment: environment) ? Settings() : settings
         self.daemonIsRunning = daemonIsRunning ?? { PaddockClient(paths: paths).daemonIsRunning }

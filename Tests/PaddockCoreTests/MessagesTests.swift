@@ -20,6 +20,36 @@ final class MessagesTests: XCTestCase {
                        "Paddock can't start: port 443 is in use by another program.")
     }
 
+    /// MacPorts' nginx runs as root, so lsof can't see it; its header and launchd job name it.
+    func testPortsBlockedByAKnownSystemServerSaysHowToStopIt() {
+        let nginx = { (port: Int) in
+            PortHolder(port: port, pid: nil, command: nil, ownedByCurrentUser: false,
+                       executablePath: "/opt/local/sbin/nginx", serverHeader: "nginx/1.30.6",
+                       serviceName: "MacPorts nginx", stopCommand: "sudo port unload nginx")
+        }
+        XCTAssertEqual(Messages.portsBlocked([nginx(80)]),
+                       "Paddock can't start: port 80 is in use by MacPorts nginx (nginx/1.30.6). "
+                       + "Stop it with: sudo port unload nginx")
+        XCTAssertEqual(Messages.portsBlocked([nginx(80), nginx(443)]),
+                       "Paddock can't start: ports 80 and 443 are in use by MacPorts nginx (nginx/1.30.6). "
+                       + "Stop it with: sudo port unload nginx")
+        XCTAssertEqual(Messages.cantStart([nginx(80)]), "Can't start: port 80 in use by MacPorts nginx (nginx/1.30.6)")
+    }
+
+    func testPortsBlockedByAKnownServerWithoutAHeader() {
+        let holder = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false,
+                                serviceName: "the built-in Apache", stopCommand: "sudo apachectl stop")
+        XCTAssertEqual(Messages.portsBlocked([holder]),
+                       "Paddock can't start: port 80 is in use by the built-in Apache. Stop it with: sudo apachectl stop")
+    }
+
+    func testPortsBlockedWhenOnlyTheHeaderIsKnown() {
+        let holder = PortHolder(port: 80, pid: nil, command: nil, ownedByCurrentUser: false,
+                                serverHeader: "nginx/1.30.6")
+        XCTAssertEqual(Messages.portsBlocked([holder]),
+                       "Paddock can't start: port 80 is in use by another program (nginx/1.30.6).")
+    }
+
     func testPortsBlockedWithPidButNoCommand() {
         let holder = PortHolder(port: 80, pid: 9, command: nil, ownedByCurrentUser: true)
         XCTAssertEqual(Messages.portsBlocked([holder]),

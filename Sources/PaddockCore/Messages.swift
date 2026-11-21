@@ -36,9 +36,10 @@ public enum Messages {
     }
 
     /// `Paddock can't start: ports 80 and 443 are in use by Herd.` One clause per distinct owner (the
-    /// application if known, else the command), each listing its ports once. A `sudo kill` hint follows on
-    /// its own line, once per distinct pid, only for someone else's process that belongs to no known
-    /// application. Paddock never runs it.
+    /// application if known, else the command, else the well-known system server), each listing its ports
+    /// once; a holder `lsof` can't see carries its `Server` header in brackets. A known server's stop
+    /// command follows the sentence; a `sudo kill` hint follows on its own line, once per distinct pid,
+    /// only for someone else's process that belongs to no known application. Paddock never runs either.
     public static func portsBlocked(_ holders: [PortHolder]) -> String {
         guard !holders.isEmpty else { return "Paddock can't start: its ports are in use." }
         let clauses = owners(holders).map { owner -> String in
@@ -46,6 +47,11 @@ public enum Messages {
             return "\(portList(owner.ports)) \(Set(owner.ports).count == 1 ? "is" : "are") in use by \(who)"
         }
         var text = "Paddock can't start: " + clauses.joined(separator: "; ") + "."
+        var commands: [String] = []
+        for command in holders.compactMap(\.stopCommand) where !commands.contains(command) {
+            commands.append(command)
+            text += " Stop it with: \(command)"
+        }
         var hinted = Set<Int32>()
         for holder in holders where !holder.ownedByCurrentUser && holder.appName == nil {
             if let pid = holder.pid, hinted.insert(pid).inserted { text += "\nStop it with: sudo kill \(pid)" }
@@ -142,6 +148,8 @@ public enum Messages {
             if let app = holder.appName { key = "app:" + app }
             else if let command = holder.command { key = "command:" + command }
             else if let pid = holder.pid { key = "pid:\(pid)" }
+            else if let service = holder.serviceName { key = "service:" + service }
+            else if let header = holder.serverHeader { key = "header:" + header }
             else { key = "unknown" }
             if groups[key] == nil { order.append(key) }
             groups[key, default: ([], [])].holders.append(holder)
@@ -152,7 +160,11 @@ public enum Messages {
             let first = group.holders[0]
             let pids = Set(group.holders.compactMap(\.pid))
             let onlyPid = first.appName == nil && pids.count == 1 ? pids.first : nil
-            return (first.appName ?? first.command ?? "another program", group.ports, onlyPid)
+            var who = first.appName ?? first.command ?? first.serviceName ?? "another program"
+            if first.pid == nil, let header = group.holders.lazy.compactMap(\.serverHeader).first {
+                who += " (\(header))"
+            }
+            return (who, group.ports, onlyPid)
         }
     }
 
