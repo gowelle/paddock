@@ -482,6 +482,8 @@ final class SiteTasksTests: XCTestCase {
         XCTAssertTrue(waitFor(20) { ServiceProcessRecord.read(from: recordFile)?.executable == "/bin/sleep" },
                       "\(String(describing: ServiceProcessRecord.read(from: recordFile)))")
 
+        // The killed daemon's web stack is orphaned too: this test stops it at the end (each leads its own group).
+        strays += (daemonStatus()?.processes.values ?? [:].values).compactMap(TestSupport.pid(from:))
         let daemon = try XCTUnwrap(self.daemon)
         kill(daemon.processIdentifier, SIGKILL)
         daemon.waitUntilExit()
