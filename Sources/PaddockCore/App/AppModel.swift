@@ -3,14 +3,18 @@ import Foundation
 
 /// Sends one request to the daemon. `PaddockClient` in the app, a fake in tests.
 public protocol ClientProtocol: Sendable {
-    func send(_ r: Request) throws -> Response
+    /// Throws `ClientError.timedOut` when no answer arrives within `timeout` seconds.
+    func send(_ r: Request, timeout: TimeInterval) throws -> Response
 }
 
-extension PaddockClient: ClientProtocol {
+extension ClientProtocol {
+    /// Requests may take a while (a PHP download), so the usual wait is generous.
     public func send(_ r: Request) throws -> Response {
         try send(r, timeout: 600)
     }
 }
+
+extension PaddockClient: ClientProtocol {}
 
 /// What the app does outside the daemon: starting and stopping it, login item, restore, PATH.
 /// Every call may block, so the model makes them off the main thread.
@@ -40,7 +44,12 @@ public final class AppModel: ObservableObject {
     /// Nil while the daemon is not running.
     @Published public var status: EngineStatus?
     /// One quiet line under the menu and settings; cleared by the next successful action.
-    @Published public var lastError: String?
+    @Published public var lastError: String? {
+        didSet { errorCameFromRefresh = false }
+    }
+    /// True while `lastError` was set by a background refresh; the next successful refresh clears it.
+    /// An action's error stays until the next successful action.
+    private var errorCameFromRefresh = false
     /// `busyKey`s of requests in flight.
     @Published public var busy: Set<String> = []
     /// The daemon's answer when a site could not be made trusted; shown under the sites table.
@@ -150,11 +159,24 @@ public final class AppModel: ObservableObject {
             shellConfigured = extras.shellConfigured
         }
         switch result {
-        case .success(.ok(let fresh)): status = fresh
-        case .success(.error(_, let message)): lastError = message
-        case .failure(ClientError.daemonNotRunning): status = nil
-        case .failure(let error): lastError = Self.describe(error)
+        case .success(.ok(let fresh)):
+            status = fresh
+            if errorCameFromRefresh { lastError = nil }
+        case .success(.error(_, let message)):
+            showRefreshError(message)
+        case .failure(ClientError.daemonNotRunning):
+            status = nil
+            if errorCameFromRefresh { lastError = nil }
+        case .failure(let error):
+            showRefreshError(Self.describe(error))
         }
+    }
+
+    /// A refresh never replaces an action's error the user may not have read yet.
+    private func showRefreshError(_ message: String) {
+        guard lastError == nil || errorCameFromRefresh else { return }
+        lastError = message
+        errorCameFromRefresh = true
     }
 
     private struct Extras: Sendable {
@@ -272,10 +294,15 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Sends `shutdown` to a daemon this app launched itself. Blocks; for the app's last moments.
+    /// How long quitting waits for the daemon to accept `shutdown`.
+    public static let shutdownTimeout: TimeInterval = 5
+
+    /// Sends `shutdown` to a daemon this app launched itself, for the app's last moments. Blocks for at
+    /// most `shutdownTimeout`: if the daemon is busy (say, downloading PHP) the app gives up quietly;
+    /// the daemon still handles the queued `shutdown` once that work is done.
     public func shutDownOwnedDaemon() {
         guard ownsDaemon else { return }
-        _ = try? client.send(.shutdown)
+        _ = try? client.send(.shutdown, timeout: Self.shutdownTimeout)
         ownsDaemon = false
     }
 

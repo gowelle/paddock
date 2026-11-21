@@ -108,7 +108,7 @@ enum Snapshots {
 
     private struct SampleClient: ClientProtocol {
         let status: EngineStatus?
-        func send(_ r: Request) throws -> Response {
+        func send(_ r: Request, timeout: TimeInterval) throws -> Response {
             guard let status else { throw ClientError.daemonNotRunning }
             return .ok(status)
         }

@@ -5,6 +5,7 @@ import XCTest
 private final class FakeClient: ClientProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [Request] = []
+    private var recordedTimeouts: [TimeInterval] = []
     var handler: @Sendable (Request) throws -> Response
     /// When set, every request other than `status` waits for it before answering.
     var gate: DispatchSemaphore?
@@ -19,9 +20,17 @@ private final class FakeClient: ClientProtocol, @unchecked Sendable {
         return recorded
     }
 
-    func send(_ r: Request) throws -> Response {
+    /// The timeout each request was sent with, in order.
+    var timeouts: [TimeInterval] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedTimeouts
+    }
+
+    func send(_ r: Request, timeout: TimeInterval) throws -> Response {
         lock.lock()
         recorded.append(r)
+        recordedTimeouts.append(timeout)
         let gate = r == .status ? nil : self.gate
         lock.unlock()
         gate?.wait()
@@ -361,6 +370,60 @@ final class AppModelTests: XCTestCase {
                                                 withIntermediateDirectories: true)
         try Data().write(to: paths.phpIni(v84))
         XCTAssertEqual(model.phpIni(v84), paths.phpIni(v84))
+    }
+
+    func testShutdownOnQuitWaitsOnlyBrieflyAndGivesUpQuietly() async {
+        let client = FakeClient { r in
+            if r == .shutdown { throw ClientError.timedOut } // A busy daemon: still installing PHP.
+            return .ok(sampleStatus())
+        }
+        let services = FakeServices()
+        services.startOutcome = .spawned
+        let model = AppModel(client: client, services: services)
+        await model.start()
+        XCTAssertNil(model.lastError)
+
+        model.shutDownOwnedDaemon()
+        XCTAssertEqual(client.requests.last, .shutdown)
+        XCTAssertEqual(client.timeouts.last, 5)
+        XCTAssertEqual(AppModel.shutdownTimeout, 5)
+        XCTAssertNil(model.lastError)
+        XCTAssertFalse(model.ownsDaemon)
+        // Ordinary requests keep the long wait.
+        XCTAssertEqual(client.timeouts.first, 600)
+    }
+
+    func testRefreshErrorIsClearedByTheNextSuccessfulRefresh() async {
+        let client = FakeClient { _ in throw ClientError.timedOut }
+        let model = AppModel(client: client)
+        await model.refresh()
+        XCTAssertEqual(model.lastError, Messages.didNotAnswer)
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.refresh()
+        XCTAssertNil(model.lastError)
+        XCTAssertEqual(model.status, sampleStatus())
+    }
+
+    func testActionErrorSurvivesBackgroundRefreshesUntilTheNextSuccessfulAction() async {
+        let client = FakeClient { r in
+            if case .use = r { return .error(code: ErrorCode.phpNotInstalled, message: "PHP 8.4 isn't installed.") }
+            return .ok(sampleStatus())
+        }
+        let model = AppModel(client: client)
+        await model.perform(.use(version: v84))
+        XCTAssertEqual(model.lastError, "PHP 8.4 isn't installed.")
+        await model.refresh()
+        await model.refresh()
+        XCTAssertEqual(model.lastError, "PHP 8.4 isn't installed.")
+
+        // A failing refresh doesn't replace it either.
+        client.handler = { _ in throw ClientError.timedOut }
+        await model.refresh()
+        XCTAssertEqual(model.lastError, "PHP 8.4 isn't installed.")
+
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.perform(.use(version: v85))
+        XCTAssertNil(model.lastError)
     }
 
     func testOwnedDaemonIsShutDownOnQuit() async {

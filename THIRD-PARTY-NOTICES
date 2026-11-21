@@ -674,10 +674,13 @@ component is offered under either.
 Library versions left blank are not reported by the build. The Apache
 License 2.0 text under "Caddy" above applies to the Apache-2.0 components
 here. Short licence texts for the most widely used of these libraries follow.
-The LGPL components (GMP, libiconv, libidn2, libunistring, QDBM, libheif,
-libde265) are unmodified upstream releases; their complete corresponding
-source is available from the upstream URLs above and from static-php-cli's
-source downloads for the build version named above.
+The LGPL and GPL components (GMP, libiconv, libidn2, libunistring, QDBM,
+libheif, libde265, JBIG-KIT) are statically linked into the PHP programs
+Paddock bundles. Those programs are prebuilt by the static-php-cli project;
+its source and build recipe, including how each library is fetched and
+built, are at https://github.com/crazywhalecc/static-php-cli (release 2.8.6
+for the bundled build), and each library's source is at the upstream URL
+above.
 
 
 --------------------------------------------------------------------------------
