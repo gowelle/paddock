@@ -122,6 +122,25 @@ for series in $SERIES; do
   echo "PHP $patch unpacked into Vendor/php/$series/default."
 done
 
+# PostGIS: Paddock's own add-on for each PostgreSQL series, made by Scripts/build-postgis.sh into
+# Vendor/builds/ and shipped in the app (a services-catalog.json paddock-builds:// asset). Checked only.
+POSTGIS_NAMES="$(awk -F'\t' '$1 ~ /^postgis-pg[0-9]+$/ { print $1 }' "$LOCK")"
+for name in $POSTGIS_NAMES; do
+  url="$(lock_field "$name" 2)"
+  sha="$(lock_field "$name" 3)"
+  case "$url" in
+    paddock-builds://*) file="${url#paddock-builds://}" ;;
+    *) fail "$name in Scripts/versions.lock is $url; PostGIS must come from Paddock's own builds (paddock-builds://)." ;;
+  esac
+  [ -f "$BUILDS/$file" ] || fail "Vendor/builds/$file is missing. Build it with: Scripts/build-postgis.sh ${name#postgis-pg}" \
+    "(about 20 minutes), or copy the archive there."
+  actual="$(sha256 "$BUILDS/$file")"
+  [ "$actual" = "$sha" ] || fail "Vendor/builds/$file has checksum $actual; Scripts/versions.lock expects $sha."
+  grep -q "\"$sha\"" "$ROOT/Resources/services-catalog.json" \
+    || fail "Resources/services-catalog.json does not list $file with checksum $sha."
+  echo "PostGIS add-on $file verified."
+done
+
 # Router and manifest
 ln -sfn ../Resources/router "$VENDOR/router"
 cp "$MANIFEST" "$VENDOR/php-manifest.json"

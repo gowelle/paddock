@@ -67,6 +67,15 @@
           },
           "archive": "tar.gz",
           "stripComponents": 1
+        },
+        {
+          "artifact": {
+            "url": "paddock-builds://postgis-3.6.4-pg18-macos-x86_64.tar.gz",
+            "sha256": "4a6f7956d86ea2b34bed0e310470dd524d1e251a3c21699b67d8ef979b544cd4",
+            "size": 7102827
+          },
+          "archive": "tar.gz",
+          "stripComponents": 0
         }
       ],
       "initialise": [
@@ -112,6 +121,7 @@
         "DB_PASSWORD="
       ],
       "needsPHP": false,
+      "notes": ["Includes PostGIS 3.6.4 (no raster or topology)."],
       "configFiles": [
         {
           "path": "{config}/pg_hba.conf",
@@ -151,6 +161,15 @@
           },
           "archive": "tar.gz",
           "stripComponents": 1
+        },
+        {
+          "artifact": {
+            "url": "paddock-builds://postgis-3.6.4-pg17-macos-x86_64.tar.gz",
+            "sha256": "d3da6e51565721d108273bec99c7ef6a4acee4189da737d1c439d42f15a27dda",
+            "size": 7102684
+          },
+          "archive": "tar.gz",
+          "stripComponents": 0
         }
       ],
       "initialise": [
@@ -196,6 +215,7 @@
         "DB_PASSWORD="
       ],
       "needsPHP": false,
+      "notes": ["Includes PostGIS 3.6.4 (no raster or topology)."],
       "configFiles": [
         {
           "path": "{config}/pg_hba.conf",
@@ -235,6 +255,15 @@
           },
           "archive": "tar.gz",
           "stripComponents": 1
+        },
+        {
+          "artifact": {
+            "url": "paddock-builds://postgis-3.6.4-pg16-macos-x86_64.tar.gz",
+            "sha256": "bfa660f8c2472c4d04f30f0b7ef32ff790dd60fa2315aa8ff704078586f3f010",
+            "size": 7102683
+          },
+          "archive": "tar.gz",
+          "stripComponents": 0
         }
       ],
       "initialise": [
@@ -280,6 +309,7 @@
         "DB_PASSWORD="
       ],
       "needsPHP": false,
+      "notes": ["Includes PostGIS 3.6.4 (no raster or topology)."],
       "configFiles": [
         {
           "path": "{config}/pg_hba.conf",

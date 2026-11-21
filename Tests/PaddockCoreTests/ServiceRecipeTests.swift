@@ -173,7 +173,14 @@ final class ServiceRecipeTests: XCTestCase {
             XCTAssertTrue(recipe.seriesInID, "postgres-18, PostgreSQL 18")
             XCTAssertEqual(recipe.licence, "PostgreSQL")
             XCTAssertEqual(recipe.minimumMacOS, "15.0", "LC_BUILD_VERSION minos of every binary in the archives")
-            XCTAssertEqual(recipe.assets.count, 1)
+            XCTAssertEqual(recipe.assets.count, 2, "PostgreSQL, then Paddock's PostGIS add-on over it")
+            let addOn = recipe.assets[1]
+            XCTAssertEqual(addOn.artifact.url.absoluteString,
+                           "paddock-builds://postgis-3.6.4-pg\(recipe.series)-macos-x86_64.tar.gz")
+            XCTAssertEqual(addOn.artifact.sha256.count, 64)
+            XCTAssertEqual(addOn.archive, "tar.gz")
+            XCTAssertEqual(addOn.stripComponents, 0)
+            XCTAssertEqual(recipe.notes, ["Includes PostGIS 3.6.4 (no raster or topology)."])
             let asset = try XCTUnwrap(recipe.assets.first)
             XCTAssertEqual(asset.artifact.url.absoluteString,
                            "https://github.com/theseus-rs/postgresql-binaries/releases/download/\(label)/"
@@ -206,6 +213,22 @@ final class ServiceRecipeTests: XCTestCase {
             let create = try XCTUnwrap(recipe.actions[RecipeAction.createDatabase])
             XCTAssertEqual(create.command.executable, "{bin}/bin/createdb")
             XCTAssertEqual(create.parameters, [RecipeParameter(name: "database", pattern: "^[A-Za-z0-9_]{1,63}$")])
+        }
+    }
+
+    /// Every one of Paddock's own builds the catalog names is in Scripts/versions.lock with the same checksum,
+    /// so fetch-vendor.sh checks it and bundle.sh ships it.
+    func testTheCatalogsOwnBuildsAreInTheLock() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let lock = try String(contentsOf: root.appendingPathComponent("Scripts/versions.lock"), encoding: .utf8)
+        let lines = lock.split(separator: "\n").map { $0.split(separator: "\t").map(String.init) }
+        let builds = try ServiceCatalog.bundled().recipes.flatMap { recipe in
+            recipe.assets.filter { $0.artifact.url.scheme == BuildSource.scheme }.map { (recipe, $0) }
+        }
+        XCTAssertEqual(builds.count, 3, "the PostGIS add-on of each PostgreSQL series")
+        for (recipe, asset) in builds {
+            XCTAssertEqual(lines.first { $0.first == "postgis-pg\(recipe.series)" },
+                           ["postgis-pg\(recipe.series)", asset.artifact.url.absoluteString, asset.artifact.sha256])
         }
     }
 

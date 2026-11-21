@@ -4,3 +4,6 @@ php-8.5-fpm	paddock-builds://php-8.5.13-fpm-macos-x86_64.tar.gz	b1e5d774790db7f7
 php-8.4-cli	paddock-builds://php-8.4.28-cli-macos-x86_64.tar.gz	fe91bbdb046e985b2e5a6c789685854c4debe094cb44e5dc4bddb1804e8e547c
 php-8.4-fpm	paddock-builds://php-8.4.28-fpm-macos-x86_64.tar.gz	f5c7550bf34be9c6e5c377e8f94ddc125f3ea212bbc70bad7e491b449bb93c0a
 composer	https://getcomposer.org/download/2.11.2/composer.phar	dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028
+postgis-pg18	paddock-builds://postgis-3.6.4-pg18-macos-x86_64.tar.gz	4a6f7956d86ea2b34bed0e310470dd524d1e251a3c21699b67d8ef979b544cd4
+postgis-pg17	paddock-builds://postgis-3.6.4-pg17-macos-x86_64.tar.gz	d3da6e51565721d108273bec99c7ef6a4acee4189da737d1c439d42f15a27dda
+postgis-pg16	paddock-builds://postgis-3.6.4-pg16-macos-x86_64.tar.gz	bfa660f8c2472c4d04f30f0b7ef32ff790dd60fa2315aa8ff704078586f3f010

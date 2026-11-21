@@ -166,6 +166,21 @@ enum TestSupport {
     }
 
     /// The pid in a `ProcessStatus` description such as "running (pid 123)".
+    /// The libraries a Mach-O file links (`otool -L`, its own install name included).
+    static func linkedLibraries(_ file: URL) throws -> [String] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/otool")
+        p.arguments = ["-L", file.path]
+        let out = Pipe()
+        p.standardOutput = out
+        try p.run()
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        return text.split(separator: "\n").dropFirst().compactMap { line in
+            line.trimmingCharacters(in: .whitespaces).components(separatedBy: " (compatibility").first
+        }
+    }
+
     static func pid(from description: String) -> Int32? {
         guard let range = description.range(of: "pid ") else { return nil }
         return Int32(description[range.upperBound...].prefix { $0.isNumber })
