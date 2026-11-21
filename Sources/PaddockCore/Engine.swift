@@ -80,6 +80,9 @@ public final class Engine: @unchecked Sendable {
         }
 
         try paths.ensureDirectories()
+        do { try installShims() } catch {
+            fputs("paddockd: could not install the php and composer commands: \(error.localizedDescription)\n", stderr)
+        }
         let state = try prepareState()
 
         let holders = PortCheck.holders(of: [settings.httpPort, settings.httpsPort])
@@ -97,6 +100,18 @@ public final class Engine: @unchecked Sendable {
             stopLocked()
             throw error
         }
+    }
+
+    /// Puts the `paddock` binary that sits next to the running daemon into `bin/`, with `php` and
+    /// `composer` linking to it. Does nothing when there is no such binary (e.g. under tests).
+    /// Safe to call on every start.
+    public func installShims() throws {
+        try installShims(runningExecutable: Bundle.main.executableURL)
+    }
+
+    func installShims(runningExecutable: URL?) throws {
+        let sibling = runningExecutable?.deletingLastPathComponent().appendingPathComponent("paddock")
+        try Shims.install(paths: paths, source: sibling, resources: Bundled.resources)
     }
 
     /// Stops Caddy, every PHP-FPM (with its workers) and the DNS responder.

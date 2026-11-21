@@ -18,7 +18,8 @@ public struct Paths: Sendable {
     }
 
     public var bin: URL { home.appendingPathComponent("bin", isDirectory: true) }
-    public var phpRoot: URL { bin.appendingPathComponent("php", isDirectory: true) }
+    /// PHP builds. Not `bin/php`: that name is the `php` command (a link to `paddock`).
+    public var phpRoot: URL { bin.appendingPathComponent("php-versions", isDirectory: true) }
     public var config: URL { home.appendingPathComponent("config", isDirectory: true) }
     public var run: URL { home.appendingPathComponent("run", isDirectory: true) }
     public var log: URL { home.appendingPathComponent("log", isDirectory: true) }
@@ -58,16 +59,40 @@ public struct Paths: Sendable {
 /// Where the bundled programs (caddy, composer.phar, router/, php/, php-manifest.json) live.
 public struct Bundled {
     public static var resources: URL {
-        let main = Bundle.main.bundleURL
-        if main.pathExtension == "app" {
-            return main.appendingPathComponent("Contents/Resources", isDirectory: true)
-        }
-        if let r = ProcessInfo.processInfo.environment["PADDOCK_RESOURCES"], !r.isEmpty {
+        let executable = Bundle.main.executableURL
+        return resolveResources(
+            environment: ProcessInfo.processInfo.environment,
+            bundleURL: Bundle.main.bundleURL,
+            executableDirectory: executable?.deletingLastPathComponent(),
+            resolvedExecutableDirectory: executable?.resolvingSymlinksInPath().deletingLastPathComponent(),
+            fallback: repoVendor)
+    }
+
+    /// <repo>/Sources/PaddockCore/Paths.swift -> <repo>/Vendor
+    private static var repoVendor: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Vendor", isDirectory: true)
+    }
+
+    /// Lookup order: PADDOCK_RESOURCES, the enclosing .app, the path recorded in `.resources` next to
+    /// the running executable (the copy in `bin/` records it), then `fallback` (the repo's Vendor/).
+    static func resolveResources(environment: [String: String], bundleURL: URL,
+                                 executableDirectory: URL?, resolvedExecutableDirectory: URL? = nil,
+                                 fallback: URL) -> URL {
+        if let r = environment["PADDOCK_RESOURCES"], !r.isEmpty {
             return URL(fileURLWithPath: r, isDirectory: true)
         }
-        // <repo>/Sources/PaddockCore/Paths.swift -> <repo>
-        let repo = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        return repo.appendingPathComponent("Vendor", isDirectory: true)
+        if bundleURL.pathExtension == "app" {
+            return bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true)
+        }
+        for directory in [executableDirectory, resolvedExecutableDirectory].compactMap({ $0 }) {
+            let record = directory.appendingPathComponent(".resources")
+            if let text = try? String(contentsOf: record, encoding: .utf8) {
+                let path = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !path.isEmpty { return URL(fileURLWithPath: path, isDirectory: true) }
+            }
+        }
+        return fallback
     }
 }

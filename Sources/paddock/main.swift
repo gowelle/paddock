@@ -1,3 +1,6 @@
-// Entry point. Task 12 adds a dispatch on argv[0] here (running as `php` or `composer`),
-// ahead of the `paddock` command line below.
+import PaddockCore
+
+// Run as `php` or `composer` (symlinks to this binary): become that program, without parsing
+// arguments or contacting the daemon. Otherwise this is the `paddock` command line.
+MultiCall.runIfInvokedAsShim()
 Paddock.main()
