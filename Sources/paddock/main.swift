@@ -1,15 +1,3 @@
-import ArgumentParser
-import PaddockCore
-
-struct Paddock: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "paddock",
-        abstract: "Control Paddock from the command line."
-    )
-
-    func run() throws {
-        print(Self.helpMessage())
-    }
-}
-
+// Entry point. Task 12 adds a dispatch on argv[0] here (running as `php` or `composer`),
+// ahead of the `paddock` command line below.
 Paddock.main()
