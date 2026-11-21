@@ -1381,6 +1381,14 @@ public final class ServiceManager: @unchecked Sendable {
     /// The template values for an instance. `{socket}` is empty when the recipe has no socket or its path
     /// would be too long for macOS; the service then runs on TCP only.
     func context(_ instance: ServiceInstance, recipe: ServiceRecipe) throws -> ServiceTemplateContext {
+        // Config files quote these paths (`dir "…"`, `'…'`): a quote, backslash or control character in one
+        // could break a setting or add one. Not possible in a normal macOS home; it guards a hand-set one.
+        for folder in [paths.serviceBin(kind: recipe.kind, version: recipe.version), paths.serviceData(instance.id),
+                       paths.serviceConfig(instance.id), paths.serviceRun(instance.id)]
+        where !Self.isSafeInConfigFiles(folder.path) {
+            throw ServiceError.unavailable(name: instance.name, reason: "Paddock's folder path contains a character "
+                                           + "services can't handle: \(folder.path)")
+        }
         var context = ServiceTemplateContext(
             bin: paths.serviceBin(kind: recipe.kind, version: recipe.version).path,
             data: paths.serviceData(instance.id).path, config: paths.serviceConfig(instance.id).path,
@@ -1392,6 +1400,13 @@ public final class ServiceManager: @unchecked Sendable {
             if !path.isEmpty, path.utf8.count <= Self.maximumSocketPath { context.socket = path }
         }
         return context
+    }
+
+    /// No `"`, `'`, `\\` or control character (a path config files can quote as it is).
+    static func isSafeInConfigFiles(_ path: String) -> Bool {
+        !path.unicodeScalars.contains {
+            $0 == "\"" || $0 == "'" || $0 == "\\" || CharacterSet.controlCharacters.contains($0) || $0 == "\u{7F}"
+        }
     }
 
     /// The recipe's `.env` lines; without a usable socket, those naming it give way to one comment line.

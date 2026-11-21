@@ -345,6 +345,28 @@ final class ServiceLifecycleTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: conf, encoding: .utf8), "port = \(home.fakePort)\n", "rewritten on start")
     }
 
+    /// Config files quote paths (`dir "…"`, `'…'`): a home whose path holds a quote, a backslash or a control
+    /// character could break or add a setting, so services refuse it before anything is written or run.
+    func testAHomePathWithAQuoteOrControlCharacterIsRefused() async throws {
+        for odd in ["it's", "say \"hi\"", "back\\slash", "tab\there", "new\nline"] {
+            let paths = Paths(home: home.root.appendingPathComponent(odd, isDirectory: true))
+            try paths.ensureDirectories()
+            let manager = ServiceManager(paths: paths, catalog: ServiceCatalog(recipes: [FakeService.recipe()]),
+                                         store: StateStore(paths: paths), supervisor: Supervisor(backoffScale: 0.05),
+                                         portCheck: .withoutProbes, portBase: home.portBase)
+            managers.append(manager)
+            let error = await serviceError { _ = try await manager.add(kind: "fake", version: nil) }
+            guard case .unavailable(let name, let reason)? = error else { XCTFail("\(odd): \(String(describing: error))"); continue }
+            XCTAssertEqual(name, "Fake")
+            XCTAssertTrue(reason.hasPrefix("Paddock's folder path contains a character services can't handle: "), reason)
+            XCTAssertTrue(reason.contains(odd), reason)
+            XCTAssertEqual(Engine.response(for: error!), .error(code: ErrorCode.serviceUnavailable,
+                                                                message: Messages.serviceError(error!)))
+            XCTAssertEqual(StateStore(paths: paths).load().services, [], "nothing saved")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.serviceData("fake").path), "nothing created")
+        }
+    }
+
     /// A config file is written without its socket lines when the instance's socket path is too long.
     func testConfigFileSocketLinesAreLeftOutWhenTheSocketIsTooLong() async throws {
         home.cleanUp()
