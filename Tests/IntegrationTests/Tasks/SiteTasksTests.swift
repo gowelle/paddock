@@ -984,6 +984,11 @@ final class TaskHome {
                                   options: .atomic)
     }
 
+    private let logged = LockedBox<[String]>([])
+    /// The engine's log lines, when a test hands it `record`.
+    var logLines: [String] { logged.value }
+    func record(_ line: String) { logged.value = logged.value + [line] }
+
     func makeDirectory(_ name: String) throws -> URL {
         let folder = root.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

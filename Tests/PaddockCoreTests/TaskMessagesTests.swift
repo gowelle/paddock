@@ -106,8 +106,8 @@ final class TaskMessagesTests: XCTestCase {
         ])
         XCTAssertEqual(Messages.routeOnPaddocksPort(prefix: "/app", port: 443),
                        "The route /app isn't used: port 443 is Paddock's own.")
-        XCTAssertEqual(Messages.proxyRoutesNotApplied("bad config"),
-                       "Paddock couldn't apply this site's proxy routes, so it serves it without them: bad config")
+        XCTAssertEqual(Messages.proxyRoutesNotApplied("bad\u{1B}[2J config"),
+                       "Paddock couldn't apply this site's forwarding: bad config")
     }
 
     func testErrors() {

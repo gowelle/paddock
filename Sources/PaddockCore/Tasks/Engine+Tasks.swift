@@ -49,7 +49,12 @@ extension Engine {
     /// Approving or withdrawing a site's tasks changes its proxy routes: the web side follows (a route Caddy would
     /// refuse leaves the config it serves untouched, `writeConfigs`). Never fails the request.
     func applyProxyRoutes() async {
-        _ = try? await ServiceManager.offPool { try self.reload() }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            routesQueue.async {
+                self.applyRoutesIfChanged()
+                continuation.resume()
+            }
+        }
     }
 
     static func response(for error: SiteTaskError) -> Response {

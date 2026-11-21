@@ -715,7 +715,7 @@ public enum Messages {
     }
 
     public static func proxyRoutesNotApplied(_ reason: String) -> String {
-        "Paddock couldn't apply this site's proxy routes, so it serves it without them: \(reason)"
+        "Paddock couldn't apply this site's forwarding: \(printable(reason, limit: 200) ?? "the web server refused it")"
     }
 
     public static func taskError(_ error: SiteTaskError) -> String {

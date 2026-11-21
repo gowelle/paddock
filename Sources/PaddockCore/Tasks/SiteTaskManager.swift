@@ -49,6 +49,8 @@ public final class SiteTaskManager: @unchecked Sendable {
     let timeScale: TimeInterval
     /// Every process Paddock supervises elsewhere (the web stack, services): never a task's leftover.
     let supervisedPids: @Sendable () -> Set<Int32>
+    /// Told after every refresh, so the web side can follow the sites' routes (the engine sets it).
+    var routesMayHaveChanged: (@Sendable () -> Void)?
     /// Called (tests) in a forced restart between the end of the task's stop and the pass over leftovers.
     var beforeForcePassForTesting: (@Sendable () -> Void)?
     /// Paddock's own ports: never a proxy route's target.
@@ -418,6 +420,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         stateLock.unlock()
         syncWatchers(views)
         reconcileLocked(views: views)
+        routesMayHaveChanged?()
     }
 
     /// The file's last reading, read again only when its stamp changed.
