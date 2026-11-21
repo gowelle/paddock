@@ -441,7 +441,11 @@
           "--env",
           "development",
           "--upgrade-db"
-        ]
+        ],
+        "environment": {
+          "MEILI_MASTER_KEY": "{secret.master_key}",
+          "NO_COLOR": "1"
+        }
       },
       "ready": {
         "http": {
@@ -460,12 +464,18 @@
       "env": [
         "SCOUT_DRIVER=meilisearch",
         "MEILISEARCH_HOST=http://127.0.0.1:{port.main}",
-        "MEILISEARCH_KEY="
+        "MEILISEARCH_KEY={secret.master_key}"
       ],
       "openURL": "http://127.0.0.1:{port.main}",
       "needsPHP": false,
       "notes": [
         "Search indexes are tied to Meilisearch 1.57; export a dump before changing version."
+      ],
+      "secrets": [
+        {
+          "name": "master_key",
+          "bytes": 32
+        }
       ],
       "configFiles": [
         {

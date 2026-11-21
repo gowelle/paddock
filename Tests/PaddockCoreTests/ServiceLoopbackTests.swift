@@ -9,11 +9,13 @@ final class ServiceLoopbackTests: XCTestCase {
     private func sampleContext(_ recipe: ServiceRecipe) -> ServiceTemplateContext {
         var ports: [String: Int] = [:]
         for (index, port) in recipe.ports.enumerated() { ports[port.name] = 40000 + index }
-        return ServiceTemplateContext(
+        var context = ServiceTemplateContext(
             bin: "/h/services/bin/\(recipe.kind)/\(recipe.version)", data: "/h/services/x/data",
             config: "/h/services/x/config", run: "/h/run/svc/x", log: "/h/log/service-x.log",
             name: recipe.displayName, id: recipe.kind, ports: ports, socket: "/h/run/svc/x/x.sock",
             php: "/h/bin/php", resources: "/r")
+        context.secrets = Dictionary(uniqueKeysWithValues: recipe.secrets.map { ($0.name, "sampleSecretValue_0123456789") })
+        return context
     }
 
     /// Every rendered string a recipe passes to its program.

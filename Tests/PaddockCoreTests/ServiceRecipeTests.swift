@@ -297,13 +297,17 @@ final class ServiceRecipeTests: XCTestCase {
             "--config-file-path", "{config}/meilisearch.toml", "--http-addr", "127.0.0.1:{port.main}",
             "--db-path", "{data}/data.ms", "--dump-dir", "{data}/dumps", "--snapshot-dir", "{data}/snapshots",
             "--no-analytics", "--env", "development", "--upgrade-db"])
-        XCTAssertFalse(meili.start.arguments.contains("--master-key"), "no master key in development, loopback only")
+        XCTAssertFalse(meili.start.arguments.contains { $0.templates.contains { $0.contains("secret") } },
+                       "the master key is never an argument (ps shows those)")
+        XCTAssertEqual(meili.start.environment, ["MEILI_MASTER_KEY": "{secret.master_key}", "NO_COLOR": "1"],
+                       "a random master key for every instance; logs without colour codes")
+        XCTAssertEqual(meili.secrets, [RecipeSecret(name: "master_key", bytes: 32)])
         XCTAssertEqual(meili.ready, .http(url: "http://127.0.0.1:{port.main}/health", expectStatus: 200))
         XCTAssertEqual(meili.stopSignal, "TERM")
         XCTAssertEqual(meili.ports, [RecipePort(name: "main", preferred: 7700)])
         XCTAssertNil(meili.socket)
         XCTAssertEqual(meili.env, ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:{port.main}",
-                                   "MEILISEARCH_KEY="])
+                                   "MEILISEARCH_KEY={secret.master_key}"])
         XCTAssertEqual(meili.openURL, "http://127.0.0.1:{port.main}")
         XCTAssertEqual(meili.configFiles.map(\.path), ["{config}/meilisearch.toml"])
         XCTAssertEqual(meili.notes, ["Search indexes are tied to Meilisearch 1.57; export a dump before changing version."])
