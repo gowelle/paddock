@@ -1,21 +1,73 @@
 import Foundation
 
+/// One series of a kind, as the catalog lists it: its newest version and whether adding it downloads.
+public struct CatalogSeries: Codable, Equatable, Sendable {
+    public let series: String
+    /// The newest version of the series.
+    public let version: String
+    /// Its download, in bytes, when every asset's size is known (0 when it downloads nothing).
+    public let downloadBytes: Int?
+    /// Whether adding it would download (false when installed already, or every file is on this Mac).
+    public let needsDownload: Bool
+
+    public init(series: String, version: String, downloadBytes: Int?, needsDownload: Bool) {
+        self.series = series
+        self.version = version
+        self.downloadBytes = downloadBytes
+        self.needsDownload = needsDownload
+    }
+}
+
 /// One kind of service as the catalog lists it.
 public struct CatalogEntry: Codable, Equatable, Sendable {
     public let kind: String
     public let displayName: String
     public let licence: String
-    /// Newest first.
+    /// Every version, newest first.
     public let versions: [String]
     /// The newest version's download, in bytes, when every asset's size is known.
     public let downloadBytes: Int?
+    /// Its series, newest first.
+    public var series: [CatalogSeries]
 
-    public init(kind: String, displayName: String, licence: String, versions: [String], downloadBytes: Int?) {
+    public init(kind: String, displayName: String, licence: String, versions: [String], downloadBytes: Int?,
+                series: [CatalogSeries] = []) {
         self.kind = kind
         self.displayName = displayName
         self.licence = licence
         self.versions = versions
         self.downloadBytes = downloadBytes
+        self.series = series
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, displayName, licence, versions, downloadBytes, series }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(String.self, forKey: .kind)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        licence = try c.decode(String.self, forKey: .licence)
+        versions = try c.decodeIfPresent([String].self, forKey: .versions) ?? []
+        downloadBytes = try c.decodeIfPresent(Int.self, forKey: .downloadBytes)
+        series = try c.decodeIfPresent([CatalogSeries].self, forKey: .series) ?? []
+    }
+
+    /// The series `typed` names: a series (`18`), a version of one (`18.1`), or the newest when nil.
+    public func series(matching typed: String?) -> CatalogSeries? {
+        guard let typed else { return series.first }
+        return series.first { $0.series == typed } ?? series.first { $0.version == typed }
+            ?? series.first { typed.hasPrefix($0.series + ".") }
+    }
+}
+
+public enum ServiceCatalogError: Error, Equatable, CustomStringConvertible {
+    /// The whole catalog is refused; the message names the recipe and the problem.
+    case invalid(String)
+
+    public var description: String {
+        switch self {
+        case .invalid(let message): return "Paddock's service catalog is invalid: \(message)"
+        }
     }
 }
 
@@ -27,8 +79,18 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
 
     public let recipes: [ServiceRecipe]
 
+    /// Not validated: `ServiceManager` validates the catalog it is given, decoding validates a loaded one.
     public init(recipes: [ServiceRecipe]) {
         self.recipes = recipes
+    }
+
+    private enum CodingKeys: String, CodingKey { case recipes }
+
+    /// Decoding validates: a catalog with any problem is refused as a whole.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        recipes = try c.decode([ServiceRecipe].self, forKey: .recipes)
+        try Self.validate(recipes)
     }
 
     /// The catalog shipped with Paddock: `services-catalog.json` in the bundled resources, or in the
@@ -44,14 +106,18 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
     }
 
     /// The daemon's catalog: in a development home, the file `PADDOCK_SERVICES_CATALOG` names if set;
-    /// otherwise the bundled one (empty if it can't be read).
+    /// otherwise the bundled one (empty if it can't be read or isn't valid).
     public static func forDaemon(environment: [String: String]) -> ServiceCatalog {
         if !SystemIntegration.isEnabled(environment: environment),
-           let path = environment[overrideVariable], !path.isEmpty,
-           let catalog = try? load(from: URL(fileURLWithPath: path)) {
-            return catalog
+           let path = environment[overrideVariable], !path.isEmpty {
+            do { return try load(from: URL(fileURLWithPath: path)) } catch {
+                fputs("paddockd: ignoring \(path): \(error)\n", stderr)
+            }
         }
-        return (try? bundled()) ?? ServiceCatalog(recipes: [])
+        do { return try bundled() } catch {
+            fputs("paddockd: \(error)\n", stderr)
+            return ServiceCatalog(recipes: [])
+        }
     }
 
     /// <repo>/Sources/PaddockCore/Services/ServiceCatalog.swift -> <repo>/Resources
@@ -62,11 +128,17 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
     }
 
     /// The recipe for `kind` (any case): the newest version when `version` is nil; else exactly that
-    /// version, or the newest whose version starts with it (`16` finds `16.4`).
+    /// version, or the newest of the series it names (`16`, `8.4`), or the newest whose version starts with it.
     public func recipe(kind: String, version: String?) -> ServiceRecipe? {
         let candidates = recipes(of: kind)
         guard let version else { return candidates.first }
-        return candidates.first { $0.version == version } ?? candidates.first { $0.version.hasPrefix(version + ".") }
+        return candidates.first { $0.version == version } ?? candidates.first { $0.series == version }
+            ?? candidates.first { $0.version.hasPrefix(version + ".") }
+    }
+
+    /// The newest recipe of a series.
+    public func recipe(kind: String, series: String) -> ServiceRecipe? {
+        recipes(of: kind).first { $0.series == series }
     }
 
     /// The recipes of one kind, newest first.
@@ -75,18 +147,28 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
             .sorted { Self.isNewer($0.version, than: $1.version) }
     }
 
-    /// Every kind, alphabetically, with its versions newest first.
-    public func kinds() -> [CatalogEntry] {
+    /// Every kind, alphabetically, with its versions and series newest first. `needsDownload` says whether
+    /// the series' newest version has anything to download (`ServiceManager` refines it with what's installed).
+    public func kinds(needsDownload: (ServiceRecipe) -> Bool = { !$0.assets.isEmpty }) -> [CatalogEntry] {
         var seen: [String] = []
         for recipe in recipes where !seen.contains(recipe.kind) { seen.append(recipe.kind) }
         return seen.sorted().compactMap { kind in
             let versions = recipes(of: kind)
             guard let newest = versions.first else { return nil }
-            let sizes = newest.assets.map(\.artifact.size)
-            let bytes: Int? = sizes.contains { $0 == nil } ? nil : sizes.compactMap { $0 }.reduce(0, +)
+            var series: [CatalogSeries] = []
+            for recipe in versions where !series.contains(where: { $0.series == recipe.series }) {
+                series.append(CatalogSeries(series: recipe.series, version: recipe.version,
+                                            downloadBytes: Self.downloadBytes(recipe), needsDownload: needsDownload(recipe)))
+            }
             return CatalogEntry(kind: kind, displayName: newest.displayName, licence: newest.licence,
-                                versions: versions.map(\.version), downloadBytes: bytes)
+                                versions: versions.map(\.version), downloadBytes: Self.downloadBytes(newest),
+                                series: series)
         }
+    }
+
+    private static func downloadBytes(_ recipe: ServiceRecipe) -> Int? {
+        let sizes = recipe.assets.map(\.artifact.size)
+        return sizes.contains { $0 == nil } ? nil : sizes.compactMap { $0 }.reduce(0, +)
     }
 
     /// Whether `a` is a later version than `b`, comparing numeric parts as numbers (`1.10` > `1.9`).

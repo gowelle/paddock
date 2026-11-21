@@ -10,7 +10,7 @@ final class ServiceInstanceTests: XCTestCase {
         return Paths(home: dir)
     }
 
-    private let mail = ServiceInstance(id: "mail", kind: "mail", version: "1.34.0", name: "Mail",
+    private let mail = ServiceInstance(id: "mail", kind: "mail", series: "1", version: "1.34.0", name: "Mail",
                                        ports: ["smtp": 1025, "http": 8025], autostart: true,
                                        createdAt: Date(timeIntervalSince1970: 1_800_000_000))
 
@@ -48,34 +48,45 @@ final class ServiceInstanceTests: XCTestCase {
 
     // MARK: - Ids and names
 
-    func testIDsAndNames() {
-        XCTAssertEqual(ServiceInstance.newIdentity(kind: "mail", version: "1.34.0", displayName: "Mail",
-                                                   kindHasSeveralVersions: false, existing: []),
+    func testIDsAndNamesFollowTheSeries() {
+        XCTAssertEqual(ServiceInstance.newIdentity(kind: "mail", series: "1", displayName: "Mail",
+                                                   seriesInID: false, existing: []),
                        .init(id: "mail", name: "Mail"))
-        XCTAssertEqual(ServiceInstance.newIdentity(kind: "mail", version: "1.34.0", displayName: "Mail",
-                                                   kindHasSeveralVersions: false, existing: ["mail"]),
+        XCTAssertEqual(ServiceInstance.newIdentity(kind: "mail", series: "1", displayName: "Mail",
+                                                   seriesInID: false, existing: ["mail"]),
                        .init(id: "mail-2", name: "Mail (2)"))
-        XCTAssertEqual(ServiceInstance.newIdentity(kind: "postgres", version: "18.1", displayName: "PostgreSQL",
-                                                   kindHasSeveralVersions: true, existing: ["mail"]),
+        XCTAssertEqual(ServiceInstance.newIdentity(kind: "postgres", series: "18", displayName: "PostgreSQL",
+                                                   seriesInID: true, existing: ["mail"]),
                        .init(id: "postgres-18", name: "PostgreSQL 18"))
-        XCTAssertEqual(ServiceInstance.newIdentity(kind: "postgres", version: "18.1", displayName: "PostgreSQL",
-                                                   kindHasSeveralVersions: true,
-                                                   existing: ["postgres-18", "postgres-18-2"]),
+        XCTAssertEqual(ServiceInstance.newIdentity(kind: "mysql", series: "8.4", displayName: "MySQL",
+                                                   seriesInID: true, existing: []),
+                       .init(id: "mysql-8-4", name: "MySQL 8.4"))
+        XCTAssertEqual(ServiceInstance.newIdentity(kind: "postgres", series: "18", displayName: "PostgreSQL",
+                                                   seriesInID: true, existing: ["postgres-18", "postgres-18-2"]),
                        .init(id: "postgres-18-3", name: "PostgreSQL 18 (3)"))
         XCTAssertTrue(ServiceInstance.isValidID("postgres-18-2"))
-        for bad in ["", "Mail", "a b", "../x", "a/b", "a.b", "é", "-", "x-"] {
+        for bad in ["", "Mail", "a b", "../x", "..", ".", "a/b", "a.b", "é", "-", "x-", "bin"] {
             XCTAssertFalse(ServiceInstance.isValidID(bad), bad)
         }
     }
 
     func testMatchingNamesIsCaseInsensitiveByIDOrName() {
-        let pg = ServiceInstance(id: "postgres-18", kind: "postgres", version: "18.1", name: "PostgreSQL 18",
+        let pg = ServiceInstance(id: "postgres-18", kind: "postgres", series: "18", version: "18.1", name: "PostgreSQL 18",
                                  ports: ["main": 5432], autostart: true, createdAt: Date())
         let list = [mail, pg]
         XCTAssertEqual(ServiceInstance.find("MAIL", in: list)?.id, "mail")
         XCTAssertEqual(ServiceInstance.find("postgresql 18", in: list)?.id, "postgres-18")
         XCTAssertEqual(ServiceInstance.find("Postgres-18", in: list)?.id, "postgres-18")
         XCTAssertNil(ServiceInstance.find("postgres", in: list))
+    }
+
+    /// An instance saved before series existed decodes with an empty series, which the manager fills in.
+    func testAnInstanceSavedWithoutASeriesDecodes() throws {
+        let json = #"{"id": "mail", "kind": "mail", "version": "1.34.0", "name": "Mail", "ports": {"smtp": 1025},"#
+            + #" "autostart": true, "createdAt": 0}"#
+        let instance = try JSONDecoder().decode(ServiceInstance.self, from: Data(json.utf8))
+        XCTAssertEqual(instance.series, "")
+        XCTAssertEqual(instance.version, "1.34.0")
     }
 
     // MARK: - Paths
@@ -112,6 +123,24 @@ final class ServiceInstanceTests: XCTestCase {
 
         let old = try JSONDecoder().decode(EngineStatus.self, from: Data(#"{"running": true, "version": 3}"#.utf8))
         XCTAssertEqual(old.services, [])
-        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 4, "the status changed: the build number moves on")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 5, "the status changed: the build number moves on")
+    }
+
+    /// A newer daemon's unknown state reads as unavailable, and one service that can't be read never
+    /// costs the whole status.
+    func testStatusDecodingIsForwardTolerant() throws {
+        let state = try JSONDecoder().decode(ServiceState.self, from: Data(#"{"upgrading": {"to": "2"}}"#.utf8))
+        XCTAssertEqual(state, .unavailable(reason: "unknown state"))
+        let good = ServiceStatus(id: "mail", name: "Mail", kind: "mail", version: "1.34.0", displayName: "Mail",
+                                 state: .running, ports: ["smtp": 1025], env: [], openURL: nil, dataPath: "/d",
+                                 autostart: true, mainPort: 1025, updateAvailable: "1.35.0")
+        let goodJSON = String(decoding: try JSONEncoder().encode(good), as: UTF8.self)
+        let text = #"{"running": true, "version": 5, "services": [{"id": 7}, "#
+            + goodJSON + #", {"id": "x", "state": {"strange": {}}, "name": "X", "kind": "x", "version": "1","#
+            + #" "displayName": "X", "ports": {}, "env": [], "dataPath": "/x", "autostart": false}]}"#
+        let status = try JSONDecoder().decode(EngineStatus.self, from: Data(text.utf8))
+        XCTAssertEqual(status.services.map(\.id), ["mail", "x"])
+        XCTAssertEqual(status.services[0].updateAvailable, "1.35.0")
+        XCTAssertEqual(status.services[1].state, .unavailable(reason: "unknown state"))
     }
 }

@@ -121,6 +121,104 @@ final class ServiceInstallerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: bin.appendingPathComponent("tool"), encoding: .utf8), "two")
     }
 
+    /// A hostile archive: a `../` entry, an absolute path and a symlink pointing outside followed by a file
+    /// through it. Nothing may land outside the staging folder, whatever tar decides.
+    func testAnArchiveCannotWriteOutsideItsFolder() async throws {
+        let outside = scratch.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let archive = scratch.appendingPathComponent("evil.tar")
+        try Self.tar([
+            .file("../escaped", "dotdot"),
+            .file("/tmp/pdk-absolute-\(UUID().uuidString)", "absolute"),
+            .symlink("link", outside.path),
+            .file("link/through", "via symlink"),
+            .file("ok", "fine"),
+        ]).write(to: archive)
+        let recipe = recipe([RecipeAsset(artifact: Artifact(url: archive, sha256: try sha256(archive)), archive: "tar.gz")])
+        _ = try? await ServiceInstaller(paths: paths).install(recipe)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [], "nothing through the symlink")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.home.deletingLastPathComponent()
+            .appendingPathComponent("escaped").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: scratch.appendingPathComponent("escaped").path))
+        let absolute = try FileManager.default.contentsOfDirectory(atPath: "/tmp").filter { $0.hasPrefix("pdk-absolute-") }
+        XCTAssertEqual(absolute, [], "an absolute path is never written as such")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: paths.home.path)
+            .filter { $0.hasPrefix(".service-install-") }, [])
+    }
+
+    /// A recipe whose downloads are on this Mac installs without the network, and the installed folder
+    /// keeps the recipe it was made from, so the service runs even after the catalog drops that version.
+    func testLocalInstallAndTheStoredRecipe() throws {
+        let file = scratch.appendingPathComponent("tool-bin")
+        try Data("binary".utf8).write(to: file)
+        let local = recipe([RecipeAsset(artifact: Artifact(url: file, sha256: try sha256(file)), archive: "binary",
+                                        installAs: "tool")])
+        let remote = recipe([RecipeAsset(artifact: Artifact(url: URL(string: "https://example.invalid/t")!, sha256: "00"),
+                                         archive: "binary", installAs: "tool")])
+        let installer = ServiceInstaller(paths: paths)
+        XCTAssertTrue(installer.isLocallyAvailable(local))
+        XCTAssertFalse(installer.isLocallyAvailable(remote))
+        XCTAssertNil(installer.installedRecipe(kind: "tool", version: "1.2"))
+        try installer.installLocally(local)
+        XCTAssertEqual(installer.installedRecipe(kind: "tool", version: "1.2"), local)
+        XCTAssertThrowsError(try installer.installLocally(remote))
+        installer.remove(kind: "tool", version: "1.2")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.serviceBin(kind: "tool", version: "1.2").path))
+    }
+
+    // MARK: - A tar writer for hostile archives
+
+    enum Entry {
+        case file(String, String)
+        case symlink(String, String)
+    }
+
+    /// A gzip-compressed ustar archive with exactly these entries (names as given, unchecked).
+    static func tar(_ entries: [Entry]) throws -> Data {
+        var tar = Data()
+        for entry in entries {
+            let (name, type, link, body): (String, UInt8, String, Data)
+            switch entry {
+            case .file(let n, let text): (name, type, link, body) = (n, UInt8(ascii: "0"), "", Data(text.utf8))
+            case .symlink(let n, let target): (name, type, link, body) = (n, UInt8(ascii: "2"), target, Data())
+            }
+            var header = [UInt8](repeating: 0, count: 512)
+            func put(_ text: String, _ offset: Int, _ length: Int) {
+                for (i, byte) in text.utf8.prefix(length).enumerated() { header[offset + i] = byte }
+            }
+            put(name, 0, 100)
+            put("0000644", 100, 7)
+            put("0000000", 108, 7)
+            put("0000000", 116, 7)
+            put(String(format: "%011o", body.count), 124, 11)
+            put(String(format: "%011o", 0), 136, 11)
+            header[156] = type
+            put(link, 157, 100)
+            put("ustar", 257, 5)
+            put("00", 263, 2)
+            for i in 148..<156 { header[i] = UInt8(ascii: " ") }
+            let sum = header.reduce(0) { $0 + Int($1) }
+            put(String(format: "%06o", sum), 148, 6)
+            header[154] = 0
+            tar.append(contentsOf: header)
+            tar.append(body)
+            tar.append(Data(count: (512 - body.count % 512) % 512))
+        }
+        tar.append(Data(count: 1024))
+        let raw = FileManager.default.temporaryDirectory.appendingPathComponent("pdk-tar-\(UUID().uuidString)")
+        try tar.write(to: raw)
+        defer { try? FileManager.default.removeItem(at: raw) }
+        let gzip = Process()
+        gzip.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
+        gzip.arguments = ["-c", raw.path]
+        let out = Pipe()
+        gzip.standardOutput = out
+        try gzip.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        gzip.waitUntilExit()
+        return data
+    }
+
     func testStaleStagingIsRemoved() throws {
         let stale = paths.home.appendingPathComponent(".service-install-\(UUID().uuidString)", isDirectory: true)
         let other = paths.home.appendingPathComponent(".service-install-notauuid", isDirectory: true)

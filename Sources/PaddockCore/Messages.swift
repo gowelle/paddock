@@ -314,7 +314,7 @@ public enum Messages {
             return "Paddock has no service called \"\(printable(kind) ?? "?")\". "
                 + (available.isEmpty ? "None are available." : "Available: \(available.joined(separator: ", ")).")
         case .unknownVersion(let kind, let version, let available):
-            return "\(kind) \(printable(version) ?? "?") isn't available. Available versions: "
+            return "\(kind) \(printable(version) ?? "?") isn't available. Available: "
                 + "\(available.joined(separator: ", "))."
         case .unknownService(let name):
             return "No service named \"\(printable(name) ?? "?")\". See: paddock service list"
@@ -324,6 +324,16 @@ public enum Messages {
             return "\(name) can't be added: no port from \(preferred) to \(preferred + ServicePorts.searchLimit) is free."
         case .initialiseFailed(let name, let output):
             return "Couldn't set up \(name):\n\(output)"
+        case .initialiseTimedOut(let name, let seconds, let output):
+            return "Setting up \(name) took longer than \(seconds) seconds, so Paddock stopped it."
+                + (output.isEmpty ? "" : " Its output:\n\(output)")
+        case .notLoopback(let name, let address):
+            return "\(name) tried to listen on \(address), which is not this Mac only. Paddock stopped it."
+        case .dataMismatch(let name, let found, let expected):
+            return "\(name) can't start: its data was last used by \(found), and Paddock won't run \(expected) on it."
+        case .updateFailed(let name, let version, let previous, let log):
+            return "\(name) \(version) didn't start, so Paddock went back to \(previous)."
+                + (log.isEmpty ? "" : " The end of its log:\n\(log)")
         case .installFailed(let name, let reason):
             switch reason {
             case .checksumMismatch(let file):
@@ -368,11 +378,13 @@ public enum Messages {
               + services.map { [$0.name, serviceState($0.state), servicePorts($0)] })
     }
 
-    /// Columns: kind, name, versions, licence, download size (`none` for a service that downloads nothing).
+    /// Columns: kind, name, series (newest first), licence, the newest series' download size (`none` for a
+    /// service that downloads nothing).
     public static func catalogTable(_ entries: [CatalogEntry]) -> String {
-        table([["KIND", "SERVICE", "VERSIONS", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
-            [entry.kind, entry.displayName, entry.versions.joined(separator: ", "), entry.licence,
-             entry.downloadBytes.map { $0 == 0 ? "none" : "\(max(1, Int((Double($0) / 1_000_000).rounded()))) MB" } ?? "?"]
+        table([["KIND", "SERVICE", "SERIES", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
+            let bytes = entry.series.first.map(\.downloadBytes) ?? entry.downloadBytes
+            return [entry.kind, entry.displayName, entry.series.map(\.series).joined(separator: ", "), entry.licence,
+                    bytes.map { $0 == 0 ? "none" : "\(max(1, Int((Double($0) / 1_000_000).rounded()))) MB" } ?? "?"]
         })
     }
 

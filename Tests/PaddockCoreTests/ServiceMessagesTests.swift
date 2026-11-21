@@ -25,16 +25,21 @@ final class ServiceMessagesTests: XCTestCase {
     }
 
     func testCatalogTable() {
+        func series(_ name: String, _ version: String, _ bytes: Int?) -> CatalogSeries {
+            CatalogSeries(series: name, version: version, downloadBytes: bytes, needsDownload: true)
+        }
         XCTAssertEqual(Messages.catalogTable([
-            CatalogEntry(kind: "mail", displayName: "Mail", licence: "MIT", versions: ["1.34.0"], downloadBytes: 11_224_715),
-            CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18", "17"],
-                         downloadBytes: nil),
-            CatalogEntry(kind: "reverb", displayName: "Reverb", licence: "MIT", versions: ["1"], downloadBytes: 0),
+            CatalogEntry(kind: "mail", displayName: "Mail", licence: "MIT", versions: ["1.34.0"], downloadBytes: 11_224_715,
+                         series: [series("1", "1.34.0", 11_224_715)]),
+            CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18.1", "17.6"],
+                         downloadBytes: nil, series: [series("18", "18.1", nil), series("17", "17.6", 90_000_000)]),
+            CatalogEntry(kind: "reverb", displayName: "Reverb", licence: "MIT", versions: ["1.0"], downloadBytes: 0,
+                         series: [series("1", "1.0", 0)]),
         ]), """
-            KIND      SERVICE     VERSIONS  LICENCE     DOWNLOAD
-            mail      Mail        1.34.0    MIT         11 MB
-            postgres  PostgreSQL  18, 17    PostgreSQL  ?
-            reverb    Reverb      1         MIT         none
+            KIND      SERVICE     SERIES  LICENCE     DOWNLOAD
+            mail      Mail        1       MIT         11 MB
+            postgres  PostgreSQL  18, 17  PostgreSQL  ?
+            reverb    Reverb      1       MIT         none
             """)
     }
 
@@ -60,6 +65,12 @@ final class ServiceMessagesTests: XCTestCase {
                        "Couldn't install Mail: the download m.tar.gz isn't the file Paddock expects (checksum mismatch).")
         XCTAssertEqual(Messages.serviceError(.notReady(name: "Mail", log: "boom")),
                        "Mail didn't start. The end of its log:\nboom")
+        XCTAssertEqual(Messages.serviceError(.notLoopback(name: "Fake", address: "*:4000")),
+                       "Fake tried to listen on *:4000, which is not this Mac only. Paddock stopped it.")
+        XCTAssertEqual(Messages.serviceError(.initialiseTimedOut(name: "Fake", seconds: 120, output: "")),
+                       "Setting up Fake took longer than 120 seconds, so Paddock stopped it.")
+        XCTAssertEqual(Messages.serviceError(.updateFailed(name: "Fake", version: "1.1", previous: "1.0", log: "x")),
+                       "Fake 1.1 didn't start, so Paddock went back to 1.0. The end of its log:\nx")
         XCTAssertEqual(Messages.serviceError(.cancelled(name: "mail")),
                        "Adding mail was cancelled because Paddock is shutting down.")
         XCTAssertEqual(Messages.existingServiceData("Mail"), "Found existing data for Mail; using it.")

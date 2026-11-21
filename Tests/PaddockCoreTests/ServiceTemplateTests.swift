@@ -65,4 +65,15 @@ final class ServiceTemplateTests: XCTestCase {
         XCTAssertEqual(rendered.environment, ["DIR": spaced.data])
         XCTAssertEqual(rendered.stdin, "path \(spaced.data)\n")
     }
+
+    /// `{"ifSocket": [...]}` arguments are kept only when the instance has a usable socket.
+    func testSocketArgumentsAreDroppedWithoutASocket() throws {
+        let command = RecipeCommand(executable: "{bin}/s",
+                                    arguments: ["--port", "{port.main}", .ifSocket(["--socket", "{socket}"]), "end"])
+        XCTAssertEqual(try ServiceTemplate.render(command, context: context).arguments,
+                       ["--port", "4001", "--socket", "/h/run/svc/sample/s.sock", "end"])
+        var bare = context
+        bare.socket = nil
+        XCTAssertEqual(try ServiceTemplate.render(command, context: bare).arguments, ["--port", "4001", "end"])
+    }
 }

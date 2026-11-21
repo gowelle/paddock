@@ -8,6 +8,8 @@ import PaddockCore
 
 setvbuf(stdout, nil, _IOLBF, 0)
 setvbuf(stderr, nil, _IOLBF, 0)
+// A client or a service step that goes away mid-write must never kill the daemon: writes fail instead.
+signal(SIGPIPE, SIG_IGN)
 
 // A development build never runs on the owner's real home: before anything is opened or created.
 if SystemIntegration.thisProcessIsDevelopmentBuild {

@@ -4,6 +4,8 @@
       "kind": "mail",
       "displayName": "Mail",
       "version": "1.34.0",
+      "series": "1",
+      "seriesInID": false,
       "licence": "MIT",
       "minimumMacOS": "13.0",
       "assets": [

@@ -5,8 +5,13 @@ public struct ProcessSpec: Sendable {
     public var name: String
     public var executable: URL
     public var arguments: [String]
-    /// Added to (and overriding) the supervisor's own environment.
+    /// Added to (and overriding) the supervisor's own environment, or the whole environment when
+    /// `inheritsEnvironment` is false.
     public var environment: [String: String]
+    /// False gives the process exactly `environment` and nothing of the supervisor's own.
+    public var inheritsEnvironment: Bool
+    /// Called with the pid after every spawn, restarts included (the service manager records it).
+    public var didSpawn: (@Sendable (Int32) -> Void)?
     /// stdout and stderr are appended here.
     public var logFile: URL
     /// What `stop` sends the process group first.
@@ -15,7 +20,8 @@ public struct ProcessSpec: Sendable {
     public var stopGrace: TimeInterval?
 
     public init(name: String, executable: URL, arguments: [String], environment: [String: String] = [:],
-                logFile: URL, stopSignal: Int32 = SIGTERM, stopGrace: TimeInterval? = nil) {
+                logFile: URL, stopSignal: Int32 = SIGTERM, stopGrace: TimeInterval? = nil,
+                inheritsEnvironment: Bool = true, didSpawn: (@Sendable (Int32) -> Void)? = nil) {
         self.name = name
         self.executable = executable
         self.arguments = arguments
@@ -23,6 +29,8 @@ public struct ProcessSpec: Sendable {
         self.logFile = logFile
         self.stopSignal = stopSignal
         self.stopGrace = stopGrace
+        self.inheritsEnvironment = inheritsEnvironment
+        self.didSpawn = didSpawn
     }
 }
 
@@ -159,6 +167,7 @@ public final class Supervisor: @unchecked Sendable {
         entry.pid = pid
         entry.status = .running(pid: pid)
         entry.exited = exited
+        entry.spec.didSpawn?(pid)
         let generation = entry.generation
         let thread = Thread { [weak self] in
             var status: Int32 = 0
@@ -237,7 +246,7 @@ public final class Supervisor: @unchecked Sendable {
         posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF
                                               | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT))
 
-        var env = ProcessInfo.processInfo.environment
+        var env = spec.inheritsEnvironment ? ProcessInfo.processInfo.environment : [:]
         env.merge(spec.environment) { _, new in new }
         let argv = [spec.executable.path] + spec.arguments
         let envp = env.map { "\($0.key)=\($0.value)" }

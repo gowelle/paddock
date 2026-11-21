@@ -47,7 +47,7 @@ extension Engine {
     /// arriving later) can start the web stack again just before the daemon exits.
     public func handle(_ request: Request) async -> Response {
         if case .status = request { return .ok(status()) }
-        if case .serviceCatalog = request { return .catalog(services.catalog.kinds()) }
+        if case .serviceCatalog = request { return .catalog(services.catalogEntries()) }
         if case .shutdown = request { markShuttingDown() }
         return await mutations.withLock {
             if self.isShuttingDown && request != .shutdown { return self.shuttingDownError }
@@ -152,7 +152,7 @@ extension Engine {
             }
             return .ok(status())
 
-        case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog:
+        case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog, .serviceUpdate:
             return await performService(request)
         }
     }

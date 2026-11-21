@@ -19,6 +19,9 @@ public enum Request: Codable, Equatable, Sendable {
     case serviceStart(name: String), serviceStop(name: String), serviceRestart(name: String)
     /// Answered with `.catalog`.
     case serviceCatalog
+    /// Downloads the newest version of the service's series and switches to it (back to the old one if
+    /// the new one doesn't start).
+    case serviceUpdate(name: String)
 }
 
 extension Request {
@@ -30,7 +33,7 @@ extension Request {
             return true
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
              .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
-             .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart:
+             .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate:
             return false
         }
     }
@@ -43,14 +46,6 @@ public enum Response: Codable, Equatable, Sendable {
     case catalog([CatalogEntry])
     /// A service was removed (`serviceRemove`); its data is (or was, if deleted) at `dataPath`.
     case removed(dataPath: String, status: EngineStatus)
-
-    /// The status this response carries, if any.
-    public var status: EngineStatus? {
-        switch self {
-        case .ok(let status), .removed(_, let status): return status
-        case .error, .catalog: return nil
-        }
-    }
 }
 
 /// The `code` values of `Response.error`.
@@ -74,6 +69,8 @@ public enum ErrorCode {
     public static let serviceFailed = "service_failed"
     /// Paddock can't run that service here.
     public static let serviceUnavailable = "service_unavailable"
+    /// Adding or updating a service was cut short because Paddock is shutting down.
+    public static let serviceCancelled = "service_cancelled"
     public static let `internal` = "internal"
 }
 

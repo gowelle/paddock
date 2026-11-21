@@ -1,12 +1,16 @@
 import Foundation
 
-/// One added service: a recipe's kind and version, its own folders and its saved ports. Kept in
-/// `state.json`; the ports never move once chosen.
+/// One added service: a recipe's kind and series, the version it runs, its own folders and its saved
+/// ports. Kept in `state.json`; the ports never move once chosen.
 public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
-    /// `mail`, `postgres-18`, `postgres-18-2`: lowercase letters, digits and dashes.
+    /// `mail`, `postgres-18`, `mysql-8-4`, `postgres-18-2`: lowercase letters, digits and dashes.
     public let id: String
     public let kind: String
-    public let version: String
+    /// The recipe series it belongs to (`18`). Empty when read from a file written before series existed;
+    /// `ServiceManager` fills it in from the catalog.
+    public var series: String
+    /// The version that runs (and last ran) on its data; changes only once a newer one is ready.
+    public var version: String
     public var name: String
     /// Port name -> port.
     public var ports: [String: Int]
@@ -14,15 +18,30 @@ public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
     public var autostart: Bool
     public let createdAt: Date
 
-    public init(id: String, kind: String, version: String, name: String, ports: [String: Int], autostart: Bool,
-                createdAt: Date) {
+    public init(id: String, kind: String, series: String, version: String, name: String, ports: [String: Int],
+                autostart: Bool, createdAt: Date) {
         self.id = id
         self.kind = kind
+        self.series = series
         self.version = version
         self.name = name
         self.ports = ports
         self.autostart = autostart
         self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, kind, series, version, name, ports, autostart, createdAt }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(String.self, forKey: .kind)
+        series = try c.decodeIfPresent(String.self, forKey: .series) ?? ""
+        version = try c.decode(String.self, forKey: .version)
+        name = try c.decode(String.self, forKey: .name)
+        ports = try c.decode([String: Int].self, forKey: .ports)
+        autostart = try c.decodeIfPresent(Bool.self, forKey: .autostart) ?? true
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
     }
 
     public struct Identity: Equatable, Sendable {
@@ -35,21 +54,22 @@ public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
-    /// `[a-z0-9]` runs joined by single dashes: safe as a folder name and in a socket path.
+    /// `[a-z0-9]` runs joined by single dashes, and not `bin` (the shared binaries' folder): safe as a
+    /// folder name and in a socket path. Checked again for every id read back from `state.json`.
     public static func isValidID(_ id: String) -> Bool {
         let runs = id.split(separator: "-", omittingEmptySubsequences: false)
-        return !id.isEmpty && runs.allSatisfy { run in
+        return !id.isEmpty && id != "bin" && runs.allSatisfy { run in
             !run.isEmpty && run.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
         }
     }
 
-    /// The id and name of a new instance. The first of a kind is `<kind>` (`Mail`) when the kind has one
-    /// version, else `<kind>-<major>` (`PostgreSQL 18`); later ones of the same id get `-2`, `-3`… (`(2)`).
-    public static func newIdentity(kind: String, version: String, displayName: String, kindHasSeveralVersions: Bool,
+    /// The id and name of a new instance: `<kind>-<series, dots as dashes>` (`mysql-8-4`, `MySQL 8.4`), or
+    /// `<kind>` (`Mail`) when the recipe keeps the series out of ids; later ones of the same id get `-2`,
+    /// `-3`… (`(2)`). Data under an id therefore always belongs to one kind and series.
+    public static func newIdentity(kind: String, series: String, displayName: String, seriesInID: Bool,
                                    existing: Set<String>) -> Identity {
-        let major = version.split(whereSeparator: { $0 == "." || $0 == "-" }).first.map(String.init) ?? version
-        let baseID = kindHasSeveralVersions ? "\(kind)-\(major.lowercased())" : kind
-        let baseName = kindHasSeveralVersions ? "\(displayName) \(major)" : displayName
+        let baseID = seriesInID ? "\(kind)-\(series.replacingOccurrences(of: ".", with: "-"))" : kind
+        let baseName = seriesInID ? "\(displayName) \(series)" : displayName
         guard existing.contains(baseID) else { return Identity(id: baseID, name: baseName) }
         var n = 2
         while existing.contains("\(baseID)-\(n)") { n += 1 }
@@ -63,7 +83,8 @@ public struct ServiceInstance: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// What an instance is doing, as `status` reports it.
+/// What an instance is doing, as `status` reports it. A state this build doesn't know (from a newer
+/// daemon) reads as `unavailable(reason: "unknown state")`.
 public enum ServiceState: Codable, Equatable, Sendable {
     case running
     /// Started, not ready yet.
@@ -73,8 +94,40 @@ public enum ServiceState: Codable, Equatable, Sendable {
     case crashed
     /// One of its saved ports is held by another program (named, as Paddock shows names).
     case portInUse(holder: String)
-    /// Paddock can't run it (say, its recipe is no longer in the catalog).
+    /// Paddock can't run it (say, neither its recipe nor its binaries are here any more).
     case unavailable(reason: String)
+
+    /// The wire form (the synthesized one), so decoding can fall back instead of failing.
+    private enum Wire: Codable {
+        case running, starting, stopped, crashed
+        case portInUse(holder: String)
+        case unavailable(reason: String)
+    }
+
+    public init(from decoder: Decoder) throws {
+        switch try? Wire(from: decoder) {
+        case .running?: self = .running
+        case .starting?: self = .starting
+        case .stopped?: self = .stopped
+        case .crashed?: self = .crashed
+        case .portInUse(let holder)?: self = .portInUse(holder: holder)
+        case .unavailable(let reason)?: self = .unavailable(reason: reason)
+        case nil: self = .unavailable(reason: "unknown state")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        let wire: Wire
+        switch self {
+        case .running: wire = .running
+        case .starting: wire = .starting
+        case .stopped: wire = .stopped
+        case .crashed: wire = .crashed
+        case .portInUse(let holder): wire = .portInUse(holder: holder)
+        case .unavailable(let reason): wire = .unavailable(reason: reason)
+        }
+        try wire.encode(to: encoder)
+    }
 }
 
 /// One instance as clients see it.
@@ -91,10 +144,14 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
     public let mainPort: Int?
     /// A sentence about its last add (say, that existing data was reused), until it is next stopped.
     public let notice: String?
+    /// A newer version of its series that `paddock service update` would switch to.
+    public let updateAvailable: String?
+    /// Its series (`18`); nil from an older daemon.
+    public let series: String?
 
     public init(id: String, name: String, kind: String, version: String, displayName: String, state: ServiceState,
                 ports: [String: Int], env: [String], openURL: String?, dataPath: String, autostart: Bool,
-                mainPort: Int?, notice: String? = nil) {
+                mainPort: Int?, notice: String? = nil, updateAvailable: String? = nil, series: String? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -108,5 +165,16 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
         self.autostart = autostart
         self.mainPort = mainPort
         self.notice = notice
+        self.updateAvailable = updateAvailable
+        self.series = series
+    }
+}
+
+/// Decodes a value when it can and nothing when it can't, so one bad element never fails a whole list.
+struct Lenient<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }

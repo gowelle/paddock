@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 4
+    public static let number = 5
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -87,7 +87,9 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         portHelperInstalled = try c.decodeIfPresent(Bool.self, forKey: .portHelperInstalled) ?? false
         needsTrust = try c.decodeIfPresent(Bool.self, forKey: .needsTrust) ?? false
         hasReplacedRootsToClean = try c.decodeIfPresent(Bool.self, forKey: .hasReplacedRootsToClean) ?? false
-        services = try c.decodeIfPresent([ServiceStatus].self, forKey: .services) ?? []
+        // One service this build can't read never costs the whole status.
+        services = (try? c.decodeIfPresent([Lenient<ServiceStatus>].self, forKey: .services))?
+            .compactMap(\.value) ?? []
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -209,7 +211,7 @@ public final class Engine: @unchecked Sendable {
             downloader: ArtifactDownloader(session: serviceSetup.session, environment: phpEnvironment),
             portCheck: serviceSetup.portCheck,
             phpBinary: { [store, installer] in store.load().defaultPHP.map(installer.phpBinary) },
-            portBase: serviceSetup.portBase, readyTimeout: serviceSetup.readyTimeout, log: log)
+            portBase: serviceSetup.portBase, readyTimeout: serviceSetup.readyTimeout, environment: phpEnvironment, log: log)
     }
 
     deinit { shutdown() }

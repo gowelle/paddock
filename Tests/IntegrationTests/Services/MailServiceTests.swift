@@ -48,13 +48,7 @@ final class MailServiceTests: XCTestCase {
 
         // Only loopback listeners, and only the two ports.
         let pid = try XCTUnwrap(manager.processes["service-mail"].flatMap(TestSupport.pid(from:)))
-        let listeners = try TestSupport.tcpListeners(pid: pid)
-        XCTAssertTrue(listeners.contains("127.0.0.1:\(smtp)"), listeners)
-        XCTAssertTrue(listeners.contains("127.0.0.1:\(http)"), listeners)
-        XCTAssertFalse(listeners.contains("*:"), listeners)
-        XCTAssertFalse(listeners.contains("[::]"), listeners)
-        let lines = listeners.split(separator: "\n").dropFirst() // lsof's header
-        XCTAssertEqual(lines.count, 2, listeners)
+        XCTAssertEqual(Set(try assertListensOnThisMacOnly(processGroup: pid)), ["127.0.0.1:\(smtp)", "127.0.0.1:\(http)"])
 
         try sendMail(port: smtp, subject: "Hello from Paddock")
         XCTAssertTrue(waitFor(10) { (try? self.subjects(port: http)) == ["Hello from Paddock"] },

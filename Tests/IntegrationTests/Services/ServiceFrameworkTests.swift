@@ -68,24 +68,24 @@ final class ServiceFrameworkTests: XCTestCase {
         let instance = try await manager.add(kind: "fake", version: nil)
         XCTAssertEqual(instance.id, "fake")
         XCTAssertEqual(instance.name, "Fake")
-        XCTAssertEqual(instance.ports, ["main": home.portBase + 100], "the preferred port, moved by the test base")
+        XCTAssertEqual(instance.ports, ["main": home.fakePort], "the preferred port, moved by the test base")
         XCTAssertTrue(instance.autostart)
         XCTAssertEqual(StateStore(paths: home.paths).load().services, [instance])
 
         let status = try XCTUnwrap(self.status(manager, "fake"))
         XCTAssertEqual(status.state, .running)
-        XCTAssertEqual(status.mainPort, home.portBase + 100)
-        XCTAssertTrue(PortCheck.acceptsIPv4(port: home.portBase + 100), "ready means it accepts connections")
+        XCTAssertEqual(status.mainPort, home.fakePort)
+        XCTAssertTrue(PortCheck.acceptsIPv4(port: home.fakePort), "ready means it accepts connections")
         let socket = home.paths.serviceRun("fake").appendingPathComponent("fake.sock").path
-        XCTAssertEqual(status.env, ["FAKE_HOST=127.0.0.1", "FAKE_PORT=\(home.portBase + 100)", "FAKE_SOCKET=\(socket)"])
+        XCTAssertEqual(status.env, ["FAKE_HOST=127.0.0.1", "FAKE_PORT=\(home.fakePort)", "FAKE_SOCKET=\(socket)"])
         XCTAssertEqual(try manager.env("FAKE"), status.env)
-        XCTAssertEqual(status.openURL, "http://127.0.0.1:\(home.portBase + 100)")
+        XCTAssertEqual(status.openURL, "http://127.0.0.1:\(home.fakePort)")
         XCTAssertEqual(status.dataPath, home.paths.serviceData("fake").path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.paths.serviceData("fake")
             .appendingPathComponent("initialised").path), "initialise ran in {data}")
         XCTAssertEqual(FakeService.arguments(paths: home.paths, id: "fake"),
-                       [FakeService.binary.path, "serve", home.paths.serviceData("fake").path,
-                        "--port", "\(home.portBase + 100)", "--socket", socket, "--name", "Fake"])
+                       [FakeService.installed(paths: home.paths), "serve", home.paths.serviceData("fake").path,
+                        "--port", "\(home.fakePort)", "--socket", socket, "--name", "Fake"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.paths.serviceConfig("fake").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.paths.serviceLog("fake").path))
     }
@@ -93,7 +93,7 @@ final class ServiceFrameworkTests: XCTestCase {
     func testStopAndStartKeepTheDataAndDoNotInitialiseAgain() async throws {
         let manager = makeManager()
         _ = try await manager.add(kind: "fake", version: nil)
-        let port = home.portBase + 100
+        let port = home.fakePort
         let marker = home.paths.serviceData("fake").appendingPathComponent("initialised")
         try FileManager.default.removeItem(at: marker)
 
@@ -126,7 +126,7 @@ final class ServiceFrameworkTests: XCTestCase {
         XCTAssertEqual(path, data)
         XCTAssertEqual(StateStore(paths: home.paths).load().services, [])
         XCTAssertEqual(manager.statuses(), [])
-        XCTAssertFalse(PortCheck.acceptsIPv4(port: home.portBase + 100), "removing stops it")
+        XCTAssertFalse(PortCheck.acceptsIPv4(port: home.fakePort), "removing stops it")
         XCTAssertEqual(try String(contentsOf: data.appendingPathComponent("rows"), encoding: .utf8), "precious")
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.serviceConfig("fake").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.serviceRun("fake").path))
@@ -154,7 +154,7 @@ final class ServiceFrameworkTests: XCTestCase {
         let unknownKind = await serviceError { _ = try await manager.add(kind: "nope", version: nil) }
         XCTAssertEqual(unknownKind, .unknownKind("nope", available: ["fake"]))
         let unknownVersion = await serviceError { _ = try await manager.add(kind: "fake", version: "9") }
-        XCTAssertEqual(unknownVersion, .unknownVersion(kind: "fake", version: "9", available: ["1.0"]))
+        XCTAssertEqual(unknownVersion, .unknownVersion(kind: "fake", version: "9", available: ["1"]))
         XCTAssertThrowsError(try manager.start("nope")) { XCTAssertEqual($0 as? ServiceError, .unknownService("nope")) }
         XCTAssertThrowsError(try manager.remove("nope", deleteData: true)) {
             XCTAssertEqual($0 as? ServiceError, .unknownService("nope"))
@@ -171,7 +171,7 @@ final class ServiceFrameworkTests: XCTestCase {
         XCTAssertEqual(second.name, "Fake (2)")
         let port = try XCTUnwrap(second.ports["main"])
         XCTAssertGreaterThan(port, try XCTUnwrap(first.ports["main"]))
-        XCTAssertLessThanOrEqual(port, home.portBase + 100 + ServicePorts.searchLimit)
+        XCTAssertLessThanOrEqual(port, home.fakePort + ServicePorts.searchLimit)
         XCTAssertEqual(manager.statuses().map(\.state), [.running, .running])
         XCTAssertNotEqual(home.paths.serviceData("fake"), home.paths.serviceData("fake-2"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.paths.serviceData("fake-2")
@@ -190,12 +190,12 @@ final class ServiceFrameworkTests: XCTestCase {
     }
 
     func testPreferredPortTakenUsesTheNextFreeOneEverywhere() async throws {
-        try listen(home.portBase + 100)
+        try listen(home.fakePort)
         let manager = makeManager()
         let instance = try await manager.add(kind: "fake", version: nil)
         let port = try XCTUnwrap(instance.ports["main"])
-        XCTAssertNotEqual(port, home.portBase + 100)
-        XCTAssertGreaterThan(port, home.portBase + 100)
+        XCTAssertNotEqual(port, home.fakePort)
+        XCTAssertGreaterThan(port, home.fakePort)
         XCTAssertTrue(try manager.env("fake").contains("FAKE_PORT=\(port)"))
         XCTAssertEqual(status(manager, "fake")?.state, .running)
     }
@@ -283,7 +283,7 @@ final class ServiceFrameworkTests: XCTestCase {
         XCTAssertGreaterThan(long.paths.serviceRun("fake").appendingPathComponent("fake.sock").path.utf8.count, 103)
         _ = try await manager.add(kind: "fake", version: nil)
         let env = try manager.env("fake")
-        XCTAssertEqual(env, ["FAKE_HOST=127.0.0.1", "FAKE_PORT=\(long.portBase + 100)",
+        XCTAssertEqual(env, ["FAKE_HOST=127.0.0.1", "FAKE_PORT=\(long.fakePort)",
                              "# Unix socket disabled: Paddock's folder path is too long"])
         let arguments = FakeService.arguments(paths: long.paths, id: "fake")
         let socketIndex = try XCTUnwrap(arguments.firstIndex(of: "--socket"))
@@ -344,12 +344,12 @@ final class ServiceFrameworkTests: XCTestCase {
         XCTAssertEqual(unknown, ErrorCode.unknownService)
 
         _ = await engine.handle(.serviceStop(name: "fake"))
-        try listen(home.portBase + 100)
+        try listen(home.fakePort)
         guard case .error(let busy, let busyMessage) = await engine.handle(.serviceStart(name: "fake")) else {
             return XCTFail("expected port in use")
         }
         XCTAssertEqual(busy, ErrorCode.servicePortInUse)
-        XCTAssertTrue(busyMessage.contains("\(home.portBase + 100)"), busyMessage)
+        XCTAssertTrue(busyMessage.contains("\(home.fakePort)"), busyMessage)
 
         guard case .removed(let path, let status) = await engine.handle(.serviceRemove(name: "fake", deleteData: false))
         else { return XCTFail("remove") }
@@ -389,7 +389,8 @@ final class ServiceFrameworkTests: XCTestCase {
         let started = Date()
         await engine.shutDownAfterPendingWork()
         XCTAssertLessThan(Date().timeIntervalSince(started), 10)
-        guard case .error(_, let message) = await add.value else { return XCTFail("expected cancelled") }
+        guard case .error(let code, let message) = await add.value else { return XCTFail("expected cancelled") }
+        XCTAssertEqual(code, ErrorCode.serviceCancelled)
         XCTAssertTrue(message.contains("cancelled"), message)
         XCTAssertEqual(StateStore(paths: home.paths).load().services, [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.serviceHome("fake").path))
@@ -407,7 +408,7 @@ final class ServiceFrameworkTests: XCTestCase {
         guard case .ok(let added) = try client.send(.serviceAdd(kind: "fake", version: nil), timeout: 60) else {
             return XCTFail("add")
         }
-        let port = home.portBase + 100
+        let port = home.fakePort
         XCTAssertEqual(added.services.first?.ports, ["main": port])
         let firstGroup = try XCTUnwrap(added.processes["service-fake"].flatMap(TestSupport.pid(from:)))
 

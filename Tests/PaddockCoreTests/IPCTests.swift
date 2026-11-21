@@ -45,7 +45,7 @@ final class IPCTests: XCTestCase {
             .shutdown,
             .serviceAdd(kind: "postgres", version: "18"), .serviceAdd(kind: "mail", version: nil),
             .serviceRemove(name: "mail", deleteData: true), .serviceStart(name: "mail"), .serviceStop(name: "mail"),
-            .serviceRestart(name: "mail"), .serviceCatalog,
+            .serviceRestart(name: "mail"), .serviceCatalog, .serviceUpdate(name: "mail"),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -63,7 +63,8 @@ final class IPCTests: XCTestCase {
          .secure(site: "blog"), .unsecure(site: "blog"), .isolate(site: "blog", version: v84),
          .unisolate(site: "blog"), .use(version: v84), .installPHP(version: v84), .removePHP(version: v84),
          .trust, .serviceAdd(kind: "mail", version: nil), .serviceRemove(name: "mail", deleteData: false),
-         .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog]
+         .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog,
+         .serviceUpdate(name: "mail")]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -91,11 +92,12 @@ final class IPCTests: XCTestCase {
         case .serviceStop: return "serviceStop"
         case .serviceRestart: return "serviceRestart"
         case .serviceCatalog: return "serviceCatalog"
+        case .serviceUpdate: return "serviceUpdate"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 23, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 24, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }

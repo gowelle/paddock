@@ -7,10 +7,11 @@ public struct ServiceSetup: Sendable {
     public var portBase: Int?
     public var session: URLSession
     public var portCheck: ServicePortCheck
-    public var readyTimeout: TimeInterval
+    /// Replaces every recipe's readiness deadline (tests); nil uses each recipe's.
+    public var readyTimeout: TimeInterval?
 
     public init(catalog: ServiceCatalog, portBase: Int? = nil, session: URLSession = .shared,
-                portCheck: ServicePortCheck = .live, readyTimeout: TimeInterval = Readiness.deadline) {
+                portCheck: ServicePortCheck = .live, readyTimeout: TimeInterval? = nil) {
         self.catalog = catalog
         self.portBase = portBase
         self.session = session
@@ -46,7 +47,9 @@ extension Engine {
         do {
             switch request {
             case .serviceAdd(let kind, let version):
-                return try await addService(kind: kind, version: version)
+                return try await downloading(kind) { _ = try await services.add(kind: kind, version: version) }
+            case .serviceUpdate(let name):
+                return try await downloading(name) { _ = try await services.update(name) }
             case .serviceRemove(let name, let deleteData):
                 let data = try await ServiceManager.offPool { try services.remove(name, deleteData: deleteData) }
                 return .removed(dataPath: data.path, status: status())
@@ -58,7 +61,7 @@ extension Engine {
             case .serviceRestart(let name):
                 try await ServiceManager.offPool { try services.restart(name) }
             case .serviceCatalog:
-                return .catalog(services.catalog.kinds())
+                return .catalog(services.catalogEntries())
             default:
                 return .error(code: ErrorCode.internal, message: "not a service request")
             }
@@ -70,16 +73,16 @@ extension Engine {
         return .ok(status())
     }
 
-    /// Runs the add in its own task, registered like a PHP install, so shutting down cancels its download.
-    private func addService(kind: String, version: String?) async throws -> Response {
-        let services = self.services
-        let work = Task<Void, Error> { _ = try await services.add(kind: kind, version: version) }
+    /// Runs an add or update in its own task, registered like a PHP install, so shutting down cancels
+    /// its download.
+    private func downloading(_ name: String, _ body: @escaping @Sendable () async throws -> Void) async throws -> Response {
+        let work = Task<Void, Error> { try await body() }
         setInstallInProgress(work)
         defer { setInstallInProgress(nil) }
         do {
             try await work.value
         } catch is CancellationError {
-            throw ServiceError.cancelled(name: kind)
+            throw ServiceError.cancelled(name: name)
         }
         return .ok(status())
     }
@@ -91,8 +94,10 @@ extension Engine {
         case .unknownService: code = ErrorCode.unknownService
         case .portInUse, .noFreePort: code = ErrorCode.servicePortInUse
         case .unavailable: code = ErrorCode.serviceUnavailable
-        case .initialiseFailed, .installFailed, .notReady: code = ErrorCode.serviceFailed
-        case .cancelled: code = ErrorCode.internal
+        case .dataMismatch: code = ErrorCode.serviceUnavailable
+        case .initialiseFailed, .initialiseTimedOut, .installFailed, .notReady, .notLoopback, .updateFailed:
+            code = ErrorCode.serviceFailed
+        case .cancelled: code = ErrorCode.serviceCancelled
         }
         return .error(code: code, message: Messages.serviceError(error))
     }

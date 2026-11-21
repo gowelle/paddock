@@ -63,12 +63,38 @@ public enum ServiceTemplate {
         return output + rest
     }
 
-    /// Renders every part of a command; each argument stays a single argument whatever it contains.
-    public static func render(_ command: RecipeCommand, context: ServiceTemplateContext) throws -> RecipeCommand {
-        RecipeCommand(executable: try render(command.executable, context: context),
-                      arguments: try command.arguments.map { try render($0, context: context) },
-                      environment: try command.environment.mapValues { try render($0, context: context) },
-                      stdin: try command.stdin.map { try render($0, context: context) })
+    /// Renders every part of a command; each argument stays a single argument whatever it contains, and
+    /// `ifSocket` arguments are kept only when the context has a socket.
+    public static func render(_ command: RecipeCommand, context: ServiceTemplateContext) throws -> RenderedCommand {
+        var arguments: [String] = []
+        for argument in command.arguments {
+            switch argument {
+            case .plain(let template):
+                arguments.append(try render(template, context: context))
+            case .ifSocket(let templates):
+                let rendered = try templates.map { try render($0, context: context) }
+                if context.socket != nil { arguments += rendered }
+            }
+        }
+        return RenderedCommand(executable: try render(command.executable, context: context), arguments: arguments,
+                               environment: try command.environment.mapValues { try render($0, context: context) },
+                               stdin: try command.stdin.map { try render($0, context: context) })
+    }
+
+    /// The placeholder names `template` uses (`port.main`, `data`…), whether known or not.
+    static func placeholders(in template: String) -> [String] {
+        var names: [String] = []
+        var rest = Substring(template)
+        while let open = rest.firstIndex(of: "{") {
+            let afterOpen = rest.index(after: open)
+            guard let close = rest[afterOpen...].firstIndex(of: "}"), isPlaceholderName(rest[afterOpen..<close]) else {
+                rest = rest[afterOpen...]
+                continue
+            }
+            names.append(String(rest[afterOpen..<close]))
+            rest = rest[rest.index(after: close)...]
+        }
+        return names
     }
 
     /// Whether `template` uses `{socket}`.

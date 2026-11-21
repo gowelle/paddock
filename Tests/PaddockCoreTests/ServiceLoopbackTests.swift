@@ -2,8 +2,8 @@ import XCTest
 @testable import PaddockCore
 
 /// Every service listens on this Mac only. Renders everything each bundled recipe hands its program (the
-/// start command, its arguments and environment, every initialise step and stdin, and the readiness
-/// probe) with sample values, and fails on a wildcard listen address. Recipes added later are covered
+/// start command, its arguments and environment, every initialise step and stdin, the readiness probe
+/// and every config file) with sample values, and fails on a wildcard listen address. Recipes added later are covered
 /// without touching this test.
 final class ServiceLoopbackTests: XCTestCase {
     private func sampleContext(_ recipe: ServiceRecipe) -> ServiceTemplateContext {
@@ -28,6 +28,9 @@ final class ServiceLoopbackTests: XCTestCase {
             if let stdin = rendered.stdin { texts += stdin.components(separatedBy: .newlines) }
         }
         texts.append(try ServiceTemplate.render(recipe.ready.template, context: context))
+        for file in recipe.configFiles {
+            texts += try ServiceTemplate.render(file.contents, context: context).components(separatedBy: .newlines)
+        }
         return texts
     }
 

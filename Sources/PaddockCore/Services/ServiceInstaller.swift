@@ -17,12 +17,19 @@ public enum ServiceInstallError: Error, Equatable, Sendable {
 public final class ServiceInstaller: Sendable {
     private let paths: Paths
     private let downloader: ArtifactDownloader
+    /// Decides where `paddock-builds://` archives are found (`BuildSource`).
+    private let environment: [String: String]
     static let recordName = ".paddock-install.json"
+    /// The recipe an installed folder was made from: an instance can run from it even after the catalog
+    /// stops offering that version.
+    static let recipeName = ".paddock-recipe.json"
     static let stagingPrefix = ".service-install-"
 
-    public init(paths: Paths, downloader: ArtifactDownloader = ArtifactDownloader()) {
+    public init(paths: Paths, downloader: ArtifactDownloader = ArtifactDownloader(),
+                environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.paths = paths
         self.downloader = downloader
+        self.environment = environment
     }
 
     /// What a finished install was made from: the SHA-256 of each asset, in order.
@@ -34,12 +41,36 @@ public final class ServiceInstaller: Sendable {
         Record(sha256: recipe.assets.map { $0.artifact.sha256.lowercased() })
     }
 
+    private func installedRecord(kind: String, version: String) -> Record? {
+        let file = paths.serviceBin(kind: kind, version: version).appendingPathComponent(Self.recordName)
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONDecoder().decode(Record.self, from: data)
+    }
+
     /// Whether the recipe's binaries are in place, from exactly the recipe's downloads.
     public func isInstalled(_ recipe: ServiceRecipe) -> Bool {
-        let file = paths.serviceBin(kind: recipe.kind, version: recipe.version).appendingPathComponent(Self.recordName)
-        guard let data = try? Data(contentsOf: file), let found = try? JSONDecoder().decode(Record.self, from: data)
-        else { return false }
-        return found == record(of: recipe)
+        installedRecord(kind: recipe.kind, version: recipe.version) == record(of: recipe)
+    }
+
+    /// The recipe a finished install of `kind` `version` was made from, if there is one.
+    public func installedRecipe(kind: String, version: String) -> ServiceRecipe? {
+        let file = paths.serviceBin(kind: kind, version: version).appendingPathComponent(Self.recipeName)
+        guard let data = try? Data(contentsOf: file),
+              let recipe = try? JSONDecoder().decode(ServiceRecipe.self, from: data),
+              recipe.kind == kind, recipe.version == version,
+              installedRecord(kind: kind, version: version) == record(of: recipe) else { return nil }
+        return recipe
+    }
+
+    /// Whether every download of the recipe is already a file on this Mac (Paddock's own builds, or a
+    /// local copy), so installing it needs no network.
+    public func isLocallyAvailable(_ recipe: ServiceRecipe) -> Bool {
+        recipe.assets.allSatisfy { asset in
+            guard let source = BuildSource.resolve(asset.artifact.url, environment: environment), source.isFileURL else {
+                return false
+            }
+            return FileManager.default.fileExists(atPath: source.path)
+        }
     }
 
     /// The recipe's `{bin}` folder, installing it first if needed. Cancelling the calling task stops the
@@ -48,11 +79,8 @@ public final class ServiceInstaller: Sendable {
     public func install(_ recipe: ServiceRecipe) async throws -> URL {
         let target = paths.serviceBin(kind: recipe.kind, version: recipe.version)
         if isInstalled(recipe) { return target }
-        let fm = FileManager.default
-        let staging = paths.home.appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: staging) }
-
+        let staging = try makeStaging()
+        defer { try? FileManager.default.removeItem(at: staging) }
         // Every download is verified before any is unpacked.
         var files: [URL] = []
         for asset in recipe.assets {
@@ -60,17 +88,56 @@ public final class ServiceInstaller: Sendable {
             do {
                 files.append(try await downloader.fetch(asset.artifact, into: staging, progress: nil))
             } catch let error as ArtifactError {
-                switch error {
-                case .checksumMismatch:
-                    throw ServiceInstallError.checksumMismatch(file: Self.fileName(asset.artifact.url))
-                case .downloadFailed(let reason): throw ServiceInstallError.downloadFailed(reason: reason)
-                case .notAvailable: throw ServiceInstallError.notAvailable(file: Self.fileName(asset.artifact.url))
-                case .cancelled: throw CancellationError()
-                }
+                throw Self.installError(error, asset)
             }
         }
         try Task.checkCancellation()
+        return try assemble(recipe, files: files, staging: staging)
+    }
 
+    /// Installs from files already on this Mac only (`isLocallyAvailable`); never touches the network.
+    @discardableResult
+    public func installLocally(_ recipe: ServiceRecipe) throws -> URL {
+        let target = paths.serviceBin(kind: recipe.kind, version: recipe.version)
+        if isInstalled(recipe) { return target }
+        let staging = try makeStaging()
+        defer { try? FileManager.default.removeItem(at: staging) }
+        var files: [URL] = []
+        for asset in recipe.assets {
+            do {
+                files.append(try downloader.fetchLocal(asset.artifact, into: staging))
+            } catch let error as ArtifactError {
+                throw Self.installError(error, asset)
+            }
+        }
+        return try assemble(recipe, files: files, staging: staging)
+    }
+
+    /// Deletes an installed version's folder (fine if it is absent).
+    public func remove(kind: String, version: String) {
+        try? FileManager.default.removeItem(at: paths.serviceBin(kind: kind, version: version))
+    }
+
+    private func makeStaging() throws -> URL {
+        let staging = paths.home.appendingPathComponent("\(Self.stagingPrefix)\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        return staging
+    }
+
+    private static func installError(_ error: ArtifactError, _ asset: RecipeAsset) -> Error {
+        switch error {
+        case .checksumMismatch: return ServiceInstallError.checksumMismatch(file: fileName(asset.artifact.url))
+        case .downloadFailed(let reason): return ServiceInstallError.downloadFailed(reason: reason)
+        case .notAvailable: return ServiceInstallError.notAvailable(file: fileName(asset.artifact.url))
+        case .cancelled: return CancellationError()
+        }
+    }
+
+    /// Unpacks verified downloads into `staging/stage` with the record and the recipe, and moves that into
+    /// place in one step (swapping out an unfinished or different install).
+    private func assemble(_ recipe: ServiceRecipe, files: [URL], staging: URL) throws -> URL {
+        let fm = FileManager.default
+        let target = paths.serviceBin(kind: recipe.kind, version: recipe.version)
         let stage = staging.appendingPathComponent("stage", isDirectory: true)
         try fm.createDirectory(at: stage, withIntermediateDirectories: true)
         for (asset, file) in zip(recipe.assets, files) {
@@ -79,11 +146,10 @@ public final class ServiceInstaller: Sendable {
         }
         Self.removeQuarantine(under: stage)
         try JSONEncoder().encode(record(of: recipe)).write(to: stage.appendingPathComponent(Self.recordName))
-        try Task.checkCancellation()
+        try JSONEncoder().encode(recipe).write(to: stage.appendingPathComponent(Self.recipeName))
 
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fm.fileExists(atPath: target.path) {
-            // An unfinished or different install: swapped out in one step, then deleted with the staging folder.
             let failure: Int32 = stage.withUnsafeFileSystemRepresentation { from in
                 target.withUnsafeFileSystemRepresentation { to in
                     renamex_np(from!, to!, UInt32(RENAME_SWAP)) == 0 ? 0 : errno

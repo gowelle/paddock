@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import XCTest
@@ -16,24 +17,59 @@ enum FakeService {
         }
     }
 
-    /// A recipe whose service is the fake: it listens on 127.0.0.1 on every port (preferred ports are low;
-    /// tests add a free high port base) and on `{socket}`, and records its arguments in `{data}/args`.
-    static func recipe(kind: String = "fake", version: String = "1.0", displayName: String = "Fake",
-                       ports: [RecipePort] = [RecipePort(name: "main", preferred: 100)],
+    /// The fake's preferred port; tests move it into a free high range with `ServiceHome.portBase`.
+    static let preferredPort = 1100
+    static let installedName = "paddock-fake-service"
+
+    /// The built helper as a verified download: a `binary` asset from a `file://` URL, installed into
+    /// `{bin}` like any service's program.
+    static var asset: RecipeAsset {
+        RecipeAsset(artifact: Artifact(url: binary, sha256: binarySHA256, size: binarySize), archive: "binary",
+                    installAs: installedName)
+    }
+
+    private static let binarySize = (try? FileManager.default.attributesOfItem(atPath: binary.path)[.size] as? Int) ?? nil
+
+    private static let binarySHA256: String = {
+        let data = (try? Data(contentsOf: binary)) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }()
+
+    /// A recipe whose service is the fake: it listens on 127.0.0.1 on every port and on `{socket}`, and
+    /// records its arguments in `{data}/args` and its environment in `{data}/env`.
+    static func recipe(kind: String = "fake", version: String = "1.0", series: String? = nil, seriesInID: Bool = false,
+                       displayName: String = "Fake",
+                       ports: [RecipePort] = [RecipePort(name: "main", preferred: preferredPort)],
                        extraArguments: [String] = [], initialiseFailure: String? = nil,
-                       assets: [RecipeAsset] = [], socket: String? = "{run}/fake.sock",
-                       ready: Readiness = .tcp(port: "{port.main}"), stopSignal: String = "TERM") -> ServiceRecipe {
+                       initialiseArguments: [String] = [], initialiseTimeoutSeconds: Int? = nil,
+                       assets: [RecipeAsset]? = nil, socket: String? = "{run}/fake.sock",
+                       ready: Readiness = .tcp(port: "{port.main}"), stopSignal: String = "TERM",
+                       configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil) -> ServiceRecipe {
         var arguments = ["serve", "{data}"]
         for port in ports { arguments += ["--port", "{port.\(port.name)}"] }
         arguments += ["--socket", "{socket}", "--name", "{name}"] + extraArguments
+        let initialise = ["init", "{data}"] + (initialiseFailure.map { ["--fail", $0] } ?? []) + initialiseArguments
+        let program = "{bin}/\(installedName)"
         return ServiceRecipe(
-            kind: kind, displayName: displayName, version: version, licence: "MIT", assets: assets,
-            initialise: [RecipeCommand(executable: binary.path,
-                                       arguments: ["init", "{data}"] + (initialiseFailure.map { [$0] } ?? []))],
-            start: RecipeCommand(executable: binary.path, arguments: arguments),
+            kind: kind, displayName: displayName, version: version, series: series, seriesInID: seriesInID,
+            licence: "MIT", assets: assets ?? [asset],
+            initialise: [RecipeCommand(executable: program, arguments: initialise.map(RecipeArgument.plain))],
+            start: RecipeCommand(executable: program, arguments: arguments.map(RecipeArgument.plain)),
             ready: ready, stopSignal: stopSignal, stopGraceSeconds: 5, ports: ports, socket: socket,
             env: ["FAKE_HOST=127.0.0.1", "FAKE_PORT={port.main}", "FAKE_SOCKET={socket}"],
-            openURL: "http://127.0.0.1:{port.main}")
+            openURL: "http://127.0.0.1:{port.main}", configFiles: configFiles,
+            readyTimeoutSeconds: readyTimeoutSeconds, initialiseTimeoutSeconds: initialiseTimeoutSeconds)
+    }
+
+    /// The installed program an instance of `version` runs.
+    static func installed(paths: Paths, kind: String = "fake", version: String = "1.0") -> String {
+        paths.serviceBin(kind: kind, version: version).appendingPathComponent(installedName).path
+    }
+
+    /// The environment the running fake recorded, as `NAME=value` lines.
+    static func environment(paths: Paths, id: String) -> [String] {
+        let text = (try? String(contentsOf: paths.serviceData(id).appendingPathComponent("env"), encoding: .utf8)) ?? ""
+        return text.components(separatedBy: "\n").filter { !$0.isEmpty }
     }
 
     /// The arguments the running fake recorded.
@@ -48,8 +84,9 @@ enum FakeService {
 final class ServiceHome {
     let root: URL
     let paths: Paths
-    /// `preferred + portBase` is free (when checked) for the fake's preferred port 100.
+    /// `FakeService.preferredPort + portBase` (`fakePort`) was free when the home was made.
     let portBase: Int
+    var fakePort: Int { portBase + FakeService.preferredPort }
 
     init(longFolder: Bool = false) throws {
         var root = URL(fileURLWithPath: "/tmp", isDirectory: true)
@@ -61,7 +98,7 @@ final class ServiceHome {
         paths = Paths(home: root.appendingPathComponent("home", isDirectory: true))
         try paths.ensureDirectories()
         var base = 0
-        repeat { base = TestSupport.freeTCPPort() - 100 } while !(1024...55000).contains(base)
+        repeat { base = TestSupport.freeTCPPort() - FakeService.preferredPort } while !(1024...55000).contains(base)
         portBase = base
     }
 
@@ -123,6 +160,21 @@ func listenReusingAddress(port: Int) throws -> Int32 {
         throw POSIXError(.EADDRINUSE)
     }
     return fd
+}
+
+/// For every recipe's integration test: the TCP listeners of a service's whole process group (as the manager
+/// checks them at run time), failing on any that isn't on 127.0.0.1 or [::1]. Returns the addresses.
+@discardableResult
+func assertListensOnThisMacOnly(processGroup: Int32, file: StaticString = #filePath, line: UInt = #line) throws -> [String] {
+    let lsof = try SystemCommandRunner().run("/usr/sbin/lsof", ["-a", "-g", "\(processGroup)", "-iTCP", "-sTCP:LISTEN",
+                                                                "-nP", "-F", "n"], environment: nil, timeout: 10)
+    let addresses = lsof.output.split(separator: "\n").filter { $0.hasPrefix("n") }.map { String($0.dropFirst()) }
+    XCTAssertFalse(addresses.isEmpty, "the service listens somewhere", file: file, line: line)
+    for address in addresses {
+        let host = address[..<(address.lastIndex(of: ":") ?? address.endIndex)]
+        XCTAssertTrue(host == "127.0.0.1" || host == "[::1]", "\(address) is not this Mac only", file: file, line: line)
+    }
+    return addresses
 }
 
 /// Polls until `condition` holds or `timeout` passes.

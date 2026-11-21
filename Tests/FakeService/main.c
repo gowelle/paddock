@@ -1,12 +1,13 @@
 // A stand-in service for Paddock's service framework tests. Not shipped.
 //
-//   paddock-fake-service init <data> [fail-message]
-//       Writes <data>/initialised, or prints fail-message and exits 3.
-//   paddock-fake-service serve <data> [--port N]... [--socket PATH] [--delay MS] [--no-listen]
-//       Records its arguments in <data>/args (one per line), then after --delay milliseconds listens on
-//       127.0.0.1 on every --port (and on the Unix socket, if a non-empty path is given). Answers any
-//       connection with "HTTP/1.0 200 OK" and closes it. Exits 0 on SIGTERM or SIGINT, writing
-//       <data>/stopped.
+//   paddock-fake-service init <data> [--fail MSG] [--ignore-term] [--sleep S] [--grandchild]
+//       Writes <data>/initialised, or prints MSG and exits 3. --ignore-term ignores SIGTERM; --sleep waits
+//       S seconds first; --grandchild leaves a child holding stdout for 60 seconds. Never reads stdin.
+//   paddock-fake-service serve <data> [--port N]... [--socket PATH] [--delay MS] [--no-listen] [--any-address]
+//       Records its arguments in <data>/args (one per line) and its environment in <data>/env, then after
+//       --delay milliseconds listens on 127.0.0.1 (0.0.0.0 with --any-address) on every --port (and on the
+//       Unix socket, if a non-empty path is given). Answers any connection with "HTTP/1.0 200 OK" and closes
+//       it. Exits 0 on SIGTERM or SIGINT, writing <data>/stopped.
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -37,6 +38,9 @@ static int write_file(const char *dir, const char *name, const char *text) {
     return 0;
 }
 
+extern char **environ;
+static int any_address = 0;
+
 static int listen_tcp(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -45,7 +49,7 @@ static int listen_tcp(int port) {
     addr.sin_len = sizeof addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons((unsigned short)port);
-    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    addr.sin_addr.s_addr = any_address ? htonl(INADDR_ANY) : inet_addr("127.0.0.1");
     if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(fd, 16) != 0) {
         fprintf(stderr, "fake-service: cannot listen on 127.0.0.1:%d: %s\n", port, strerror(errno));
         close(fd);
@@ -83,6 +87,7 @@ static int serve(int argc, char **argv) {
         else if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) socket_path = argv[++i];
         else if (strcmp(argv[i], "--delay") == 0 && i + 1 < argc) delay_ms = atoi(argv[++i]);
         else if (strcmp(argv[i], "--no-listen") == 0) no_listen = 1;
+        else if (strcmp(argv[i], "--any-address") == 0) any_address = 1;
     }
 
     char args[16384] = "";
@@ -91,6 +96,12 @@ static int serve(int argc, char **argv) {
         strlcat(args, "\n", sizeof args);
     }
     write_file(data, "args", args);
+    char env[16384] = "";
+    for (char **e = environ; *e; e++) {
+        strlcat(env, *e, sizeof env);
+        strlcat(env, "\n", sizeof env);
+    }
+    write_file(data, "env", env);
 
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -137,14 +148,32 @@ static int serve(int argc, char **argv) {
     return 0;
 }
 
-int main(int argc, char **argv) {
-    if (argc >= 3 && strcmp(argv[1], "init") == 0) {
-        if (argc >= 4) {
-            printf("%s\n", argv[3]);
-            return 3;
-        }
-        return write_file(argv[2], "initialised", "yes\n") == 0 ? 0 : 1;
+static int init(int argc, char **argv) {
+    const char *fail = NULL;
+    int sleep_seconds = 0;
+    int grandchild = 0;
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--fail") == 0 && i + 1 < argc) fail = argv[++i];
+        else if (strcmp(argv[i], "--ignore-term") == 0) signal(SIGTERM, SIG_IGN);
+        else if (strcmp(argv[i], "--sleep") == 0 && i + 1 < argc) sleep_seconds = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--grandchild") == 0) grandchild = 1;
     }
+    printf("fake-service: initialising\n");
+    fflush(stdout);
+    if (grandchild && fork() == 0) {
+        sleep(60); // keeps stdout open
+        _exit(0);
+    }
+    if (sleep_seconds > 0) sleep((unsigned)sleep_seconds);
+    if (fail) {
+        printf("%s\n", fail);
+        return 3;
+    }
+    return write_file(argv[2], "initialised", "yes\n") == 0 ? 0 : 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "init") == 0) return init(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "serve") == 0) return serve(argc, argv);
     fprintf(stderr, "usage: paddock-fake-service init|serve <data> ...\n");
     return 64;
