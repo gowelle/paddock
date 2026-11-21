@@ -875,26 +875,36 @@ each PostgreSQL version.
 PostGIS add-on (part of every PostgreSQL service)
 --------------------------------------------------------------------------------
 
-Paddock's PostgreSQL installs include a PostGIS add-on that Paddock builds
-itself (Scripts/build-postgis.sh in Paddock's repository) and ships in the app:
-PostGIS 3.6.4 with GEOS 3.14.1, PROJ 9.9.0 and json-c 0.18. The PostgreSQL
-server process loads it as a separate, dynamically loaded extension when a
-database runs CREATE EXTENSION postgis; it is never linked into Paddock. Its
-corresponding source is the pinned upstream releases built by
-Scripts/build-postgis.sh:
-  https://download.osgeo.org/postgis/source/postgis-3.6.4.tar.gz
-  https://download.osgeo.org/geos/geos-3.14.1.tar.bz2
-  https://download.osgeo.org/proj/proj-9.9.0.tar.gz
-  https://github.com/json-c/json-c/archive/refs/tags/json-c-0.18-20240915.tar.gz
+Paddock's PostgreSQL installs include a PostGIS add-on that is shipped in the
+app: PostGIS 3.6.4 with GEOS 3.14.1, PROJ 9.9.0 and json-c 0.18. The
+PostgreSQL server process loads it as a separate, dynamically loaded extension
+when a database runs CREATE EXTENSION postgis; it is never linked into
+Paddock.
+
+The add-on archives shipped now were built from the pinned upstream source
+releases below by an earlier form of the build recipe; Scripts/build-postgis.sh
+in Paddock's repository is the maintained recipe and will produce the archives
+from the next rebuild. Anyone who receives Paddock's PostGIS add-on is entitled
+to its corresponding source: these upstream source releases and the build
+script. It is available from the publisher of this app on request.
+  PostGIS 3.6.4  https://download.osgeo.org/postgis/source/postgis-3.6.4.tar.gz
+                 SHA-256 ed8dc6679f1e06f7b113592b04cde2a7e00f1b1e681294c8ca2204058990cec6
+  GEOS 3.14.1    https://download.osgeo.org/geos/geos-3.14.1.tar.bz2
+                 SHA-256 3c20919cda9a505db07b5216baa980bacdaa0702da715b43f176fb07eff7e716
+  PROJ 9.9.0     https://download.osgeo.org/proj/proj-9.9.0.tar.gz
+                 SHA-256 791a0610547eeabb17006cfd49cdbd2034f3240f47ed5e88a1031811f4e2bcf3
+  json-c 0.18    https://github.com/json-c/json-c/archive/refs/tags/json-c-0.18-20240915.tar.gz
+                 SHA-256 3112c1f25d39eca661fe3fc663431e130cc6e2f900c081738317fba49d29e298
 The same notices are installed with each PostgreSQL version, in
-share/licenses/postgis/.
+share/licenses/postgis/. PostGIS is built without protobuf, raster, topology,
+the TIGER geocoder and the address standardizer, so the mapbox wagyu and
+geometry.hpp code in PostGIS's source tree is not compiled into it.
 
 Components shipped in postgis-3.6.4-pg<series>-macos-x86_64.tar.gz
 ====================================================================
 lib/postgis-3.dylib, share/extension/postgis*  PostGIS 3.6.4      GPL-2.0-or-later   (postgis-COPYING-GPL-2.0.txt, postgis-LICENSE.TXT)
    statically contains: liblwgeom (GPL-2.0-or-later), ryu (Apache-2.0 OR BSL-1.0), uthash (BSD-1-Clause),
-   mapbox wagyu (BSL-1.0 + ISC; almost_equal.hpp BSD-3-Clause Google) and mapbox geometry.hpp (ISC), flatgeobuf (GPL-2.0-or-later in PostGIS tree) with
-   flatbuffers headers (Apache-2.0)
+   flatgeobuf (GPL-2.0-or-later in PostGIS tree) with flatbuffers headers (Apache-2.0)
 lib/libgeos.3.14.1.dylib, lib/libgeos_c.1.dylib GEOS 3.14.1       LGPL-2.1-or-later  (geos-COPYING-LGPL-2.1.txt; ryu Apache-2.0 OR BSL-1.0)
    Shipped as unmodified shared libraries (only install names / rpaths changed with install_name_tool);
    source: https://download.osgeo.org/geos/geos-3.14.1.tar.bz2 (LGPL relinking requirement satisfied by dynamic linking).
@@ -904,8 +914,6 @@ share/proj/proj.db, proj.ini                  PROJ 9.9.0 data    MIT; proj.db em
    catalogues as described in PROJ's documentation.
 lib/libjson-c.5.dylib                         json-c 0.18        MIT                (json-c-COPYING-MIT.txt)
 Linked from macOS (not shipped): /usr/lib/libxml2.2.dylib, libsqlite3.dylib, libiconv.2.dylib, libc++.1.dylib, libSystem.B.dylib
-Since postgis-3.dylib is GPL-2.0-or-later, distributing the archive carries GPL obligations (offer of
-corresponding source: the pinned tarballs built by Scripts/build-postgis.sh, and that script).
 
 
 --------------------------------------------------------------------------------
@@ -1375,125 +1383,6 @@ PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
 LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-
---------------------------------------------------------------------------------
-mapbox wagyu (in PostGIS) - Boost Software License 1.0, ISC
---------------------------------------------------------------------------------
-
-# LICENSE.geometry applies to:
-
-include/
-└── mapbox
-    ├── feature.hpp
-    ├── geometry
-    │   ├── box.hpp
-    │   ├── empty.hpp
-    │   ├── envelope.hpp
-    │   ├── for_each_point.hpp
-    │   ├── geometry.hpp
-    │   ├── line_string.hpp
-    │   ├── multi_line_string.hpp
-    │   ├── multi_point.hpp
-    │   ├── multi_polygon.hpp
-    │   ├── point_arithmetic.hpp
-    │   ├── point.hpp
-    │   └── polygon.hpp
-    ├── geometry.hpp
-    └── geometry_io.hpp
-
-2 directories, 15 files
-
-# LICENSE.wagyu applies to:
-
-include/
-└── mapbox
-    └── geometry
-        └── wagyu
-            ├── active_bound_list.hpp
-            ├── bound.hpp
-            ├── bubble_sort.hpp
-            ├── build_edges.hpp
-            ├── build_local_minima_list.hpp
-            ├── build_result.hpp
-            ├── config.hpp
-            ├── edge.hpp
-            ├── interrupt.hpp
-            ├── intersect.hpp
-            ├── intersect_util.hpp
-            ├── local_minimum.hpp
-            ├── local_minimum_util.hpp
-            ├── point.hpp
-            ├── process_horizontal.hpp
-            ├── process_maxima.hpp
-            ├── quick_clip.hpp
-            ├── ring.hpp
-            ├── ring_util.hpp
-            ├── scanbeam.hpp
-            ├── snap_rounding.hpp
-            ├── topology_correction.hpp
-            ├── util.hpp
-            ├── vatti.hpp
-            └── wagyu.hpp
-
-3 directories, 24 files
-
-Parts of the code in the Wagyu Library are derived from the version of the 
-Clipper Library by Angus Johnson listed below.
-
-Author    :  Angus Johnson
-Version   :  6.4.0
-Date      :  2 July 2015
-Website   :  http://www.angusj.com
-
-Copyright for portions of the derived code in the Wagyu library are held 
-by Angus Johnson, 2010-2015. All other copyright for the Wagyu Library are held by 
-Mapbox, 2016. This code is published in accordance with, and retains the same license
-as the Clipper Library by Angus Johnson.
-
-Copyright (c) 2010-2015, Angus Johnson
-Copyright (c) 2016, Mapbox
-
-Permission is hereby granted, free of charge, to any person or organization
-obtaining a copy of the software and accompanying documentation covered by
-this license (the "Software") to use, reproduce, display, distribute,
-execute, and transmit the Software, and to prepare derivative works of the
-Software, and to permit third-parties to whom the Software is furnished to
-do so, all subject to the following:
-
-The copyright notices in the Software and this entire statement, including
-the above license grant, this restriction and the following disclaimer,
-must be included in all copies of the Software, in whole or in part, and
-all derivative works of the Software, unless such copies or derivative
-works are solely in the form of machine-executable object code generated by
-a source language processor.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
-SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
-FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
---------------------------------------------------------------------------------
-mapbox geometry.hpp (in PostGIS) - ISC License
---------------------------------------------------------------------------------
-
-Copyright (c) 2016, Mapbox
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted, provided that the above
-copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
 --------------------------------------------------------------------------------

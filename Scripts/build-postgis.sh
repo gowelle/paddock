@@ -38,9 +38,10 @@
 # Every archive is checked before it is written: each library is x86_64 and links only @rpath/, /usr/lib/
 # and /System/ (its only rpath @loader_path); no file contains this Mac's user name, host names (hostname -s,
 # LocalHostName, ComputerName) or a /Users/ path; and no file would replace one of PostgreSQL's (Paddock
-# refuses an asset that overwrites another's). The archives shipped today predate that privacy check: the
-# pg18 archive's postgis-3.dylib embeds one build path with the original build machine's user name, so all
-# three must be rebuilt with this script before the app is given to anyone else.
+# refuses an asset that overwrites another's). The archives shipped today predate that privacy check: in all
+# three (pg16, pg17 and pg18), lib/postgis-3.dylib embeds one string with the original build machine's user
+# name (a build path to PostgreSQL's tupmacs.h), so all three must be rebuilt with this script before the app
+# is given to anyone else. They were built from these same pinned releases by an earlier form of this recipe.
 #
 # Afterwards: put each archive's checksum and size into Scripts/versions.lock (postgis-pg<series>) and
 # Resources/services-catalog.json, then run Scripts/fetch-vendor.sh.
@@ -141,13 +142,14 @@ link_check() {
   case "$out" in *x86_64*) ;; *) fail "$file is not x86_64 ($out)" ;; esac
   out="$(otool -L "$file")" || fail "otool -L failed on $file"
   [ "${out%%$'\n'*}" = "$file:" ] || fail "unexpected otool -L output for $file"
+  out="$(tail -n +2 <<< "$out")" || fail "could not read the otool -L output for $file"
   while IFS= read -r line; do
     line="${line#"${line%%[![:space:]]*}"}"
     case "$line" in
       @rpath/*|/usr/lib/*|/System/*) ;;
       *) fail "$file links ${line%% (*}, which is not @rpath/, /usr/lib/ or /System/" ;;
     esac
-  done <<< "$(tail -n +2 <<< "$out")"
+  done <<< "$out"
   out="$(otool -l "$file")" || fail "otool -l failed on $file"
   rpaths="$(awk '/cmd LC_RPATH/ { getline; getline; print $2 }' <<< "$out")"
   [ "$rpaths" = "@loader_path" ] || fail "$file has rpaths '${rpaths//$'\n'/ }'; only @loader_path is allowed"
@@ -351,9 +353,6 @@ postgis-deps-ryu-LICENSE.txt $P/deps/ryu/LICENSE
 postgis-deps-ryu-LICENSE-Apache2.txt $P/deps/ryu/LICENSE-Apache2
 postgis-deps-ryu-LICENSE-Boost.txt $P/deps/ryu/LICENSE-Boost
 postgis-deps-uthash-LICENSE.txt $P/deps/uthash/LICENSE
-postgis-deps-wagyu-LICENSE.README.txt $P/deps/wagyu/LICENSE.README
-postgis-deps-wagyu-LICENSE.txt $P/deps/wagyu/LICENSE.wagyu
-postgis-deps-mapbox-geometry-LICENSE.txt $P/deps/wagyu/LICENSE.geometry
 postgis-deps-flatbuffers-LICENSE-Apache-2.0.txt $P/deps/flatgeobuf/include/flatbuffers/LICENSE
 geos-COPYING-LGPL-2.1.txt $G/COPYING
 geos-deps-ryu-LICENSE.txt $G/src/deps/ryu/LICENSE
@@ -369,8 +368,8 @@ Components shipped in $(archive_name "<series>")
 ====================================================================
 lib/postgis-3.dylib, share/extension/postgis*  PostGIS $POSTGIS_VER      GPL-2.0-or-later   (postgis-COPYING-GPL-2.0.txt, postgis-LICENSE.TXT)
    statically contains: liblwgeom (GPL-2.0-or-later), ryu (Apache-2.0 OR BSL-1.0), uthash (BSD-1-Clause),
-   mapbox wagyu (BSL-1.0 + ISC; almost_equal.hpp BSD-3-Clause Google) and mapbox geometry.hpp (ISC), flatgeobuf (GPL-2.0-or-later in PostGIS tree) with
-   flatbuffers headers (Apache-2.0)
+   flatgeobuf (GPL-2.0-or-later in PostGIS tree) with flatbuffers headers (Apache-2.0). Built without
+   protobuf, so mapbox wagyu and geometry.hpp are not compiled in.
 lib/libgeos.$GEOS_VER.dylib, lib/libgeos_c.1.dylib GEOS $GEOS_VER       LGPL-2.1-or-later  (geos-COPYING-LGPL-2.1.txt; ryu Apache-2.0 OR BSL-1.0)
    Shipped as unmodified shared libraries (only install names / rpaths changed with install_name_tool);
    source: https://download.osgeo.org/geos/geos-$GEOS_VER.tar.bz2 (LGPL relinking requirement satisfied by dynamic linking).
@@ -380,8 +379,8 @@ share/proj/proj.db, proj.ini                  PROJ $PROJ_VER data    MIT; proj.d
    catalogues as described in PROJ's documentation.
 lib/libjson-c.5.dylib                         json-c 0.18        MIT                (json-c-COPYING-MIT.txt)
 Linked from macOS (not shipped): /usr/lib/libxml2.2.dylib, libsqlite3.dylib, libiconv.2.dylib, libc++.1.dylib, libSystem.B.dylib
-Since postgis-3.dylib is GPL-2.0-or-later, distributing the archive carries GPL obligations (offer of
-corresponding source: the pinned releases built by Scripts/build-postgis.sh in Paddock's repository).
+Corresponding source: the pinned upstream releases built by Scripts/build-postgis.sh in Paddock's
+repository, and that script; available from the publisher of Paddock on request.
 EOF
 }
 
@@ -395,9 +394,10 @@ build_series() {
   mkdir -p "$PG"
   tar -xzf "$W/downloads/$arch.tar.gz" -C "$PG" --strip-components 1 || fail "could not unpack $arch"
   cp -R "$SRC/postgis-$POSTGIS_VER" "$B/postgis-pg$series"
+  # One && chain: a subshell on the left of || runs without errexit, so each step must gate the next.
   (
-    cd "$B/postgis-pg$series"
-    export PG_SYSROOT="$SDK"
+    cd "$B/postgis-pg$series" &&
+    export PG_SYSROOT="$SDK" &&
     ./configure \
       --with-pgconfig="$PG/bin/pg_config" --with-geosconfig="$DEPS/bin/geos-config" \
       --with-projdir="$DEPS" --with-jsondir="$DEPS" --with-xml2config="$B/bin/xml2-config" \
@@ -405,9 +405,9 @@ build_series() {
       --without-protobuf --without-interrupt-tests --without-phony-revision \
       --disable-nls --without-libintl-prefix --without-libiconv-prefix \
       CFLAGS="-O2 -arch x86_64 -isysroot $SDK" CXXFLAGS="-O2 -arch x86_64 -isysroot $SDK" \
-      LDFLAGS="-arch x86_64 -isysroot $SDK -L$DEPS/lib -Wl,-rpath,$DEPS/lib" > "$L-configure.log" 2>&1
+      LDFLAGS="-arch x86_64 -isysroot $SDK -L$DEPS/lib -Wl,-rpath,$DEPS/lib" > "$L-configure.log" 2>&1 &&
     # Serially: PostGIS 3.6's SQL generation races under make -j.
-    make -j1 PG_SYSROOT="$SDK" with_llvm=no > "$L-build.log" 2>&1
+    make -j1 PG_SYSROOT="$SDK" with_llvm=no > "$L-build.log" 2>&1 &&
     make install PG_SYSROOT="$SDK" with_llvm=no DESTDIR="$STG" > "$L-install.log" 2>&1
   ) || fail "building PostGIS for PostgreSQL $ver failed; see $L-*.log"
 
@@ -431,11 +431,15 @@ configure: --without-raster --without-topology --without-tiger --without-address
 EOF
 
   # The checks every archive passes before it is written.
-  local files=() rel
-  while IFS= read -r -d '' f; do files+=("$f"); done < <(find "$ADD" -type f -print0)
+  # find writes to files first and its status is checked: a failure in a process substitution would
+  # go unnoticed and leave nothing to check.
+  local files=() rel list="$B/files-pg$series"
+  find "$ADD" -type f -print0 > "$list" || fail "could not list the files of the add-on"
+  while IFS= read -r -d '' f; do files+=("$f"); done < "$list"
+  [ "${#files[@]}" -gt 0 ] || fail "the add-on for PostgreSQL $ver is empty"
   check_files "${files[@]}"
-  while IFS= read -r -d '' f; do fail "unexpected symlink or special file in the add-on: $f"; done \
-    < <(find "$ADD" ! -type f ! -type d -print0)
+  find "$ADD" ! -type f ! -type d -print0 > "$list" || fail "could not list the add-on"
+  [ ! -s "$list" ] || fail "unexpected symlink or special file in the add-on: $(tr '\0' ' ' < "$list")"
   for f in "${files[@]}"; do
     rel="${f#"$ADD"/}"
     [ ! -e "$PG/$rel" ] && [ ! -L "$PG/$rel" ] || fail "$rel would replace a file of PostgreSQL $ver"

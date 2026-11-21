@@ -427,7 +427,8 @@ for patch in "${PATCHES[@]}"; do
     || fail "the PHP $patch build failed; see $log"
 
   dir="$W/out/$patch"
-  rm -rf "$dir" && mkdir -p "$dir"
+  rm -rf "$dir"
+  mkdir -p "$dir"
   cp buildroot/bin/php buildroot/bin/php-fpm "$dir/"
   accept "$dir" "$series"
   [ "$("$dir/php" -n -r 'echo PHP_VERSION;')" = "$patch" ] || fail "the built php is not PHP $patch"
@@ -437,7 +438,9 @@ for patch in "${PATCHES[@]}"; do
     bin=php; [ "$kind" = fpm ] && bin=php-fpm
     archive="php-$patch-$kind-macos-x86_64.tar.gz"
     old=""
-    [ -f "$OUT/$archive" ] && old="$(shasum -a 256 -- "$OUT/$archive" | awk '{print $1}')"
+    if [ -f "$OUT/$archive" ]; then
+      old="$(shasum -a 256 -- "$OUT/$archive" | awk '{print $1}')" || fail "cannot hash $OUT/$archive"
+    fi
     tar -czf "$OUT/$archive.part" -C "$dir" "$bin"
     mv "$OUT/$archive.part" "$OUT/$archive"
     new="$(shasum -a 256 -- "$OUT/$archive" | awk '{print $1}')"
