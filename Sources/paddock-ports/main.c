@@ -77,6 +77,8 @@ struct direction {
     struct direction *other;
 };
 
+/// Writes everything; on failure returns false with `errno` set. With SO_SNDTIMEO, each `write`
+/// waits at most the idle timeout for room, so EAGAIN means no progress for that long.
 static bool write_all(int fd, const char *bytes, size_t count) {
     while (count > 0) {
         ssize_t n = write(fd, bytes, count);
@@ -94,16 +96,25 @@ static bool write_all(int fd, const char *bytes, size_t count) {
 /// `from`, which is the back-pressure. Ends on EOF (propagated as a half-close) or on an error.
 /// Reads wake every `idle_seconds`; once the other direction has ended, a read that waits that
 /// long with no data ends this direction too, so a peer that never closes cannot hold a slot.
-/// While both directions are open, idle waits are unlimited (a slow request is not cut off).
+/// While both directions are open, idle reads are unlimited (a slow request is not cut off).
+/// A write that makes no progress for `idle_seconds` means a dead or stuck peer at any time:
+/// the whole connection is torn down.
 static void pump(struct direction *d) {
     char buffer[BUFFER_SIZE];
     struct timeval idle = { .tv_sec = idle_seconds };
     (void)setsockopt(d->from, SOL_SOCKET, SO_RCVTIMEO, &idle, sizeof idle);
+    (void)setsockopt(d->to, SOL_SOCKET, SO_SNDTIMEO, &idle, sizeof idle);
     for (;;) {
         ssize_t n = read(d->from, buffer, sizeof buffer);
         if (n > 0) {
             if (atomic_load(&d->discarding)) continue;
             if (write_all(d->to, buffer, (size_t)n)) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Stuck peer: end both directions; the other pump wakes on the shutdowns.
+                shutdown(d->from, SHUT_RDWR);
+                shutdown(d->to, SHUT_RDWR);
+                break;
+            }
             // `to` is gone. Keep draining `from` so its peer cannot block the other direction
             // (data `to` already sent us is still delivered there), unless that direction ended.
             atomic_store(&d->discarding, true);

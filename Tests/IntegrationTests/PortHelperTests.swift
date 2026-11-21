@@ -187,6 +187,53 @@ final class PortHelperTests: XCTestCase {
         XCTAssertEqual(String(decoding: Client.readToEOF(next), as: UTF8.self), "bye")
     }
 
+    func testNonReadingClientIsReleased() throws {
+        // The upstream streams a large reply to a client that sent a request and never reads:
+        // once the helper's write to it has made no progress for the idle timeout, the whole
+        // connection ends, even though neither peer closed.
+        startServer(at: httpSocket, handler: UnixServer.streamAfterRequest(Data(repeating: 0x63, count: 64 << 20)))
+        try startHelper(tuning: ["1"])
+        let pid = helper!.processIdentifier
+        let baseline = try openFileCount(pid: pid)
+
+        let silent = try Client.connect(port: httpPort)
+        defer { close(silent) }
+        XCTAssertTrue(Client.writeAll(silent, Data("GET".utf8)))
+        try waitUntil("connection is held") { try openFileCount(pid: pid) > baseline }
+
+        try waitUntil("non-reading client released", timeout: 8) { try openFileCount(pid: pid) <= baseline }
+        XCTAssertTrue(helper!.isRunning)
+        let next = try Client.connect(port: httpPort)
+        defer { close(next) }
+        XCTAssertTrue(Client.writeAll(next, Data("GET".utf8)))
+        XCTAssertEqual(Client.readExactly(next, count: 1024), Data(repeating: 0x63, count: 1024))
+    }
+
+    func testSlowButProgressingReaderGetsEverything() throws {
+        // The write timeout is between partial writes: a reader that pauses for less than the
+        // timeout between chunks still receives the whole reply.
+        var reply = Data(count: 4 << 20)
+        reply.withUnsafeMutableBytes { arc4random_buf($0.baseAddress!, $0.count) }
+        startServer(at: httpSocket, handler: UnixServer.streamAfterRequest(reply))
+        try startHelper(tuning: ["1"])
+
+        let fd = try Client.connect(port: httpPort)
+        defer { close(fd) }
+        XCTAssertTrue(Client.writeAll(fd, Data("GET".utf8)))
+        let started = Date()
+        var received = Data()
+        while true {
+            Thread.sleep(forTimeInterval: 0.3)
+            let chunk = Client.readExactly(fd, count: 512 * 1024)
+            received.append(chunk)
+            if chunk.count < 512 * 1024 { break }
+        }
+        XCTAssertEqual(received.count, reply.count)
+        XCTAssertEqual(SHA256.hash(data: received), SHA256.hash(data: reply))
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 1.5)
+        XCTAssertTrue(helper!.isRunning)
+    }
+
     func testSlowReplyAfterHalfCloseIsComplete() throws {
         // The idle timeout is between reads, not a total: a reply that keeps making progress
         // for longer than the timeout still arrives whole.
@@ -580,6 +627,15 @@ private final class UnixServer: @unchecked Sendable {
     /// Replies at once and closes, whatever the client does.
     static let sayGoodbye: @Sendable (Int32) -> Void = { fd in
         _ = Client.writeAll(fd, Data("bye".utf8))
+    }
+
+    /// Reads the start of a request, then writes `reply` and closes.
+    static func streamAfterRequest(_ reply: Data) -> @Sendable (Int32) -> Void {
+        { fd in
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            guard read(fd, &buffer, buffer.count) > 0 else { return }
+            _ = Client.writeAll(fd, reply)
+        }
     }
 
     /// After the request's EOF, replies in five pieces 0.4 s apart (2 s in all).
