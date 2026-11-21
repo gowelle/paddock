@@ -28,7 +28,7 @@ final class IPCTests: XCTestCase {
             blockedBy: [PortHolder(port: 80, pid: 42, command: "nginx", ownedByCurrentUser: false)],
             sites: [Site(name: "blog", path: "/tmp/blog", kind: .parked, secured: true, php: v84, pinned: false)],
             installedPHP: [v84], defaultPHP: v84, processes: ["caddy": "running (pid 7)"],
-            resolverInstalled: false)
+            resolverInstalled: false, trustEnabled: true)
     }
 
     // MARK: - Protocol

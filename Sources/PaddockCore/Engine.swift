@@ -11,6 +11,8 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     /// Supervised process name -> its `ProcessStatus` description.
     public var processes: [String: String]
     public var resolverInstalled: Bool
+    /// True iff this engine can make macOS trust Paddock's certificate (it has a trust object).
+    public var trustEnabled: Bool
 }
 
 public enum EngineError: Error, Equatable {
@@ -141,7 +143,7 @@ public final class Engine: @unchecked Sendable {
         return EngineStatus(running: started && !caddyCrashed, blockedBy: blocked, sites: sites,
                             installedPHP: installer.installed(), defaultPHP: state.defaultPHP,
                             processes: processes,
-                            resolverInstalled: false) // Task 13: check /etc/resolver/<tld>.
+                            resolverInstalled: false, trustEnabled: trust != nil) // Task 13: check /etc/resolver/<tld>.
     }
 
     // MARK: - State and configs

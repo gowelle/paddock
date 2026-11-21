@@ -82,8 +82,9 @@ struct Secure: ParsableCommand {
     func run() throws {
         let target = try CLI.site(named: site, in: try CLI.send(.status, timeout: 30))
         switch try CLI.sendRaw(.secure(site: target.name)) {
-        case .ok:
-            print("\(target.host) is now served over HTTPS.")
+        case .ok(let status):
+            print(status.trustEnabled ? "\(target.host) is now served over HTTPS."
+                  : Messages.securedWithoutTrust(host: target.host))
         case .error(ErrorCode.needsTrust, _):
             throw CLI.failure(Messages.needsTrust(host: target.host))
         case .error(_, let message):

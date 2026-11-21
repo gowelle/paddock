@@ -42,6 +42,13 @@ final class CertificateTrustTests: XCTestCase {
         XCTAssertEqual(runner.calls, [.init(executable: "/usr/bin/security", arguments: ["remove-trusted-cert", root])])
     }
 
+    func testSystemIntegrationFollowsPaddockHome() {
+        XCTAssertTrue(SystemIntegration.isEnabled(environment: [:]))
+        XCTAssertTrue(SystemIntegration.isEnabled(environment: ["PADDOCK_HOME": ""]))
+        XCTAssertFalse(SystemIntegration.isEnabled(environment: ["PADDOCK_HOME": "/tmp/x"]))
+        XCTAssertFalse(SystemIntegration.isEnabled(environment: ["PADDOCK_HOME": "/tmp/x", "PADDOCK_TRUST": "1"]))
+    }
+
     func testSystemRunnerDrainsLargeOutputAndReportsStatus() throws {
         // More than a pipe buffer (64 KiB): hangs if the runner waits before reading.
         let big = try SystemCommandRunner().run("/usr/bin/head", ["-c", "300000", "/dev/zero"])

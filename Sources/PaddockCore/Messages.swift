@@ -13,6 +13,14 @@ public enum Messages {
         "\(host) is served over HTTPS, but macOS doesn't trust Paddock's certificate yet. Run: paddock trust"
     }
 
+    public static let trustDisabled = "Certificate trust is turned off for this Paddock home."
+    public static let certificateNotReady =
+        "Paddock's web server hasn't created its certificate yet. Try again in a moment with: paddock trust"
+
+    public static func securedWithoutTrust(host: String) -> String {
+        "\(host) is now served over HTTPS. Certificate trust is turned off for this Paddock home, so browsers will warn."
+    }
+
     public static let stillNotTrusted =
         "macOS still doesn't trust Paddock's certificate. Run paddock trust again and approve the macOS prompt."
 

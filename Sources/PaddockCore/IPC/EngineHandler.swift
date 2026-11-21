@@ -100,6 +100,7 @@ extension Engine {
             return await change { $0.phpPins[site] = nil }
 
         case .trust:
+            guard trust != nil else { return error(ErrorCode.trustDisabled, Messages.trustDisabled) }
             return await ensureTrusted(afterSecuring: nil) ?? .ok(status())
 
         case .use(let version):
@@ -166,17 +167,22 @@ extension Engine {
     /// object is set); `needs_trust` when it still is not afterwards (declined, or the command failed).
     private func ensureTrusted(afterSecuring site: String?) async -> Response? {
         guard let trust else { return nil }
-        let trusted = (try? await blocking { () -> Bool in
+        let outcome = (try? await blocking { () -> TrustOutcome in
             // Caddy creates its CA lazily; with it down there is nothing to wait for.
             if self.isServing { _ = self.waitForRootCertificate(trust) }
-            if trust.isTrusted() { return true }
+            // Never ask macOS to trust a file that is not there.
+            guard FileManager.default.fileExists(atPath: trust.rootCertificate.path) else { return .notReady }
+            if trust.isTrusted() { return .trusted }
             try? trust.trust()
-            return trust.isTrusted()
-        }) ?? false
-        if trusted { return nil }
+            return trust.isTrusted() ? .trusted : .declined
+        }) ?? .declined
+        if outcome == .trusted { return nil }
+        if outcome == .notReady { return error(ErrorCode.needsTrust, Messages.certificateNotReady) }
         return error(ErrorCode.needsTrust, site.map { Messages.needsTrust(host: "\($0).\(settings.tld)") }
             ?? Messages.stillNotTrusted)
     }
+
+    private enum TrustOutcome { case trusted, declined, notReady }
 
     private func install(_ version: PHPVersion) async -> Response {
         if installer.isInstalled(version) { return .ok(status()) }

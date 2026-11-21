@@ -206,6 +206,27 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(runner.calls.filter { $0.arguments.first == "add-trusted-cert" }.count, 1)
     }
 
+    func testTrustRequestWithoutTrustObjectIsAnErrorNotOk() async throws {
+        try startEngine()
+        let response = await engine!.handle(.trust)
+        XCTAssertEqual(response, .error(code: ErrorCode.trustDisabled,
+                                        message: "Certificate trust is turned off for this Paddock home."))
+        let secured = await engine!.handle(.secure(site: "plain-php"))
+        guard case .ok(let status) = secured else { return XCTFail("\(secured)") }
+        XCTAssertFalse(status.trustEnabled)
+    }
+
+    func testNoRootCertificateMeansNeedsTrustWithoutCallingTrust() async throws {
+        let (trust, runner) = fakeTrust()
+        // Engine never started: Caddy is down, so root.crt cannot exist.
+        let engine = Engine(paths: paths, settings: settings, trust: trust)
+        self.engine = engine
+        let response = await engine.handle(.secure(site: "plain-php"))
+        XCTAssertEqual(response, .error(code: ErrorCode.needsTrust, message:
+            "Paddock's web server hasn't created its certificate yet. Try again in a moment with: paddock trust"))
+        XCTAssertTrue(runner.calls.isEmpty, "\(runner.calls)")
+    }
+
     func testSecureWithoutTrustObjectBehavesAsBefore() async throws {
         try startEngine()
         let response = await engine!.handle(.secure(site: "plain-php"))

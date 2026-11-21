@@ -28,6 +28,7 @@ public enum ErrorCode {
     public static let portsBlocked = "ports_blocked"
     /// A site is served over HTTPS but macOS does not trust Paddock's certificate authority.
     public static let needsTrust = "needs_trust"
+    public static let trustDisabled = "trust_disabled"
     public static let `internal` = "internal"
 }
 

@@ -92,7 +92,11 @@ final class CLITests: XCTestCase {
         let cwd = home.parked.appendingPathComponent("plain-php")
         let secure = try run(["secure"], cwd: cwd)
         XCTAssertEqual(secure.status, 0, secure.err)
-        XCTAssertEqual(secure.out, "plain-php.test is now served over HTTPS.\n")
+        XCTAssertEqual(secure.out, "plain-php.test is now served over HTTPS. "
+            + "Certificate trust is turned off for this Paddock home, so browsers will warn.\n")
+        let trust = try run(["trust"])
+        XCTAssertEqual(trust.status, 1)
+        XCTAssertTrue(trust.err.contains("Certificate trust is turned off for this Paddock home."), trust.err)
         XCTAssertTrue(try run(["status"]).out.contains("https://plain-php.test"))
         XCTAssertEqual(try run(["unsecure", "plain-php"]).out, "plain-php.test is now served over HTTP.\n")
     }
