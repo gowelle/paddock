@@ -15,8 +15,10 @@
 # A clean run takes about 15 minutes of tool setup plus about 15 minutes per series (a later series reuses
 # the libraries the first one built). Everything is built under /private/tmp/paddock-php-build-<uid>
 # (override with PADDOCK_PHP_BUILD_DIR), a neutral path, so no user name ends up in the binaries. The
-# folder must be a real directory (not a symlink) owned by you and writable by no one else; the script
-# creates it with mode 700 and refuses any other. Delete it to start from scratch.
+# folder must be an absolute path outside your home folder and /Users/, a real directory (not a
+# symlink) owned by you and writable by no one else, created by this script (it writes a
+# .paddock-php-build sentinel in it, with mode 700); any other folder is refused. Delete it to start
+# from scratch.
 #
 # What is pinned:
 #   - The build tools (cmake, xz, m4, autoconf, automake, libtool, re2c, bison) and the static-php-cli
@@ -54,7 +56,6 @@ W="${PADDOCK_PHP_BUILD_DIR:-/private/tmp/paddock-php-build-$(id -u)}"
 OUT="$ROOT/Vendor/builds"
 SOURCES="$ROOT/Scripts/php-sources"
 BUILD_USER="$(id -un)"
-[ "${#BUILD_USER}" -ge 3 ] || fail "user name '$BUILD_USER' is shorter than 3 characters; the privacy check cannot work."
 
 # static-php-cli publishes its macOS binary only as a moving "nightly"; this is the 2.8.6 tarball the
 # current builds were made with. If the nightly has moved on, review it and pass its checksum in
@@ -69,6 +70,7 @@ EXTS="apcu,bcmath,bz2,calendar,ctype,curl,dom,exif,fileinfo,filter,ftp,gd,gmp,ic
 WITH_LIBS="freetype,libjpeg,libwebp,libpng,onig"
 
 fail() { echo "build-php.sh: $*" >&2; exit 1; }
+[ "${#BUILD_USER}" -ge 3 ] || fail "user name '$BUILD_USER' is shorter than 3 characters; the privacy check cannot work."
 say() { echo "==> $*"; }
 loud() { printf '\n!!! %s\n\n' "$*" >&2; }
 
@@ -81,9 +83,9 @@ usage() {
 # except spc's own .lock.json (see the header), and "git:<commit>  name/" for a git checkout (with
 # "-dirty" after the commit when its working tree has changes), sorted by name.
 source_manifest() {
-  local dir="$1" f commit
+  local dir="$1" f commit changes sum
   (
-    cd "$dir"
+    cd "$dir" || fail "cannot enter $dir"
     for f in * .[!.]* ..?*; do
       [ -e "$f" ] || [ -L "$f" ] || continue
       [ "$f" = .lock.json ] && continue
@@ -91,11 +93,16 @@ source_manifest() {
         fail "unexpected symlink in $dir: $f"
       elif [ -d "$f" ]; then
         [ -d "$f/.git" ] || fail "unexpected directory in $dir: $f"
-        commit="$(git -C "$f" rev-parse HEAD)"
-        [ -z "$(git -C "$f" status --porcelain)" ] || commit="$commit-dirty"
+        commit="$(git -C "$f" rev-parse HEAD)" || fail "git rev-parse failed in $dir/$f"
+        [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "git rev-parse gave no commit in $dir/$f"
+        changes="$(git -C "$f" status --porcelain)" || fail "git status failed in $dir/$f"
+        [ -z "$changes" ] || commit="$commit-dirty"
         printf 'git:%s  %s/\n' "$commit" "$f"
       else
-        printf '%s  %s\n' "$(shasum -a 256 -- "$f" | awk '{print $1}')" "$f"
+        sum="$(shasum -a 256 -- "$f")" || fail "cannot hash $dir/$f"
+        sum="${sum%% *}"
+        [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || fail "cannot hash $dir/$f"
+        printf '%s  %s\n' "$sum" "$f"
       fi
     done
   ) | LC_ALL=C sort -k2
@@ -112,7 +119,7 @@ downloaded_patch() {
 # check_sources PATCH DIR: compare a downloads folder with Scripts/php-sources/PATCH.sha256.
 check_sources() {
   local patch="$1" dir="$2" pinned="$SOURCES/$1.sha256" actual
-  actual="$(source_manifest "$dir")"
+  actual="$(source_manifest "$dir")" || fail "could not list the downloads in $dir"
   if [ ! -f "$pinned" ]; then
     mkdir -p "$SOURCES"
     printf '%s\n' "$actual" > "$pinned"
@@ -133,20 +140,37 @@ check_sources() {
   fail "refusing to build from sources that differ from the pinned ones (set PADDOCK_PHP_ACCEPT_NEW_SOURCES=1 to accept them)."
 }
 
-# require_private_dir DIR: create DIR (mode 700) if missing; then require a real directory, not a
-# symlink, owned by this user and writable by no one else. Anything else may have been planted.
+# require_private_dir DIR: DIR must be an absolute path outside the home folder and /Users/. When
+# missing it is created (mode 700) with a sentinel file; an existing directory must carry that sentinel
+# (so the script never deletes things inside a folder it did not create), be a real directory (not a
+# symlink), owned by this user and writable by no one else. Anything else may have been planted.
+SENTINEL=.paddock-php-build
 require_private_dir() {
-  local d="$1" mode
+  local d="$1" mode parent resolved home
+  case "$d" in /*) ;; *) fail "PADDOCK_PHP_BUILD_DIR must be an absolute path (got: $d)." ;; esac
+  case "$d" in */|*/.|*/..|*/./*|*/../*) fail "use a plain path for the build folder (got: $d)." ;; esac
+  parent="$(dirname "$d")"
+  [ -d "$parent" ] || fail "$parent does not exist."
+  resolved="$(cd "$parent" && pwd -P)/$(basename "$d")" || fail "cannot resolve $d"
+  home="$(cd "$HOME" 2>/dev/null && pwd -P || echo "$HOME")"
+  for p in "$d" "$resolved"; do
+    case "$p" in
+      "$HOME"|"$HOME"/*|"$home"|"$home"/*|/Users/*)
+        fail "$d is inside a home folder; pick a build folder outside it (the default is /private/tmp/paddock-php-build-<uid>)." ;;
+    esac
+  done
   if [ ! -e "$d" ] && [ ! -L "$d" ]; then
     mkdir -m 700 "$d" || fail "cannot create $d"
+    : > "$d/$SENTINEL"
   fi
   [ ! -L "$d" ] || fail "$d is a symlink; refusing to build there."
   [ -d "$d" ] || fail "$d is not a directory."
   [ "$(stat -f %u "$d")" = "$(id -u)" ] || fail "$d is not owned by you; refusing to build there."
   mode="$(stat -f %Lp "$d")"
   [ $(( 8#$mode & 8#022 )) = 0 ] || fail "$d is writable by others (mode $mode); refusing to build there."
-  [ "$(cd "$d" && pwd -P)" = "$(cd "$(dirname "$d")" && pwd -P)/$(basename "$d")" ] \
-    || fail "$d does not resolve to itself; refusing to build there."
+  [ "$(cd "$d" && pwd -P)" = "$resolved" ] || fail "$d does not resolve to itself; refusing to build there."
+  [ -f "$d/$SENTINEL" ] && [ ! -L "$d/$SENTINEL" ] \
+    || fail "$d already exists and was not created by this script (no $SENTINEL in it); pick an empty or new path."
 }
 
 # resolve_patch SERIES: the newest release php.net lists for a series, e.g. 8.4 -> 8.4.28.
@@ -187,6 +211,7 @@ FORCE=0
 TARGETS=()
 if [ "${1:-}" = --verify-sources ]; then
   [ "$#" = 3 ] || usage
+  [[ "$2" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "not a PHP patch (like 8.4.28): $2"
   [ "$(downloaded_patch "$3")" = "$2" ] || fail "$3 holds the source of PHP $(downloaded_patch "$3"), not $2"
   [ -f "$SOURCES/$2.sha256" ] || fail "no Scripts/php-sources/$2.sha256"
   PADDOCK_PHP_ACCEPT_NEW_SOURCES=0 check_sources "$2" "$3"
@@ -197,8 +222,9 @@ for arg in "$@"; do
     --tools-only) TOOLS_ONLY=1 ;;
     --force) FORCE=1 ;;
     -h|--help) usage ;;
-    [0-9].[0-9]|[0-9].[0-9][0-9]|[0-9].[0-9].[0-9]*|[0-9].[0-9][0-9].[0-9]*) TARGETS+=("$arg") ;;
-    *) fail "unknown argument: $arg" ;;
+    *)
+      [[ "$arg" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || fail "not a PHP series or patch (like 8.4 or 8.4.28): $arg"
+      TARGETS+=("$arg") ;;
   esac
 done
 [ "$TOOLS_ONLY" = 1 ] || [ "${#TARGETS[@]}" -gt 0 ] || usage
@@ -232,7 +258,7 @@ done
 # Only Xcode's and our own tools: never Homebrew (/usr/local, /opt/homebrew) or MacPorts (/opt/local).
 export PATH="$W/tools/bin:$W/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 unset LIBS
-for tool in clang make perl flex unzip git curl shasum tar strings otool; do
+for tool in clang make perl flex unzip git curl shasum tar otool plutil; do
   command -v "$tool" >/dev/null || fail "$tool is missing; install the Xcode command line tools (xcode-select --install)."
 done
 # What PHP records as the system it was built on (php -i "Build System"): nothing about this Mac.
@@ -324,7 +350,9 @@ accept() {
   for b in php php-fpm; do
     out="$(file "$dir/$b")"
     grep -q x86_64 <<< "$out" || fail "$b is not x86_64"
-    if otool -L "$dir/$b" | tail -n +2 | grep -vE '^[[:space:]]*(/usr/lib/|/System/)'; then
+    out="$(otool -L "$dir/$b")" || fail "otool -L failed on $b"
+    [ "${out%%$'\n'*}" = "$dir/$b:" ] || fail "unexpected otool -L output for $b"
+    if tail -n +2 <<< "$out" | grep -vE '^[[:space:]]*(/usr/lib/|/System/)'; then
       fail "$b links a library outside /usr/lib and /System"
     fi
     mods="$("$dir/$b" -n -m | tr 'A-Z' 'a-z')"
@@ -374,7 +402,7 @@ for patch in "${PATCHES[@]}"; do
   fi
   [ "$(downloaded_patch "$DOWNLOADS")" = "$patch" ] || fail "asked for PHP $patch, but the downloaded source is $(downloaded_patch "$DOWNLOADS")"
   check_sources "$patch" "$DOWNLOADS"
-  manifest="$(source_manifest "$DOWNLOADS")"
+  manifest="$(source_manifest "$DOWNLOADS")" || fail "could not list the downloads in $DOWNLOADS"
   printf '%s\n' "$manifest" > "$OUT/sources-$patch.sha256"
 
   # Extracted sources and built libraries from an earlier run are kept only when a marker written after a
@@ -385,7 +413,9 @@ for patch in "${PATCHES[@]}"; do
     if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$libraries" ]; then
       say "earlier extracted sources are not known to come from these downloads: deleting them"
       rm -f "$marker"
-      rm -rf "$W/work/source" "$W/work/buildroot"
+      rm -rf "$W/work/source" "$W/work/buildroot" "$W/work/pkgroot"
+      # spc doctor puts its pkg-config package (verified above with the downloads) back in pkgroot.
+      "$SPC" doctor > "$W/logs/doctor.log" 2>&1 || fail "spc doctor failed; see $W/logs/doctor.log"
     else
       rm -rf "$W/work/source/php-src"
     fi
