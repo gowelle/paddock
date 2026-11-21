@@ -30,6 +30,9 @@ public struct Paths: Sendable {
     public var daemonSocket: URL { run.appendingPathComponent("paddockd.sock") }
     public var caddyAdminSocket: URL { run.appendingPathComponent("caddy-admin.sock") }
 
+    /// User-edited PHP settings; unlike `config/`, never regenerated.
+    public var userPHP: URL { home.appendingPathComponent("php", isDirectory: true) }
+
     public func phpDir(_ v: PHPVersion, variant: String = "default") -> URL {
         phpRoot.appendingPathComponent(v.description, isDirectory: true)
             .appendingPathComponent(variant, isDirectory: true)
@@ -40,14 +43,13 @@ public struct Paths: Sendable {
     }
 
     public func phpIni(_ v: PHPVersion) -> URL {
-        config.appendingPathComponent("php", isDirectory: true)
-            .appendingPathComponent(v.description, isDirectory: true)
+        userPHP.appendingPathComponent(v.description, isDirectory: true)
             .appendingPathComponent("php.ini")
     }
 
     public func ensureDirectories() throws {
         let fm = FileManager.default
-        for dir in [home, bin, phpRoot, config, routerHome, run, log, backup, caddyData] {
+        for dir in [home, bin, phpRoot, userPHP, config, routerHome, run, log, backup, caddyData] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

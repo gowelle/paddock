@@ -8,6 +8,7 @@ final class PathsTests: XCTestCase {
         XCTAssertEqual(p.fpmSocket(PHPVersion("8.4")!).path, "/tmp/px/run/php-8.4.sock")
         XCTAssertEqual(p.phpDir(PHPVersion("8.4")!).path, "/tmp/px/bin/php/8.4/default")
         XCTAssertEqual(p.daemonSocket.path, "/tmp/px/run/paddockd.sock")
+        XCTAssertEqual(p.phpIni(PHPVersion("8.4")!).path, "/tmp/px/php/8.4/php.ini")
     }
 
     func testSettingsDefaults() {
