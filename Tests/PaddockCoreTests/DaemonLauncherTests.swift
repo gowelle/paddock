@@ -82,6 +82,33 @@ final class DaemonLauncherTests: XCTestCase {
                        "nothing was launched")
     }
 
+    /// On the real system (no PADDOCK_HOME) a build outside Paddock.app starts, restarts and stops nothing.
+    func testADevelopmentBuildOnTheRealSystemNeitherStartsNorStopsAnything() throws {
+        let home = URL(fileURLWithPath: "/tmp/pdk-dev-\(TestSupportToken.make())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let runner = RecordingCommandRunner()
+        let client = FakeDaemon(running: true)
+        let paths = Paths(home: home)
+        let lifecycle = SystemLifecycle(
+            services: SystemServices(runner: runner, resolverFile: dir.appendingPathComponent("resolver/test"),
+                                     launchAgents: dir.appendingPathComponent("LaunchAgents"),
+                                     portHelperSource: nil,
+                                     portHelperBinary: dir.appendingPathComponent("helper"),
+                                     portHelperPlist: dir.appendingPathComponent("helper.plist")),
+            paths: paths, settings: Settings(), environment: [:], userHome: dir,
+            daemonIsRunning: { client.isRunning }, client: client, portHolders: { _ in [] })
+        let launcher = DaemonLauncher(lifecycle: lifecycle, paths: paths, daemon: try placeholder("paddockd"))
+        for (name, action) in [("start", { _ = try launcher.ensureRunning() }),
+                               ("app start", { _ = try launcher.ensureRunning(honouringLoginSetting: true) }),
+                               ("stop", { _ = try launcher.stop() })] as [(String, () throws -> Void)] {
+            XCTAssertThrowsError(try action(), name) { XCTAssertEqual($0 as? DaemonLaunchError, .developmentBuild) }
+        }
+        XCTAssertEqual(runner.calls, [])
+        XCTAssertEqual(client.requests, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("run").path),
+                       "nothing was launched")
+    }
+
     func testADevelopmentHomeWithoutADaemonSaysSo() throws {
         let home = URL(fileURLWithPath: "/tmp/pdk-launch-\(TestSupportToken.make())", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: home) }

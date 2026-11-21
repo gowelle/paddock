@@ -172,4 +172,16 @@ final class LaunchAgentTests: XCTestCase {
         try agent(runner).restart()
         XCTAssertEqual(runner.calls.map(\.arguments), [["kickstart", "-k", target]])
     }
+
+    /// A plist that already says what `install` would write is left as it is (only loaded if it isn't).
+    func testInstallDoesNotRewriteACurrentPlist() throws {
+        let fake = fake(loaded: false)
+        try agent(fake).install(daemon: daemon)
+        let old = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: plist.path)
+        let again = self.fake(loaded: false)
+        try agent(again).install(daemon: daemon)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: plist.path)[.modificationDate] as? Date, old)
+        XCTAssertEqual(again.calls.map { $0.arguments.first ?? "" }, ["print", "bootstrap"])
+    }
 }

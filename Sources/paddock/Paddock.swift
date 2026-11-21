@@ -27,6 +27,14 @@ enum CLI {
         SystemLifecycle(services: services, paths: paths, settings: Settings.current)
     }
     static var launcher: DaemonLauncher { DaemonLauncher(lifecycle: lifecycle, paths: paths) }
+
+    /// Stops a command that would change the owner's system or installed Paddock (restart, trust) when this
+    /// program may not: `SystemLifecycle.checkMayChangeSystem` decides.
+    static func checkMayChangeSystem() throws {
+        do { try lifecycle.checkMayChangeSystem() } catch let error as DaemonLaunchError {
+            throw failure(error.message())
+        }
+    }
     static var tld: String { Settings.current.tld }
     static var currentDirectory: String { FileManager.default.currentDirectoryPath }
 

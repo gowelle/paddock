@@ -30,6 +30,9 @@ public protocol AppServices: Sendable {
     func restorePreviousSetup() throws -> [String]
     func configureShell() throws
     func parkedFolders() -> [String]
+    /// Throws (`DaemonLaunchError.developmentBuild`, `.runningAsRoot`) when this program may not change the
+    /// owner's system or installed Paddock (`SystemLifecycle.checkMayChangeSystem`). Cheap; never blocks.
+    func checkMayChangeSystem() throws
 }
 
 /// Politely quits another application of the current user's, found by its bundle folder (e.g.
@@ -230,8 +233,30 @@ public final class AppModel: ObservableObject {
         var shellConfigured: Bool
     }
 
+    /// Whether this program may change the system; if not, says why in `lastError`. Every action that
+    /// starts, stops or restarts Paddock, changes setup, trust or the shell file asks this first.
+    private func mayChangeSystem() -> Bool {
+        do {
+            try services?.checkMayChangeSystem()
+            return true
+        } catch {
+            lastError = Self.describe(error)
+            return false
+        }
+    }
+
+    /// Requests whose effect reaches beyond Paddock's own state: restarting the daemon, and trust
+    /// (`secure` trusts the certificate too).
+    private static func changesSystem(_ r: Request) -> Bool {
+        switch r {
+        case .start, .stop, .restart, .shutdown, .trust, .secure: return true
+        default: return false
+        }
+    }
+
     /// Sends one request, marking it busy while it is in flight, then refreshes.
     public func perform(_ r: Request) async {
+        guard !Self.changesSystem(r) || mayChangeSystem() else { return }
         let key = Self.busyKey(r)
         busy.insert(key)
         defer { busy.remove(key) }
@@ -287,6 +312,7 @@ public final class AppModel: ObservableObject {
 
     /// Starts the daemon as `paddock start` does, then asks the engine to start.
     public func start() async {
+        guard mayChangeSystem() else { return }
         let key = Self.busyKey(.start)
         busy.insert(key)
         defer { busy.remove(key) }
@@ -328,6 +354,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func stop() async {
+        guard mayChangeSystem() else { return }
         let key = Self.busyKey(.stop)
         busy.insert(key)
         defer { busy.remove(key) }
@@ -376,7 +403,7 @@ public final class AppModel: ObservableObject {
     // MARK: - General settings
 
     public func setStartsAtLogin(_ on: Bool) async {
-        guard let services, services.isSystemIntegrationEnabled else { return }
+        guard let services, services.isSystemIntegrationEnabled, mayChangeSystem() else { return }
         if on && ownsDaemon {
             // The LaunchAgent takes over from the daemon this app launched.
             _ = await Task.detached { try? services.stopDaemon() }.value
@@ -395,7 +422,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func restorePreviousSetup() async {
-        guard let services, services.isSystemIntegrationEnabled else { return }
+        guard let services, services.isSystemIntegrationEnabled, mayChangeSystem() else { return }
         let result = await Task.detached { Result { try services.restorePreviousSetup() } }.value
         switch result {
         case .success(let lines):
@@ -415,7 +442,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func addToTerminal() async {
-        guard let services, services.isSystemIntegrationEnabled else { return }
+        guard let services, services.isSystemIntegrationEnabled, mayChangeSystem() else { return }
         let result = await Task.detached { Result { try services.configureShell() } }.value
         if case .failure(let error) = result {
             lastError = Self.describe(error)

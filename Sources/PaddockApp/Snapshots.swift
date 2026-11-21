@@ -128,6 +128,7 @@ enum Snapshots {
         func restorePreviousSetup() throws -> [String] { [] }
         func configureShell() throws {}
         func parkedFolders() -> [String] { parked }
+        func checkMayChangeSystem() throws {}
     }
 
     private struct SampleQuitter: ApplicationQuitter {

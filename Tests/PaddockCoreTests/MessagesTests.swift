@@ -213,8 +213,9 @@ final class MessagesTests: XCTestCase {
     }
 
     func testDevelopmentBuildAndSudoSentences() {
-        XCTAssertEqual(Messages.developmentBuild, "This is a development build of Paddock. To set up ports 80 and 443, "
-                       + "run the app from /Applications, or set PADDOCK_HOME to use a test folder.")
+        XCTAssertEqual(Messages.developmentBuild, "This is a development build of Paddock, so it won't change your "
+                       + "installed Paddock or this Mac's setup. Run the app from /Applications, or set PADDOCK_HOME "
+                       + "to use a test folder.")
         XCTAssertEqual(Messages.runningAsRoot,
                        "Don't run Paddock with sudo. Run it as yourself; it asks for your password when it needs it.")
     }

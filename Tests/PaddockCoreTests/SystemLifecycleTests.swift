@@ -299,8 +299,9 @@ final class SystemLifecycleTests: XCTestCase {
         let fake = runner()
         XCTAssertThrowsError(try bareLifecycle(fake, source: nil).startViaSystem(daemon: daemon) { self.engineStatus() }) {
             XCTAssertEqual($0 as? DaemonLaunchError, .developmentBuild)
-            XCTAssertEqual(($0 as? DaemonLaunchError)?.message(), "This is a development build of Paddock. To set up "
-                + "ports 80 and 443, run the app from /Applications, or set PADDOCK_HOME to use a test folder.")
+            XCTAssertEqual(($0 as? DaemonLaunchError)?.message(), "This is a development build of Paddock, so it "
+                + "won't change your installed Paddock or this Mac's setup. Run the app from /Applications, or set "
+                + "PADDOCK_HOME to use a test folder.")
         }
         XCTAssertEqual(fake.calls, [], "no agent, no prompt")
         XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
@@ -308,6 +309,108 @@ final class SystemLifecycleTests: XCTestCase {
             XCTAssertEqual($0 as? DaemonLaunchError, .developmentBuild)
         }
         XCTAssertEqual(fake.calls, [])
+    }
+
+    /// Every system-changing action of a development build on the real system is refused before it runs a
+    /// command or asks the daemon for anything: the agent, the daemon, the shell file, trust and setup.
+    func testADevelopmentBuildRefusesEverySystemChange() throws {
+        try placeEverything()
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        try "x".write(to: plist, atomically: true, encoding: .utf8)
+        try "# mine\n".write(to: rcFile, atomically: true, encoding: .utf8)
+        let fake = runner(trusted: true, loaded: true)
+        let client = FakeDaemon(running: true, status: status(version: PaddockBuild.number - 1, executable: daemon.path))
+        let dev = bareLifecycle(fake, source: nil, client: client)
+        let actions: [(String, () throws -> Void)] = [
+            ("check", { try dev.checkMayChangeSystem() }),
+            ("start", { _ = try dev.startViaSystem(daemon: self.daemon) { self.engineStatus() } }),
+            ("complete setup", { try dev.completeSetup() }),
+            ("stop", { _ = try dev.stopViaSystem() }),
+            ("start at login on", { try dev.setStartsAtLogin(true, daemon: self.daemon) }),
+            ("start at login off", { try dev.setStartsAtLogin(false, daemon: self.daemon) }),
+            ("uninstall", { _ = try dev.uninstall() }),
+            ("add to Terminal", { try dev.configureShell() }),
+            ("replace daemon", { _ = try dev.shouldReplaceDaemon(with: self.daemon) }),
+        ]
+        for (name, action) in actions {
+            XCTAssertThrowsError(try action(), name) { XCTAssertEqual($0 as? DaemonLaunchError, .developmentBuild, name) }
+        }
+        XCTAssertEqual(fake.calls, [], "no command at all")
+        XCTAssertEqual(client.requests, [], "the running daemon was not asked anything")
+        XCTAssertEqual(try String(contentsOf: plist, encoding: .utf8), "x", "the agent's plist is untouched")
+        XCTAssertEqual(try String(contentsOf: rcFile, encoding: .utf8), "# mine\n")
+        XCTAssertTrue(dev.isEnabled, "read-only answers still work")
+        _ = dev.startsAtLogin
+    }
+
+    func testADevelopmentHomeIsNotADevelopmentBuild() throws {
+        // PADDOCK_HOME set: nothing touches the system, so there is nothing to refuse.
+        let fake = runner()
+        let home = SystemLifecycle(
+            services: SystemServices(runner: fake, resolverFile: resolverFile, launchAgents: agents,
+                                     portHelperSource: nil, portHelperBinary: helperBinary,
+                                     portHelperPlist: helperPlist, userName: "someone"),
+            paths: paths, settings: Settings(), environment: ["PADDOCK_HOME": paths.home.path], userHome: dir,
+            daemonIsRunning: { true }, client: FakeDaemon(running: true), portHolders: { _ in [] })
+        XCTAssertNoThrow(try home.checkMayChangeSystem())
+        XCTAssertFalse(try home.stopViaSystem())
+        XCTAssertEqual(fake.calls, [])
+    }
+
+    // MARK: - Another copy's daemon
+
+    /// A daemon from another install (say a debug build answering on the real socket) is never restarted
+    /// by this one: the owner is told where it runs from instead.
+    func testADaemonFromAnotherInstallIsNotRestarted() throws {
+        try placeEverything()
+        _ = try start(lifecycle(runner())) // the agent for this daemon
+        let other = "/Users/me/Code/paddock/.build/debug/paddockd"
+        let elsewhere = FakeDaemon(running: true, status: status(version: PaddockBuild.number + 1, executable: other))
+        let fake = runner(loaded: true)
+        XCTAssertThrowsError(try start(lifecycle(fake, client: elsewhere))) {
+            XCTAssertEqual($0 as? DaemonLaunchError, .anotherCopyRunning(path: other))
+            XCTAssertEqual(($0 as? DaemonLaunchError)?.message(),
+                           "Another copy of Paddock is running from \(other). Quit it, or open that copy instead.")
+        }
+        let agentCalls = withoutPortsJob(fake.calls).map { $0.arguments.first ?? "" }
+        XCTAssertFalse(agentCalls.contains("bootout") || agentCalls.contains("bootstrap") || agentCalls.contains("kickstart"),
+                       "\(agentCalls)")
+        XCTAssertFalse(elsewhere.requests.contains(.shutdown))
+
+        // Inside another app bundle, the bundle is named.
+        let app = "/Users/me/Downloads/Paddock.app/Contents/MacOS/paddockd"
+        let bundled = FakeDaemon(running: true, status: status(version: PaddockBuild.number, executable: app))
+        XCTAssertThrowsError(try lifecycle(runner(loaded: true), client: bundled).shouldReplaceDaemon(with: daemon)) {
+            XCTAssertEqual($0 as? DaemonLaunchError, .anotherCopyRunning(path: "/Users/me/Downloads/Paddock.app"))
+        }
+        // An older build of the same install is still replaced; the same build is left alone.
+        let same = FakeDaemon(running: true, status: status(version: 0, executable: daemon.path))
+        XCTAssertTrue(try lifecycle(runner(), client: same).shouldReplaceDaemon(with: daemon))
+        let current = FakeDaemon(running: true, status: status(version: PaddockBuild.number, executable: daemon.path))
+        XCTAssertFalse(try lifecycle(runner(), client: current).shouldReplaceDaemon(with: daemon))
+        // Where it runs from unknown: not replaced either.
+        let unknown = FakeDaemon(running: true, status: status(version: 0, executable: nil))
+        XCTAssertThrowsError(try lifecycle(runner(), client: unknown).shouldReplaceDaemon(with: daemon)) {
+            XCTAssertEqual(($0 as? DaemonLaunchError)?.message(),
+                           "Another copy of Paddock is running. Quit it, or open that copy instead.")
+        }
+        XCTAssertFalse(try lifecycle(runner(), client: FakeDaemon(running: false)).shouldReplaceDaemon(with: daemon))
+    }
+
+    // MARK: - An unchanged agent
+
+    /// A loaded agent whose plist is current is never rewritten or reloaded while its daemon answers.
+    func testACurrentLoadedAgentIsNeitherRewrittenNorReloaded() throws {
+        try placeEverything()
+        _ = try start(lifecycle(runner()))
+        let old = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: plist.path)
+        let current = FakeDaemon(running: true, status: status(version: PaddockBuild.number, executable: daemon.path))
+        let fake = runner(loaded: true)
+        XCTAssertTrue(try start(lifecycle(fake, client: current)))
+        try lifecycle(fake, client: current).setStartsAtLogin(true, daemon: daemon)
+        XCTAssertEqual(withoutPortsJob(fake.calls).map(\.arguments), [["print", target], ["print", target]])
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: plist.path)[.modificationDate] as? Date, old)
     }
 
     func testRunningAsRootIsRefused() throws {

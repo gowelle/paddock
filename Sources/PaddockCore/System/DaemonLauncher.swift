@@ -20,6 +20,9 @@ public enum DaemonLaunchError: Error, Equatable {
     case developmentBuild
     /// Run as root (`sudo`).
     case runningAsRoot
+    /// The daemon answering belongs to another install of Paddock (at `path`, nil if unknown), so this
+    /// one leaves it alone.
+    case anotherCopyRunning(path: String?)
     case failed(String)
 
     /// The plain sentence for this failure. `retry` is how the reader tries again (e.g. `Run paddock start`).
@@ -40,6 +43,7 @@ public enum DaemonLaunchError: Error, Equatable {
         case .portsSetupFailed(let detail): return Messages.portsSetupFailed(detail)
         case .developmentBuild: return Messages.developmentBuild
         case .runningAsRoot: return Messages.runningAsRoot
+        case .anotherCopyRunning(let path): return Messages.anotherCopyRunning(path: path)
         case .failed(let message): return "Couldn't start Paddock: \(message)"
         }
     }
@@ -86,7 +90,7 @@ public struct DaemonLauncher: Sendable {
         if honouringLoginSetting && lifecycle.runsWithoutAgent {
             try Self.plainErrors(resolverPath: lifecycle.resolverPath) { try lifecycle.completeSetup() }
             if client.daemonIsRunning {
-                guard lifecycle.daemonIsOutdated(daemon: daemon) else { return .alreadyRunning }
+                guard try lifecycle.shouldReplaceDaemon(with: daemon) else { return .alreadyRunning }
                 _ = try? client.send(.shutdown, timeout: 60)
                 waitForDaemonToExit()
             }

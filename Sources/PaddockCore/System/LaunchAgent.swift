@@ -84,13 +84,15 @@ public struct LaunchAgent: Sendable {
         return daemon
     }
 
-    /// Writes the plist and loads it, replacing a loaded copy. launchd then runs the daemon at once.
-    /// A bootstrap right after a bootout can fail while launchd is still tearing the old job down, so a
-    /// failed bootstrap is tried once more after a short pause.
+    /// Writes the plist (unless it already says exactly this) and loads it, replacing a loaded copy.
+    /// launchd then runs the daemon at once. A bootstrap right after a bootout can fail while launchd is
+    /// still tearing the old job down, so a failed bootstrap is tried once more after a short pause.
     public func install(daemon: URL) throws {
         try FileManager.default.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: paths.log, withIntermediateDirectories: true)
-        try Data(plistContents(daemon: daemon).utf8).write(to: plist, options: .atomic)
+        if !isCurrent(daemon: daemon) {
+            try Data(plistContents(daemon: daemon).utf8).write(to: plist, options: .atomic)
+        }
         if isLoaded() { try unload() }
         do {
             try launchctl(["bootstrap", domain, plist.path])

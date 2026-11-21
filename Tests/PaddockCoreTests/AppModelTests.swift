@@ -65,8 +65,12 @@ private final class FakeServices: AppServices, @unchecked Sendable {
         restoreCalls += 1
         return restoreLines
     }
-    func configureShell() throws { isShellConfigured = true }
+    func configureShell() throws { configureCalls += 1; isShellConfigured = true }
     func parkedFolders() -> [String] { parked }
+    /// Set to refuse every system change, as a development build on the real system does.
+    var refusal: Error?
+    var configureCalls = 0
+    func checkMayChangeSystem() throws { if let refusal { throw refusal } }
 }
 
 /// Pretends the applications at `quittable` are running for this user. Never quits anything real.
@@ -668,5 +672,49 @@ final class AppModelTests: XCTestCase {
         await model.trustCertificate()
         XCTAssertEqual(client.requests.filter { $0 == .trust }.count, 1)
         XCTAssertNil(model.trustActionTitle)
+    }
+
+    // MARK: - A development build on the real system
+
+    /// Every action that would change the system or the installed Paddock is refused with the one
+    /// sentence, before anything is started, stopped, written or sent; status still shows.
+    func testADevelopmentBuildRefusesEverySystemChangeButStillShowsStatus() async {
+        let client = FakeClient { _ in .ok(sampleStatus(needsTrust: true)) }
+        let services = FakeServices()
+        services.refusal = DaemonLaunchError.developmentBuild
+        let model = AppModel(client: client, services: services)
+        await model.refresh()
+        XCTAssertNotNil(model.status, "status is read-only and still works")
+
+        let actions: [(String, () async -> Void)] = [
+            ("start", { await model.start() }),
+            ("finish setup", { await model.finishSetup() }),
+            ("stop", { await model.stop() }),
+            ("start at login", { await model.setStartsAtLogin(true) }),
+            ("stop at login", { await model.setStartsAtLogin(false) }),
+            ("restore", { await model.restorePreviousSetup() }),
+            ("add to Terminal", { await model.addToTerminal() }),
+            ("trust certificate", { await model.trustCertificate() }),
+            ("secure", { await model.perform(.secure(site: "blog")) }),
+            ("restart", { await model.perform(.restart) }),
+        ]
+        for (name, action) in actions {
+            model.lastError = nil
+            await action()
+            XCTAssertEqual(model.lastError, Messages.developmentBuild, name)
+        }
+        XCTAssertEqual(services.startCalls, 0)
+        XCTAssertEqual(services.stopCalls, 0)
+        XCTAssertEqual(services.loginSettings, [])
+        XCTAssertEqual(services.restoreCalls, 0)
+        XCTAssertEqual(services.configureCalls, 0)
+        XCTAssertTrue(client.requests.allSatisfy { $0 == .status }, "only status was ever sent: \(client.requests)")
+
+        // First launch with no daemon answering: the start is refused too.
+        client.handler = { _ in throw ClientError.daemonNotRunning }
+        model.lastError = nil
+        await model.launch()
+        XCTAssertEqual(model.lastError, Messages.developmentBuild)
+        XCTAssertEqual(services.startCalls, 0)
     }
 }

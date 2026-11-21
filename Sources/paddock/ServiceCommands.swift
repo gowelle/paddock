@@ -30,6 +30,8 @@ struct Stop: ParsableCommand {
         let outcome: DaemonLauncher.StopOutcome
         do { outcome = try CLI.launcher.stop() } catch DaemonLaunchError.failed(let message) {
             throw CLI.failure(message)
+        } catch let error as DaemonLaunchError {
+            throw CLI.failure(error.message())
         } catch {
             throw CLI.failure("Couldn't stop Paddock: \(error)")
         }
@@ -74,6 +76,7 @@ struct Restart: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Restart Paddock.")
 
     func run() throws {
+        try CLI.checkMayChangeSystem()
         switch try CLI.sendRaw(.restart) {
         case .ok:
             print("Paddock restarted.")

@@ -81,6 +81,8 @@ struct Secure: ParsableCommand {
     @Argument(help: "The site (default: the site containing the current directory).") var site: String?
 
     func run() throws {
+        // Securing also makes macOS trust Paddock's certificate.
+        try CLI.checkMayChangeSystem()
         let target = try CLI.site(named: site, in: try CLI.send(.status, timeout: 30))
         switch try CLI.sendRaw(.secure(site: target.name)) {
         case .ok(let status):
@@ -130,6 +132,7 @@ struct Trust: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Make macOS trust Paddock's certificate for HTTPS sites.")
 
     func run() throws {
+        try CLI.checkMayChangeSystem()
         switch try CLI.sendRaw(.trust) {
         case .ok:
             print(Messages.trusted)

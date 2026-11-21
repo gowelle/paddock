@@ -114,7 +114,6 @@ public struct SystemLifecycle: Sendable {
     public func startViaSystem(daemon: URL?, startEngine: () throws -> EngineStatus) throws -> Bool {
         guard isEnabled else { return false }
         try checkMayChangeSystem()
-        guard portHelper != nil else { throw DaemonLaunchError.developmentBuild }
         let agent = agent
         var installedAgent = false
         // The plist is current if it runs this daemon (or, with none of our own, any daemon still there).
@@ -123,8 +122,8 @@ public struct SystemLifecycle: Sendable {
             // launchd doesn't restart a daemon that exited cleanly (KeepAlive SuccessfulExit false).
             if !daemonIsRunning() {
                 try agent.kickstart()
-            } else if daemonIsOutdated(daemon: daemon) {
-                if let daemon { try agent.install(daemon: daemon) } else { try agent.restart() }
+            } else if let daemon, try shouldReplaceDaemon(with: daemon) {
+                try agent.install(daemon: daemon)
             }
         } else if let daemon {
             try agent.install(daemon: daemon)
@@ -156,16 +155,48 @@ public struct SystemLifecycle: Sendable {
     }
 
     /// True when the daemon answering is another build than this one (its status reports another
-    /// `PaddockBuild.number`, or another program than `daemon`), so it should be restarted.
+    /// `PaddockBuild.number`, or another program than `daemon`).
     public func daemonIsOutdated(daemon: URL?) -> Bool {
         guard case .ok(let status)? = try? client.send(.status, timeout: 10) else { return false }
+        return Self.isOutdated(status, daemon: daemon)
+    }
+
+    private static func isOutdated(_ status: EngineStatus, daemon: URL?) -> Bool {
         if status.version != PaddockBuild.number { return true }
         guard let daemon, let running = status.executablePath else { return false }
         return running != daemon.resolvingSymlinksInPath().path
     }
 
-    private func checkMayChangeSystem() throws {
+    /// Whether the daemon answering should be replaced by `daemon`: true only for another build of this
+    /// same install (the same `.app`, or the same folder outside one). A daemon running from anywhere else
+    /// (another copy of Paddock, a debug build) or from an unknown place is never touched:
+    /// `DaemonLaunchError.anotherCopyRunning` says where it runs from instead. False when none answers.
+    public func shouldReplaceDaemon(with daemon: URL?) throws -> Bool {
+        try checkMayChangeSystem()
+        guard case .ok(let status)? = try? client.send(.status, timeout: 10),
+              Self.isOutdated(status, daemon: daemon) else { return false }
+        guard let running = status.executablePath else { throw DaemonLaunchError.anotherCopyRunning(path: nil) }
+        guard let daemon, Self.installLocation(of: running) == Self.installLocation(of: daemon.resolvingSymlinksInPath().path) else {
+            // Named by its app if it is in one, else by its program.
+            throw DaemonLaunchError.anotherCopyRunning(path: PortHolder.enclosingApp(ofExecutable: running)?.path ?? running)
+        }
+        return true
+    }
+
+    /// The install a program belongs to: its outermost `.app`, else the folder it is in.
+    static func installLocation(of executable: String) -> String {
+        PortHolder.enclosingApp(ofExecutable: executable)?.path
+            ?? URL(fileURLWithPath: executable).deletingLastPathComponent().standardizedFileURL.path
+    }
+
+    /// The one gate for every action that changes the owner's system or installed Paddock (the LaunchAgent,
+    /// the running daemon, the resolver, the port helper, trust, the shell file): on the real system it
+    /// refuses `sudo` and a development build (a program outside Paddock.app, or a `bin/` copy not tied to
+    /// one), before any command runs. A development home (PADDOCK_HOME set) changes nothing, so passes.
+    public func checkMayChangeSystem() throws {
+        guard isEnabled else { return }
         if effectiveUID == 0 { throw DaemonLaunchError.runningAsRoot }
+        if services.portHelperSource == nil { throw DaemonLaunchError.developmentBuild }
     }
 
     /// The one privileged call of `startViaSystem` and `completeSetup`, if anything needs it.
@@ -205,6 +236,7 @@ public struct SystemLifecycle: Sendable {
     /// (which stops the daemon). Does nothing for a development home.
     public func setStartsAtLogin(_ on: Bool, daemon: URL) throws {
         guard isEnabled else { return }
+        try checkMayChangeSystem()
         let agent = agent
         if on {
             if !(agent.isCurrent(daemon: daemon) && agent.isLoaded()) { try agent.install(daemon: daemon) }
@@ -218,7 +250,15 @@ public struct SystemLifecycle: Sendable {
     /// helper's launchd entry stays: ports 80 and 443 remain reserved for Paddock until uninstall.
     public func stopViaSystem() throws -> Bool {
         guard isEnabled else { return false }
+        try checkMayChangeSystem()
         return try agent.stop()
+    }
+
+    /// Adds Paddock's `bin` to PATH in `~/.zshrc`. Does nothing for a development home.
+    public func configureShell() throws {
+        guard isEnabled else { return }
+        try checkMayChangeSystem()
+        try ShellPath.configure(rcFile: rcFile)
     }
 
     /// Reverses `startViaSystem`, trust and the PATH line, leaving the owner's sites and Paddock's data

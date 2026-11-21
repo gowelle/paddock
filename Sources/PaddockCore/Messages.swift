@@ -121,9 +121,17 @@ public enum Messages {
             + "like a resolver file, so \(path) was left as it is."
     }
 
-    /// The running program isn't inside Paddock.app (a repository or debug build) on the real system.
-    public static let developmentBuild = "This is a development build of Paddock. To set up ports 80 and 443, "
-        + "run the app from /Applications, or set PADDOCK_HOME to use a test folder."
+    /// The running program isn't inside Paddock.app (a repository or debug build) on the real system, so
+    /// it changes nothing there: not the LaunchAgent, the daemon, setup, trust or the shell file.
+    public static let developmentBuild = "This is a development build of Paddock, so it won't change your "
+        + "installed Paddock or this Mac's setup. Run the app from /Applications, or set PADDOCK_HOME to use "
+        + "a test folder."
+
+    /// The daemon answering runs from another install of Paddock, so this one doesn't restart it.
+    public static func anotherCopyRunning(path: String?) -> String {
+        "Another copy of Paddock is running" + (path.map { " from \($0)" } ?? "")
+            + ". Quit it, or open that copy instead."
+    }
 
     /// `sudo paddock …` on the real system.
     public static let runningAsRoot =

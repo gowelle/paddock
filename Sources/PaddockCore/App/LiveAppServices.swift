@@ -38,8 +38,11 @@ public struct LiveAppServices: AppServices {
     }
 
     public func configureShell() throws {
-        guard lifecycle.isEnabled else { return }
-        try ShellPath.configure()
+        try lifecycle.configureShell()
+    }
+
+    public func checkMayChangeSystem() throws {
+        try lifecycle.checkMayChangeSystem()
     }
 
     public func parkedFolders() -> [String] {
