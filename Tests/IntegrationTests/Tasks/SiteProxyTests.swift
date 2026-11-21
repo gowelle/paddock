@@ -26,8 +26,8 @@ final class SiteProxyTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeEngine() async throws -> Engine {
-        let engine = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.02,
+    private func makeEngine(backoffScale: TimeInterval = 0.02) async throws -> Engine {
+        let engine = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: backoffScale,
                             managesPortHelper: true, portHelper: TestSupport.portHelper,
                             portHolders: TestSupport.portHoldersWithoutProbes,
                             serviceSetup: ServiceSetup(catalog: ServiceCatalog(recipes: [])),
@@ -245,9 +245,10 @@ final class SiteProxyTests: XCTestCase {
             return false
         }, "its tasks run")
         engine.failRouteReloadsForTesting = nil
-        engine.tasks.refresh()
-        XCTAssertTrue(waitFor(15) { engine.status().sites.first { $0.name == "shop" }?.tasks?.routes == ["/app": port] },
-                      "applied at the next refresh")
+        XCTAssertTrue(waitFor(15) {
+            engine.tasks.refresh()
+            return engine.status().sites.first { $0.name == "shop" }?.tasks?.routes == ["/app": port]
+        }, "applied at a refresh once its backoff has passed")
         XCTAssertTrue(try fetch("shop.test", "/app/x", https: false).body.hasPrefix("echo /app/x"))
     }
 
@@ -270,5 +271,110 @@ final class SiteProxyTests: XCTestCase {
         }
         XCTAssertFalse(try fetch("shop.test", "/app/x", https: false).body.contains("echo"))
         XCTAssertTrue(home.logLines.contains { $0.contains("unrecognized directive") })
+    }
+
+    // MARK: - Minors wave
+
+    /// A failing apply isn't retried at every refresh: only when the routes wanted change, after a growing
+    /// backoff, or when asked (approving again). Its reason is logged once, and once more when it clears.
+    func testAFailingApplyBacksOffAndLogsOnce() async throws {
+        let port = TestSupport.freeTCPPort(excluding: [home.settings.httpPort, home.settings.httpsPort])
+        try home.makeSite("shop", tasks: #"{"tasks": {"a": {"run": "exec sleep 600"}}, "proxy": {"/app": \#(port)}}"#)
+        let engine = try await makeEngine(backoffScale: 1)
+        engine.failRouteReloadsForTesting = "Caddy said no"
+        try await approve(engine, "shop")
+        let afterApprove = engine.routeReloads
+        for _ in 0..<5 { engine.tasks.refresh() }
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertEqual(engine.routeReloads, afterApprove, "no retry at every refresh: it waits its backoff (30 s here)")
+        try home.writeTasks("shop", #"{"tasks": {"a": {"run": "exec sleep 600"}}, "proxy": {"/app": \#(port), "/b": \#(port)}}"#)
+        try await approve(engine, "shop")
+        XCTAssertEqual(engine.routeReloads, afterApprove + 1, "the routes wanted changed (and approving retries)")
+        XCTAssertEqual(home.logLines.filter { $0.contains("could not apply") }.count, 1, "the same reason, logged once")
+        engine.failRouteReloadsForTesting = nil
+        // `paddock tasks on` again (the file as it is, already approved): retried at once.
+        let folder = home.sites.appendingPathComponent("shop")
+        guard case .file(_, let hash) = SiteTasksFile.load(siteFolder: folder) else { return XCTFail("file") }
+        guard case .ok = await engine.handle(.tasksApprove(site: "shop", hash: hash)) else { return XCTFail("approve") }
+        XCTAssertEqual(engine.status().sites.first { $0.name == "shop" }?.tasks?.routes, ["/app": port, "/b": port])
+        XCTAssertEqual(home.logLines.filter { $0.contains("forwarding applied again") }.count, 1)
+    }
+
+    /// With the web server down, an apply isn't a failure to report: it is applied once the server is back.
+    func testAnApplyWithTheWebServerDownWaitsForIt() async throws {
+        let port = TestSupport.freeTCPPort(excluding: [home.settings.httpPort, home.settings.httpsPort])
+        try home.makeSite("shop", tasks: #"{"proxy": {"/app": \#(port)}}"#)
+        let engine = try await makeEngine()
+        engine.webServerDownForTesting = true
+        try await approve(engine, "shop")
+        let shop = try XCTUnwrap(engine.status().sites.first { $0.name == "shop" }?.tasks)
+        XCTAssertEqual(shop.routes, [:], "not applied")
+        XCTAssertNil(shop.notice, "and no notice: the web server shows its own state")
+        engine.webServerDownForTesting = false
+        engine.tasks.refresh()
+        XCTAssertTrue(waitFor(10) { engine.status().sites.first { $0.name == "shop" }?.tasks?.routes == ["/app": port] })
+    }
+
+    /// An apply that passed its shutdown check never reloads once shutdown has taken over.
+    func testAnApplyNeverReloadsAfterShutdown() async throws {
+        let port = TestSupport.freeTCPPort(excluding: [home.settings.httpPort, home.settings.httpsPort])
+        try home.makeSite("shop", tasks: #"{"proxy": {"/app": \#(port)}}"#)
+        let engine = try await makeEngine()
+        engine.beforeRoutesReloadForTesting = { [weak engine] in
+            engine?.markShuttingDown()
+            engine?.shutdown()
+        }
+        let reloads = engine.routeReloads
+        try? await approve(engine, "shop")
+        XCTAssertEqual(engine.routeReloads, reloads, "no reload after shutdown")
+        XCTAssertFalse(engine.status().running)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(home.leftoverProcesses(), [], "nothing was started again")
+    }
+
+    /// When an apply fails, sites whose routes Caddy serves unchanged still show them; only the site whose routes
+    /// differ is noted. A withdrawal whose reload fails says forwarding is still active.
+    func testAFailedApplyNotesOnlyTheSitesItConcerns() async throws {
+        let port = TestSupport.freeTCPPort(excluding: [home.settings.httpPort, home.settings.httpsPort])
+        echo = try EchoServer(port: port)
+        try home.makeSite("shop", tasks: #"{"proxy": {"/app": \#(port)}}"#)
+        try home.makeSite("blog", tasks: #"{"proxy": {"/b": \#(port)}}"#)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        engine.failRouteReloadsForTesting = "Caddy said no"
+        try await approve(engine, "blog")
+        let shop = try XCTUnwrap(engine.status().sites.first { $0.name == "shop" }?.tasks)
+        let blog = try XCTUnwrap(engine.status().sites.first { $0.name == "blog" }?.tasks)
+        XCTAssertEqual(shop.routes, ["/app": port], "served unchanged: in effect")
+        XCTAssertNil(shop.notice)
+        XCTAssertEqual(blog.routes, [:])
+        XCTAssertTrue(blog.notice?.contains("Paddock couldn't apply this site's forwarding: Caddy said no") ?? false)
+
+        guard case .ok(let revoked) = await engine.handle(.tasksRevoke(site: "shop")) else { return XCTFail("revoke") }
+        let still = try XCTUnwrap(revoked.sites.first { $0.name == "shop" }?.tasks)
+        XCTAssertTrue(still.notice?.contains(Messages.forwardingStillActive("Caddy said no")) ?? false,
+                      still.notice ?? "no notice")
+        XCTAssertEqual(still.routes, ["/app": port], "still served, truthfully")
+        XCTAssertTrue(try fetch("shop.test", "/app/x", https: false).body.hasPrefix("echo /app/x"), "it is still active")
+        engine.stop()
+        XCTAssertNil(engine.status().sites.first { $0.name == "blog" }?.tasks?.notice, "a stopped web side owes no notice")
+    }
+
+    /// The validation fallback when caddy validate can't be run or doesn't answer in time: no routes, and the site
+    /// says why.
+    func testValidationThatCantRunOrTimesOutServesNoRoutes() async throws {
+        let port = TestSupport.freeTCPPort(excluding: [home.settings.httpPort, home.settings.httpsPort])
+        try home.makeSite("shop", tasks: #"{"proxy": {"/app": \#(port)}}"#)
+        let engine = try await makeEngine()
+        engine.validationRunnerForTesting = { _ in throw POSIXError(.ENOENT) }
+        try await approve(engine, "shop")
+        var shop = try XCTUnwrap(engine.status().sites.first { $0.name == "shop" }?.tasks)
+        XCTAssertEqual(shop.routes, [:])
+        XCTAssertTrue(shop.notice?.contains("Paddock couldn't run caddy validate") ?? false, shop.notice ?? "no notice")
+        engine.validationRunnerForTesting = { _ in ServiceStepRunner.Outcome(end: .timedOut, output: "", pid: 0) }
+        guard case .ok = await engine.handle(.tasksRevoke(site: "shop")) else { return XCTFail() }
+        try await approve(engine, "shop")
+        shop = try XCTUnwrap(engine.status().sites.first { $0.name == "shop" }?.tasks)
+        XCTAssertTrue(shop.notice?.contains("caddy validate took longer than 15 seconds") ?? false, shop.notice ?? "no notice")
     }
 }

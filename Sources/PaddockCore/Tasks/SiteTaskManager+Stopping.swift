@@ -101,17 +101,17 @@ extension SiteTaskManager {
     /// The live members of the recorded group, sorted: those provably left from that run (`ours`, the only ones
     /// `restart --force` ever signals), the others with why not, and whether anything holds the task back.
     func sortLeftovers(of record: ServiceProcessRecord, in folder: String) -> Leftovers {
-        let members = (ServiceProcessRecord.members(ofGroup: record.pgid) ?? []).filter { $0 > 1 }.sorted()
+        let source = processes
+        let members = (source.members(record.pgid) ?? []).filter { $0 > 1 }.sorted()
         let paddocks = supervisedPids().union(supervisor.runningPids).union([getpid()])
         let boot = ServiceProcessRecord.currentBoot()
         var sorted = Leftovers()
         for pid in members {
-            var info = proc_bsdinfo()
-            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, getpgid(pid) == record.pgid else { continue }
-            let facts = LeftoverFacts(pid: pid, uid: info.pbi_uid, startSeconds: Int64(info.pbi_start_tvsec),
-                                      startMicroseconds: Int64(info.pbi_start_tvusec),
-                                      directory: inspector.workingDirectory(pid).flatMap(SiteTasksFile.realPath))
+            // kinfo_proc: unlike proc_pidinfo, it answers for another user's process too.
+            guard let known = source.facts(pid), known.pgid == record.pgid else { continue }
+            let facts = LeftoverFacts(pid: pid, uid: known.uid, startSeconds: known.startSeconds,
+                                      startMicroseconds: known.startMicroseconds,
+                                      directory: source.directory(pid).flatMap(SiteTasksFile.realPath))
             let (reason, holds) = Self.classifyLeftover(facts, record: record, folder: folder, currentBoot: boot,
                                                         me: getuid(), paddock: paddocks)
             if let reason { sorted.others.append((pid, reason)) } else { sorted.ours.append(pid) }
@@ -121,10 +121,10 @@ extension SiteTaskManager {
     }
 
     /// Who one member of a task's recorded group is. Not from that run, never holding the task: anything Paddock
-    /// runs, anything from another boot, anything started before the record. Then, in the site's folder: this
-    /// user's is provably left from that run (nil: it may be stopped); another user's (a sudo child, say) holds the
-    /// task but is never signalled. Outside the folder: this user's may be from that run and holds the task;
-    /// another user's doesn't.
+    /// runs, anything from another boot, anything started before the record. Another user's (a sudo child, say)
+    /// may be from that run: it holds the task wherever it works (its folder may not even be readable) and is
+    /// never signalled. This user's in the site's folder is provably left from that run (nil: it may be stopped);
+    /// outside the folder it may be from that run, and holds the task.
     static func classifyLeftover(_ facts: LeftoverFacts, record: ServiceProcessRecord, folder: String,
                                  currentBoot: Int64?, me: uid_t, paddock: Set<Int32>) -> (reason: LeftoverReason?, holds: Bool) {
         if paddock.contains(facts.pid) { return (.runByPaddock, false) }
@@ -132,8 +132,8 @@ extension SiteTaskManager {
         guard (facts.startSeconds, facts.startMicroseconds) >= (record.startSeconds, record.startMicroseconds) else {
             return (.startedEarlier, false)
         }
+        guard facts.uid == me else { return (.anotherUser, true) }
         let inFolder = facts.directory.map { $0 == folder || $0.hasPrefix(folder + "/") } ?? false
-        guard facts.uid == me else { return (.anotherUser, inFolder) }
         guard inFolder else { return (.notInSiteFolder, true) }
         return (nil, true)
     }
@@ -181,12 +181,14 @@ extension SiteTaskManager {
         let record = launched[process] == nil && unchanged ? current : nil
         if let record {
             stopped = sortLeftovers(of: record, in: folder).ours
-            for pid in stopped { kill(pid, SIGKILL) }
+            for pid in stopped { _ = processes.signal(pid, SIGKILL) }
         }
         operationLock.unlock()
         if let record {
             let end = Date().addingTimeInterval(5)
-            while stopped.contains(where: { kill($0, 0) == 0 }) && Date() < end { Thread.sleep(forTimeInterval: 0.05) }
+            while stopped.contains(where: { processes.signal($0, 0) == 0 }) && Date() < end {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
             let after = sortLeftovers(of: record, in: folder)
             left = after.others
             holding = after.holds

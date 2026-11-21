@@ -138,7 +138,8 @@ final class TaskMessagesTests: XCTestCase {
                        + "90 (run by Paddock).")
         XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [], left: [(5, .anotherUser), (6, .anotherBoot)]),
                        "Found no processes left from an earlier run of queue that are provably that task's. "
-                       + "Left 2: 5 (another user's), 6 (the record is from another boot).")
+                       + "Left 2: 5 (another user's process; Paddock can't inspect or stop it), "
+                       + "6 (the record is from another boot).")
         XCTAssertEqual(Messages.taskError(.alreadyRunning(site: "shop", task: "queue", pid: 7)),
                        "queue is already running (pid 7), not started by this Paddock. Stop that process first.")
         XCTAssertEqual(Messages.taskError(.notLaravel(site: "shop")),

@@ -130,10 +130,6 @@ final class TaskApprovalTests: XCTestCase {
         XCTAssertEqual(evaluation.refusedPaths, ["/app/"])
         XCTAssertEqual(Messages.forwardingPathNoLongerAccepted("/app/"),
                        "A forwarding path in the approved file is no longer accepted: /app/. Edit paddock.json and approve again.")
-        var state = State(parked: [])
-        state.taskApprovals["shop"] = approval
-        let site = Site(name: "shop", path: path, kind: .linked, secured: false, php: PHPVersion("8.4")!, pinned: false)
-        _ = site
         XCTAssertEqual(TaskApproval.usableRoutes(stored.proxy, reservedPorts: []), ["/ws": 6001], "only that route goes")
     }
 
@@ -155,10 +151,21 @@ final class TaskApprovalTests: XCTestCase {
         XCTAssert(classify(directory: "/s/shop/sub") == (nil, true))
         XCTAssert(classify(directory: "/elsewhere") == (.notInSiteFolder, true), "may be from that run: holds")
         XCTAssert(classify(uid: 0) == (.anotherUser, true), "another user's, in the folder: holds, never stopped")
-        XCTAssert(classify(uid: 0, directory: "/elsewhere") == (.anotherUser, false))
+        XCTAssert(classify(uid: 0, directory: "/elsewhere") == (.anotherUser, true), "wherever it works")
+        XCTAssert(classify(uid: 0, directory: nil) == (.anotherUser, true), "even when its folder can't be read")
+        XCTAssert(classify(uid: 0, start: 999) == (.startedEarlier, false), "not from that run")
         XCTAssert(classify(start: 999) == (.startedEarlier, false))
         XCTAssert(classify(pid: 300) == (.runByPaddock, false))
         XCTAssert(classify(boot: 51) == (.anotherBoot, false))
+    }
+
+    /// What macOS says of any process, another user's included (`kinfo_proc`): read-only, for pid 1 (launchd).
+    func testProcessFactsWorkAcrossUsers() throws {
+        let launchd = try XCTUnwrap(ProcessFacts.of(pid: 1))
+        XCTAssertEqual(launchd.uid, 0)
+        XCTAssertEqual(launchd.pgid, 1)
+        XCTAssertGreaterThan(launchd.startSeconds, 0)
+        XCTAssertNil(ProcessFacts.of(pid: 0x7FFF_FFF0), "no such process")
     }
 
     // MARK: - Commands that can be shown

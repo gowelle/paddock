@@ -600,7 +600,7 @@ public enum Messages {
         switch reason {
         case .notInSiteFolder: return "not in the site's folder"
         case .startedEarlier: return "started before the task's record"
-        case .anotherUser: return "another user's"
+        case .anotherUser: return "another user's process; Paddock can't inspect or stop it"
         case .anotherBoot: return "the record is from another boot"
         case .runByPaddock: return "run by Paddock"
         }
@@ -725,6 +725,12 @@ public enum Messages {
 
     public static func routeOnPaddocksPort(prefix: String, port: Int) -> String {
         "The route \(prefix) isn't used: port \(port) is Paddock's own."
+    }
+
+    /// A withdrawal (or other change) whose reload failed: what Caddy serves still forwards.
+    public static func forwardingStillActive(_ reason: String) -> String {
+        "Forwarding for this site is still active until Paddock can reload the web server: "
+            + "\(printable(reason, limit: 200) ?? "it refused the change")"
     }
 
     public static func proxyRoutesNotApplied(_ reason: String) -> String {

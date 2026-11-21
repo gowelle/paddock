@@ -155,22 +155,69 @@ public final class Engine: @unchecked Sendable {
     /// The PHP install or service add in progress, if any; shutting down cancels it. Guarded by `flagsLock`.
     private var installInProgress: Task<Void, Error>?
     /// Why the sites' proxy routes couldn't be applied, and which sites have routes (guarded by `flagsLock`).
-    private var proxyProblem: (reason: String, sites: Set<String>)?
-    /// The routes Caddy serves now (`flagsLock`).
+    /// Sites' routes as Caddy serves them now, and as they should be (`flagsLock`).
     private var appliedRoutes: [String: [String: Int]] = [:]
+    private var wantedRoutes: [String: [String: Int]] = [:]
+    /// The last apply that failed (or a config refused), until one succeeds (`flagsLock`).
+    private var routeFailure: RouteFailure?
+    private var lastLoggedRouteFailure: String?
     /// What the last written Caddyfile has (`flagsLock`).
-    private var rendered: (routes: [String: [String: Int]], refusal: (reason: String, sites: Set<String>)?) = ([:], nil)
+    private var rendered: (routes: [String: [String: Int]], refusal: String?) = ([:], nil)
     /// Whether a routes apply is queued (`flagsLock`).
     private var routesApplyQueued = false
     /// Applies sites' routes one at a time, off every lock but the engine's own.
     let routesQueue = DispatchQueue(label: "app.paddock.routes")
-    static let validationTimeout: TimeInterval = 15
+    /// Multiplies the backoff between retries of a failing apply (tests shorten it).
+    private let routeRetryScale: TimeInterval
+    private var testing = RouteTesting()
+
+    private struct RouteFailure {
+        var reason: String
+        /// The routes it tried to apply.
+        var wanted: [String: [String: Int]]
+        var attempts: Int
+        var at: Date
+        var retryAt: Date
+    }
+
+    /// Test-only knobs, behind `flagsLock` like everything the routes queue reads.
+    private struct RouteTesting {
+        var reloads = 0
+        var failReloads: String?
+        var validationOverride: (@Sendable (String) -> String?)?
+        var validationRunner: (@Sendable (String) throws -> ServiceStepRunner.Outcome)?
+        var webServerDown = false
+        var beforeReload: (@Sendable () -> Void)?
+    }
+
     /// How many times the web side was reloaded for sites' routes (tests).
-    private(set) var routeReloads = 0
+    var routeReloads: Int { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.reloads }
     /// Tests: make a routes reload fail with this message.
-    var failRouteReloadsForTesting: String?
+    var failRouteReloadsForTesting: String? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.failReloads }
+        set { flagsLock.lock(); testing.failReloads = newValue; flagsLock.unlock() }
+    }
     /// Tests: what `caddy validate` says (nil: valid) instead of running it.
-    var validationOverrideForTesting: (@Sendable (String) -> String?)?
+    var validationOverrideForTesting: (@Sendable (String) -> String?)? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.validationOverride }
+        set { flagsLock.lock(); testing.validationOverride = newValue; flagsLock.unlock() }
+    }
+    /// Tests: runs `caddy validate` (given the config file's path) instead of the bundled caddy.
+    var validationRunnerForTesting: (@Sendable (String) throws -> ServiceStepRunner.Outcome)? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.validationRunner }
+        set { flagsLock.lock(); testing.validationRunner = newValue; flagsLock.unlock() }
+    }
+    /// Tests: the web server counts as down for an apply.
+    var webServerDownForTesting: Bool {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.webServerDown }
+        set { flagsLock.lock(); testing.webServerDown = newValue; flagsLock.unlock() }
+    }
+    /// Tests: called in an apply right before it reloads.
+    var beforeRoutesReloadForTesting: (@Sendable () -> Void)? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.beforeReload }
+        set { flagsLock.lock(); testing.beforeReload = newValue; flagsLock.unlock() }
+    }
+    static let validationTimeout: TimeInterval = 15
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
     /// Versions whose build update failed in this daemon: not tried (or logged) again. `operationLock`.
@@ -211,6 +258,7 @@ public final class Engine: @unchecked Sendable {
          taskShutdownGrace: TimeInterval = SiteTaskManager.shutdownGraceCap,
          log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
+        routeRetryScale = backoffScale
         self.managesPortHelper = managesPortHelper
         self.portHelper = portHelper
         self.portHelperInstalled = portHelperInstalled
@@ -246,7 +294,7 @@ public final class Engine: @unchecked Sendable {
             supervisedPids: { [supervisor, services] in supervisor.runningPids.union(services.supervisor.runningPids) },
             reservedPorts: { [settings] in [settings.httpPort, settings.httpsPort, settings.dnsPort] },
             log: log)
-        tasks.routesMayHaveChanged = { [weak self] in self?.routesMayHaveChanged() }
+        tasks.routesMayHaveChanged = { [weak self] wanted in self?.routesMayHaveChanged(wanted) }
     }
 
     deinit { shutdown() }
@@ -399,6 +447,25 @@ public final class Engine: @unchecked Sendable {
     public func reload() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try reloadLocked()
+    }
+
+    /// For sites' routes: reloads unless the daemon is shutting down or the web server isn't serving, both checked
+    /// under the engine's lock (so it never runs after `shutdown` took over). False when it didn't reload.
+    private func reloadForRoutes() throws -> Bool {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard !isShuttingDown, flags.running, !caddyCrashed, !webServerDownForTesting else { return false }
+        flagsLock.lock()
+        testing.reloads += 1
+        let failure = testing.failReloads
+        flagsLock.unlock()
+        if let failure { throw EngineError.caddyReloadFailed(output: failure) }
+        try reloadLocked()
+        return true
+    }
+
+    private func reloadLocked() throws {
         try paths.ensureDirectories()
         let state = try prepareState(updatingBuilds: false)
         try writeConfigs(state)
@@ -430,14 +497,12 @@ public final class Engine: @unchecked Sendable {
         } ?? []).map { site in
             var site = site
             // Routes show only as Caddy serves them; ones that couldn't be applied are noted instead.
-            let applied = appliedRoutes(site: site.name)
+            let (routes, problem) = routesStatus(site: site.name)
             site.tasks = taskStatuses[site.name].map { tasks in
-                let problem = proxyNotice(site: site.name)
-                return SiteTasksStatus(approval: tasks.approval, tasks: tasks.tasks, pending: tasks.pending,
-                                       pendingHash: tasks.pendingHash,
-                                       notice: [tasks.notice, problem].compactMap { $0 }.joined(separator: " ")
-                                           .nonEmpty,
-                                       routes: problem == nil ? applied : [:])
+                SiteTasksStatus(approval: tasks.approval, tasks: tasks.tasks, pending: tasks.pending,
+                                pendingHash: tasks.pendingHash,
+                                notice: [tasks.notice, problem].compactMap { $0 }.joined(separator: " ").nonEmpty,
+                                routes: routes)
             }
             return site
         }
@@ -511,35 +576,28 @@ public final class Engine: @unchecked Sendable {
                                     namesAuthority: namesCertificateAuthority, proxies: proxies)
         // Sites' proxy routes are checked before they are used: a config Caddy would refuse (or that can't be
         // checked) never replaces the one it serves; the sites are served without any routes, and say why.
-        renderedRoutes = proxies
-        renderRefusal = nil
-        if !proxies.isEmpty, let refusal = validationProblem(text) {
-            log("proxy routes not applied: \(refusal)")
-            renderRefusal = (refusal, Set(proxies.keys))
-            renderedRoutes = [:]
+        var refusal: String?
+        if !proxies.isEmpty, let problem = validationProblem(text) {
+            refusal = problem
             text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
                                     namesAuthority: namesCertificateAuthority)
         }
+        flagsLock.lock()
+        rendered = (refusal == nil ? proxies : [:], refusal)
+        wantedRoutes = proxies
+        flagsLock.unlock()
         try Data(text.utf8).write(to: paths.caddyfile, options: .atomic)
     }
 
-    /// The routes the last written Caddyfile has, and why routes were left out of it (`operationLock`).
-    private var renderedRoutes: [String: [String: Int]] {
-        get { flagsLock.lock(); defer { flagsLock.unlock() }; return rendered.routes }
-        set { flagsLock.lock(); rendered.routes = newValue; flagsLock.unlock() }
-    }
-
-    private var renderRefusal: (reason: String, sites: Set<String>)? {
-        get { flagsLock.lock(); defer { flagsLock.unlock() }; return rendered.refusal }
-        set { flagsLock.lock(); rendered.refusal = newValue; flagsLock.unlock() }
-    }
-
-    /// The config just written is now what Caddy serves: its routes are in effect.
+    /// The config just written is now what Caddy serves: its routes are in effect. A config written without its
+    /// routes (refused by caddy validate) counts as a failed apply.
     private func commitRoutes() {
         flagsLock.lock()
         appliedRoutes = rendered.routes
-        proxyProblem = rendered.refusal
+        let refusal = rendered.refusal
+        let wanted = wantedRoutes
         flagsLock.unlock()
+        if let refusal { recordRouteFailure(refusal, wanted: wanted) } else { routesApplied() }
     }
 
     /// Ports of Paddock's own (its web ports and the DNS responder's): never a proxy route's target.
@@ -547,7 +605,7 @@ public final class Engine: @unchecked Sendable {
 
     /// What `caddy validate` says about a config it refuses (nil when it accepts it, or can't be run).
     private func validationProblem(_ text: String) -> String? {
-        if let validationOverrideForTesting { return validationOverrideForTesting(text) }
+        if let override = validationOverrideForTesting { return override(text) }
         let file = paths.config.appendingPathComponent("Caddyfile.check")
         defer { try? FileManager.default.removeItem(at: file) }
         guard (try? Data(text.utf8).write(to: file, options: .atomic)) != nil else {
@@ -555,10 +613,12 @@ public final class Engine: @unchecked Sendable {
         }
         let outcome: ServiceStepRunner.Outcome
         do {
-            outcome = try ServiceStepRunner.run(
-                executable: caddyBinary.path, arguments: ["validate", "--config", file.path, "--adapter", "caddyfile"],
-                environment: ProcessInfo.processInfo.environment.merging(caddyEnvironment) { $1 }, directory: paths.home,
-                stdin: nil, timeout: Self.validationTimeout, isCancelled: { false })
+            if let runner = validationRunnerForTesting { outcome = try runner(file.path) } else {
+                outcome = try ServiceStepRunner.run(
+                    executable: caddyBinary.path, arguments: ["validate", "--config", file.path, "--adapter", "caddyfile"],
+                    environment: ProcessInfo.processInfo.environment.merging(caddyEnvironment) { $1 }, directory: paths.home,
+                    stdin: nil, timeout: Self.validationTimeout, isCancelled: { false })
+            }
         } catch {
             return "Paddock couldn't run caddy validate"
         }
@@ -704,8 +764,11 @@ public final class Engine: @unchecked Sendable {
     }
 
     private func stopLocked() {
+        // Nothing is served, so nothing is in effect, and no failure to apply is owed a notice.
         flagsLock.lock()
         appliedRoutes = [:]
+        routeFailure = nil
+        lastLoggedRouteFailure = nil
         flagsLock.unlock()
         supervisor.stopAll()
         fpmVersions = []
@@ -737,24 +800,6 @@ public final class Engine: @unchecked Sendable {
         if let dnsRunning { dnsUp = dnsRunning }
     }
 
-    private func appliedRoutes(site: String) -> [String: Int] {
-        flagsLock.lock()
-        defer { flagsLock.unlock() }
-        return appliedRoutes[site] ?? [:]
-    }
-
-    func countRouteReload() {
-        flagsLock.lock()
-        routeReloads += 1
-        flagsLock.unlock()
-    }
-
-    private func setProxyProblem(_ reason: String?, sites: Set<String>) {
-        flagsLock.lock()
-        proxyProblem = reason.map { ($0, sites) }
-        flagsLock.unlock()
-    }
-
     /// The routes that should be in effect now: served sites' intact approvals for their very folders.
     func desiredRoutes() -> [String: [String: Int]] {
         let state = store.load()
@@ -763,14 +808,15 @@ public final class Engine: @unchecked Sendable {
         return TaskApproval.routes(state: state, sites: sites, reservedPorts: reservedPorts)
     }
 
-    /// After every refresh of the sites' tasks (never from a read-only request): if the routes that should be in
-    /// effect differ from those Caddy serves (or the last apply failed), apply them soon, once for a burst, off
-    /// the manager's locks. Nothing once shutting down, nor while the web side is stopped.
-    func routesMayHaveChanged() {
-        guard !isShuttingDown, flags.running else { return }
-        let desired = desiredRoutes()
+    /// Told after every refresh of the sites' tasks (never from a read-only request), with the routes the manager
+    /// worked out: if they differ from those Caddy serves, an apply is queued, once for a burst, on `routesQueue`.
+    /// After a failed apply, only when the routes wanted change or its backoff has passed. Only compares here:
+    /// it is called under the manager's lock.
+    func routesMayHaveChanged(_ wanted: [String: [String: Int]]) {
         flagsLock.lock()
-        let needed = (desired != appliedRoutes || proxyProblem != nil) && !routesApplyQueued
+        wantedRoutes = wanted
+        let backingOff = routeFailure.map { $0.wanted == wanted && Date() < $0.retryAt } ?? false
+        let needed = wanted != appliedRoutes && !backingOff && !routesApplyQueued && !shuttingDown && isRunning
         if needed { routesApplyQueued = true }
         flagsLock.unlock()
         guard needed else { return }
@@ -779,38 +825,75 @@ public final class Engine: @unchecked Sendable {
             self.flagsLock.lock()
             self.routesApplyQueued = false
             self.flagsLock.unlock()
-            self.applyRoutesIfChanged()
+            self.applyRoutesIfChanged(forced: false)
         }
     }
 
-    /// Applies the routes that should be in effect if they differ from those served (or the last apply failed):
-    /// regenerate and reload. A failure is logged and noted on each site with routes (shown as not in effect),
-    /// and tried again at the next refresh. On `routesQueue`.
-    func applyRoutesIfChanged() {
-        guard !isShuttingDown, flags.running else { return }
+    /// Applies the routes that should be in effect (read afresh) if they differ from those served: regenerate and
+    /// reload. On `routesQueue`. Unless `forced` (approving or withdrawing: retry now, but not twice for one
+    /// request, `since`), a failed apply waits for its backoff or for the routes wanted to change. With the web
+    /// server down it doesn't count as a failure: `start` writes and serves the routes when it is back.
+    func applyRoutesIfChanged(forced: Bool, since: Date = .distantPast) {
+        guard !isShuttingDown else { return }
         let desired = desiredRoutes()
         flagsLock.lock()
-        let needed = desired != appliedRoutes || proxyProblem != nil
+        wantedRoutes = desired
+        let failure = routeFailure
+        let upToDate = desired == appliedRoutes && failure == nil
+        let down = !isRunning || testing.webServerDown
+        let hook = testing.beforeReload
         flagsLock.unlock()
-        guard needed else { return }
-        countRouteReload()
+        if upToDate || down || caddyCrashed { return }
+        if let failure, failure.wanted == desired {
+            if forced ? failure.at >= since : Date() < failure.retryAt { return }
+        }
+        hook?()
         do {
-            if let failure = failRouteReloadsForTesting { throw EngineError.caddyReloadFailed(output: failure) }
-            try reload()
+            _ = try reloadForRoutes()
         } catch {
             let reason: String
             if case EngineError.caddyReloadFailed(let output) = error { reason = output } else { reason = "\(error)" }
-            log("could not apply sites' forwarding: \(reason)")
-            setProxyProblem(Messages.printable(reason, limit: 200) ?? "the web server refused it", sites: Set(desired.keys))
+            recordRouteFailure(Messages.printable(reason, limit: 200) ?? "the web server refused it", wanted: desired)
         }
     }
 
-    /// The site notice for routes Paddock couldn't apply, if any.
-    func proxyNotice(site: String) -> String? {
+    /// A failed apply: retried when the routes wanted change, or after 30 s, 1 min, 2 min… up to 10 min. Logged
+    /// once per reason.
+    private func recordRouteFailure(_ reason: String, wanted: [String: [String: Int]]) {
+        let now = Date()
+        flagsLock.lock()
+        let attempts = routeFailure.map { $0.wanted == wanted ? $0.attempts + 1 : 1 } ?? 1
+        let delay = min(30 * pow(2, Double(attempts - 1)), 600) * routeRetryScale
+        routeFailure = RouteFailure(reason: reason, wanted: wanted, attempts: attempts, at: now,
+                                    retryAt: now.addingTimeInterval(delay))
+        let logIt = lastLoggedRouteFailure != reason
+        lastLoggedRouteFailure = reason
+        flagsLock.unlock()
+        if logIt { log("could not apply sites' forwarding: \(reason)") }
+    }
+
+    /// The routes wanted are served: any failure is over (logged once, when it clears).
+    private func routesApplied() {
+        flagsLock.lock()
+        let cleared = routeFailure != nil
+        routeFailure = nil
+        lastLoggedRouteFailure = nil
+        flagsLock.unlock()
+        if cleared { log("sites' forwarding applied again") }
+    }
+
+    /// A site's routes and notice as clients see them: served routes that are what the site should have are in
+    /// effect; a site whose routes differ while an apply has failed is noted (forwarding still active for a site
+    /// that should have none, or not applied).
+    func routesStatus(site: String) -> (routes: [String: Int], notice: String?) {
         flagsLock.lock()
         defer { flagsLock.unlock() }
-        guard let proxyProblem, proxyProblem.sites.contains(site) else { return nil }
-        return Messages.proxyRoutesNotApplied(proxyProblem.reason)
+        let applied = appliedRoutes[site] ?? [:]
+        let wanted = wantedRoutes[site] ?? [:]
+        if applied == wanted { return (applied, nil) }
+        guard let routeFailure else { return (wanted.isEmpty ? applied : [:], nil) }
+        if wanted.isEmpty { return (applied, Messages.forwardingStillActive(routeFailure.reason)) }
+        return ([:], Messages.proxyRoutesNotApplied(routeFailure.reason))
     }
 
     /// Set once the daemon begins to exit; from then on every request that changes anything is refused.

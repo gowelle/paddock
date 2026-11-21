@@ -49,8 +49,14 @@ public final class SiteTaskManager: @unchecked Sendable {
     let timeScale: TimeInterval
     /// Every process Paddock supervises elsewhere (the web stack, services): never a task's leftover.
     let supervisedPids: @Sendable () -> Set<Int32>
+    /// Where leftover checks learn about processes (tests present their own).
+    var processes: ProcessSource {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return processSource }
+        set { stateLock.lock(); processSource = newValue; stateLock.unlock() }
+    }
+    private var processSource = ProcessSource.live
     /// Told after every refresh, so the web side can follow the sites' routes (the engine sets it).
-    var routesMayHaveChanged: (@Sendable () -> Void)?
+    var routesMayHaveChanged: (@Sendable ([String: [String: Int]]) -> Void)?
     /// Called (tests) in a forced restart between the end of the task's stop and the pass over leftovers.
     var beforeForcePassForTesting: (@Sendable () -> Void)?
     /// Paddock's own ports: never a proxy route's target.
@@ -420,7 +426,17 @@ public final class SiteTaskManager: @unchecked Sendable {
         stateLock.unlock()
         syncWatchers(views)
         reconcileLocked(views: views)
-        routesMayHaveChanged?()
+        // The routes in effect follow from the views just worked out: the engine only compares them.
+        if let routesMayHaveChanged {
+            let reserved = reservedPorts()
+            var routes: [String: [String: Int]] = [:]
+            for view in views.values {
+                guard let running = view.evaluation.running else { continue }
+                let usable = TaskApproval.usableRoutes(running.proxy, reservedPorts: reserved)
+                if !usable.isEmpty { routes[view.name] = usable }
+            }
+            routesMayHaveChanged(routes)
+        }
     }
 
     /// The file's last reading, read again only when its stamp changed.

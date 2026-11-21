@@ -790,6 +790,46 @@ final class SiteTasksTests: XCTestCase {
         XCTAssertEqual(tasks.routes, [:])
     }
 
+    /// Another user's process left in the task's group (a sudo child, say) can't be inspected by this user:
+    /// Paddock still sees it through `kinfo_proc`, it holds the task, `restart --force` reports it, and it is never
+    /// signalled. (The group and the process are presented through the manager's process source.)
+    func testAnotherUsersLeftoverHoldsTheTaskAndIsNeverSignalled() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let boot = try XCTUnwrap(ServiceProcessRecord.currentBoot())
+        let leader: Int32 = 0x7FFF_FF00, child: Int32 = 0x7FFF_FF01
+        let record = ServiceProcessRecord(pid: leader, pgid: leader, startSeconds: Int64(Date().timeIntervalSince1970) - 60,
+                                          startMicroseconds: 0, executable: "/bin/sh", bootSeconds: boot)
+        let file = home.paths.taskRun(site: "shop", task: "queue").appendingPathComponent("pid")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try record.write(to: file)
+        let signalled = LockedBox<[Int32]>([])
+        let engine = try await makeEngine()
+        engine.tasks.processes = ProcessSource(
+            members: { pgid in pgid == leader ? [child] : ServiceProcessRecord.members(ofGroup: pgid) },
+            facts: { pid in
+                pid == child ? ProcessFacts(pid: child, uid: 0, pgid: leader,
+                                            startSeconds: Int64(Date().timeIntervalSince1970) - 30, startMicroseconds: 0)
+                    : ProcessFacts.of(pid: pid)
+            },
+            directory: { pid in pid == child ? nil : ServiceProcessInspector.live.workingDirectory(pid) },
+            signal: { pid, signal in
+                if pid == child || pid == leader { signalled.value = signalled.value + [pid]; return 0 }
+                return kill(pid, signal)
+            })
+        _ = folder
+        try await approve(engine, "shop")
+        XCTAssertEqual(state(engine, "shop", "queue"), .leftFromEarlierRun, "it holds the task")
+        guard case .ok(let forced) = await engine.handle(.taskForceRestart(site: "shop", task: "queue")) else {
+            return XCTFail("force")
+        }
+        let shop = forced.sites.first { $0.name == "shop" }?.tasks?.tasks.first
+        XCTAssertEqual(shop?.state, .leftFromEarlierRun, "still held")
+        XCTAssertTrue(shop?.warning?.contains("\(child) (another user's process; Paddock can't inspect or stop it)") ?? false,
+                      shop?.warning ?? "no warning")
+        XCTAssertEqual(signalled.value, [], "never signalled")
+        XCTAssertTrue(engine.tasks.supervisor.names.isEmpty, "no second copy")
+    }
+
     // MARK: - The daemon
 
     func testTasksComeBackAfterADaemonRestart() throws {

@@ -273,18 +273,21 @@ final class RestartOnChangeTests: XCTestCase {
         XCTAssertEqual(home.leftoverProcesses(), [], "nothing of the site runs")
     }
 
-    /// A folder renamed into place (`mv app.new app`) restarts the task.
+    /// A folder renamed into place restarts the task, the rename being the only event: the folder and its
+    /// files exist from before the launch, the debounce and rate limit are waited out, then one `mv`.
     func testAFolderRenamedIntoPlaceRestarts() async throws {
         let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)
-        try touch(folder, "app/Foo.php")
         try touch(folder, "app.new/Foo.php")
+        try await pause(1.2)
         let engine = await makeEngine()
         try await approve(engine, "shop")
         let first = try XCTUnwrap(running(engine, "shop", "queue"))
-        try await pause(1.5)
-        try FileManager.default.moveItem(at: folder.appendingPathComponent("app"), to: folder.appendingPathComponent("app.old"))
-        XCTAssertEqual(rename(folder.appendingPathComponent("app.new").path, folder.appendingPathComponent("app").path), 0)
+        try await pause(3)
+        XCTAssertEqual(starts("shop", "queue"), 1, "nothing before the rename restarts it")
+        XCTAssertEqual(rename(folder.appendingPathComponent("app.new").path, folder.appendingPathComponent("app2").path), 0)
         XCTAssertNotNil(running(engine, "shop", "queue", otherThan: first))
+        try await pause(3)
+        XCTAssertEqual(starts("shop", "queue"), 2, "one restart")
     }
 
     /// A site whose folder goes away loses its watcher with its tasks.
