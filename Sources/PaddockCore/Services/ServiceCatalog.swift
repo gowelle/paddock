@@ -9,12 +9,17 @@ public struct CatalogSeries: Codable, Equatable, Sendable {
     public let downloadBytes: Int?
     /// Whether adding it would download (false when installed already, or every file is on this Mac).
     public let needsDownload: Bool
+    /// Why this Mac can't run it (`PostgreSQL 18 needs macOS 15 or later.`), in the words an add would be refused
+    /// with; nil when it can (and from an older daemon).
+    public let unavailableReason: String?
 
-    public init(series: String, version: String, downloadBytes: Int?, needsDownload: Bool) {
+    public init(series: String, version: String, downloadBytes: Int?, needsDownload: Bool,
+                unavailableReason: String? = nil) {
         self.series = series
         self.version = version
         self.downloadBytes = downloadBytes
         self.needsDownload = needsDownload
+        self.unavailableReason = unavailableReason
     }
 }
 
@@ -29,18 +34,23 @@ public struct CatalogEntry: Codable, Equatable, Sendable {
     public let downloadBytes: Int?
     /// Its series, newest first.
     public var series: [CatalogSeries]
+    /// Why this Mac can't run its newest series; nil when it can (and from an older daemon).
+    public let unavailableReason: String?
 
     public init(kind: String, displayName: String, licence: String, versions: [String], downloadBytes: Int?,
-                series: [CatalogSeries] = []) {
+                series: [CatalogSeries] = [], unavailableReason: String? = nil) {
         self.kind = kind
         self.displayName = displayName
         self.licence = licence
         self.versions = versions
         self.downloadBytes = downloadBytes
         self.series = series
+        self.unavailableReason = unavailableReason
     }
 
-    private enum CodingKeys: String, CodingKey { case kind, displayName, licence, versions, downloadBytes, series }
+    private enum CodingKeys: String, CodingKey {
+        case kind, displayName, licence, versions, downloadBytes, series, unavailableReason
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -50,6 +60,7 @@ public struct CatalogEntry: Codable, Equatable, Sendable {
         versions = try c.decodeIfPresent([String].self, forKey: .versions) ?? []
         downloadBytes = try c.decodeIfPresent(Int.self, forKey: .downloadBytes)
         series = try c.decodeIfPresent([CatalogSeries].self, forKey: .series) ?? []
+        unavailableReason = try? c.decodeIfPresent(String.self, forKey: .unavailableReason)
     }
 
     /// The series `typed` names: a series (`18`), a version of one (`18.1`), or the newest when nil.
@@ -152,7 +163,8 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
     /// `downloadBytes` is what adding a recipe downloads (every asset's size, unless the caller knows some
     /// are on this Mac already).
     public func kinds(needsDownload: (ServiceRecipe) -> Bool = { !$0.assets.isEmpty },
-                      downloadBytes: (ServiceRecipe) -> Int? = { ServiceCatalog.downloadBytes($0.assets) }) -> [CatalogEntry] {
+                      downloadBytes: (ServiceRecipe) -> Int? = { ServiceCatalog.downloadBytes($0.assets) },
+                      unavailableReason: (ServiceRecipe) -> String? = { _ in nil }) -> [CatalogEntry] {
         var seen: [String] = []
         for recipe in recipes where !seen.contains(recipe.kind) { seen.append(recipe.kind) }
         return seen.sorted().compactMap { kind in
@@ -161,11 +173,12 @@ public struct ServiceCatalog: Codable, Equatable, Sendable {
             var series: [CatalogSeries] = []
             for recipe in versions where !series.contains(where: { $0.series == recipe.series }) {
                 series.append(CatalogSeries(series: recipe.series, version: recipe.version,
-                                            downloadBytes: downloadBytes(recipe), needsDownload: needsDownload(recipe)))
+                                            downloadBytes: downloadBytes(recipe), needsDownload: needsDownload(recipe),
+                                            unavailableReason: unavailableReason(recipe)))
             }
             return CatalogEntry(kind: kind, displayName: newest.displayName, licence: newest.licence,
                                 versions: versions.map(\.version), downloadBytes: downloadBytes(newest),
-                                series: series)
+                                series: series, unavailableReason: unavailableReason(newest))
         }
     }
 

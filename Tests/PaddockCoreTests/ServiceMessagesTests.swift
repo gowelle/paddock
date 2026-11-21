@@ -87,6 +87,22 @@ final class ServiceMessagesTests: XCTestCase {
             """)
     }
 
+    /// A series this Mac can't run is listed with the reason, after the table.
+    func testCatalogTableSaysWhatCantRunHere() {
+        let reason = "PostgreSQL 18 needs macOS 15 or later."
+        XCTAssertEqual(Messages.catalogTable([
+            CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18.1"],
+                         downloadBytes: nil, series: [CatalogSeries(series: "18", version: "18.1", downloadBytes: nil,
+                                                                    needsDownload: true, unavailableReason: reason)],
+                         unavailableReason: reason),
+        ]), """
+            KIND      SERVICE     SERIES  LICENCE     DOWNLOAD
+            postgres  PostgreSQL  18      PostgreSQL  ?
+
+            PostgreSQL 18 needs macOS 15 or later.
+            """)
+    }
+
     func testPortHolderIsNamedAndSanitised() {
         XCTAssertEqual(Messages.portHolder([PortHolder(port: 1, pid: 5, command: "nc", ownedByCurrentUser: true)]),
                        "nc (pid 5)")

@@ -58,6 +58,7 @@ final class IPCTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 7, "serviceCreateDatabase is new: the build number moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 8, "ServiceStatus.notes is new: the build number moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 15, "serviceEnv is new and status leaves secrets out")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 16, "catalog entries say why they can't run here")
     }
 
     // MARK: - What a development build may send
@@ -157,6 +158,11 @@ final class IPCTests: XCTestCase {
             .removed(dataPath: "/h/services/mail/data", status: sampleStatus()),
             .databaseCreated(database: "shop", alreadyExisted: true, status: sampleStatus()),
             .envLines(["MEILISEARCH_HOST=http://127.0.0.1:7700", "MEILISEARCH_KEY=s3cr3t"]),
+            .catalog([CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18.7.0"],
+                                   downloadBytes: nil,
+                                   series: [CatalogSeries(series: "18", version: "18.7.0", downloadBytes: nil,
+                                                          needsDownload: true, unavailableReason: "PostgreSQL 18 needs macOS 15 or later.")],
+                                   unavailableReason: "PostgreSQL 18 needs macOS 15 or later.")]),
         ]
         for response in responses {
             let data = try JSONEncoder().encode(response)
@@ -421,4 +427,15 @@ final class Locked<T>: @unchecked Sendable {
     init(_ value: T) { stored = value }
     var value: T { lock.lock(); defer { lock.unlock() }; return stored }
     func withValue(_ body: (inout T) -> Void) { lock.lock(); body(&stored); lock.unlock() }
+}
+
+extension IPCTests {
+    /// A catalog from an older daemon has no reasons: everything reads as available.
+    func testCatalogWithoutReasonsReadsAsAvailable() throws {
+        let json = #"[{"kind":"mail","displayName":"Mail","licence":"MIT","versions":["1.34.0"],"#
+            + #""series":[{"series":"1","version":"1.34.0","needsDownload":true}]}]"#
+        let entries = try JSONDecoder().decode([CatalogEntry].self, from: Data(json.utf8))
+        XCTAssertNil(entries[0].unavailableReason)
+        XCTAssertNil(entries[0].series[0].unavailableReason)
+    }
 }

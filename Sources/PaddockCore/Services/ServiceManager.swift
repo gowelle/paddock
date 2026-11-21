@@ -1318,13 +1318,19 @@ public final class ServiceManager: @unchecked Sendable {
         instances().map(status(of:))
     }
 
-    /// The catalog as clients see it, saying which series would download when added.
+    /// The catalog as clients see it, saying which series would download when added and which this Mac can't
+    /// run (in the words `add` would refuse with).
     public func catalogEntries() -> [CatalogEntry] {
         catalog.kinds(needsDownload: { [installer] recipe in
             !recipe.assets.isEmpty && !installer.isInstalled(recipe) && !installer.canInstallLocally(recipe)
         }, downloadBytes: { [installer] recipe in
             // Only what would be fetched: not an asset that is a file on this Mac (Paddock's own builds).
             ServiceCatalog.downloadBytes(recipe.assets.filter { !installer.isLocal($0) })
+        }, unavailableReason: { recipe in
+            guard let minimum = recipe.minimumMacOS, !self.runsOn(minimum: minimum) else { return nil }
+            let name = ServiceInstance.newIdentity(kind: recipe.kind, series: recipe.series, displayName: recipe.displayName,
+                                                   seriesInID: recipe.seriesInID, existing: []).name
+            return Messages.serviceError(.needsNewerMacOS(name: name, minimum: minimum))
         })
     }
 

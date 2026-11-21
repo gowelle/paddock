@@ -443,13 +443,18 @@ public enum Messages {
     }
 
     /// Columns: kind, name, series (newest first), licence, the newest series' download size (`none` for a
-    /// service that downloads nothing).
+    /// service that downloads nothing); then, after a blank line, why a series can't run on this Mac.
     public static func catalogTable(_ entries: [CatalogEntry]) -> String {
-        table([["KIND", "SERVICE", "SERIES", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
+        var reasons: [String] = []
+        for reason in entries.flatMap({ $0.series.compactMap(\.unavailableReason) }) where !reasons.contains(reason) {
+            reasons.append(reason)
+        }
+        let rows = table([["KIND", "SERVICE", "SERIES", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
             let bytes = entry.series.first.map(\.downloadBytes) ?? entry.downloadBytes
             return [entry.kind, entry.displayName, entry.series.map(\.series).joined(separator: ", "), entry.licence,
                     bytes.map { $0 == 0 ? "none" : "\(max(1, Int((Double($0) / 1_000_000).rounded()))) MB" } ?? "?"]
         })
+        return reasons.isEmpty ? rows : rows + "\n\n" + reasons.joined(separator: "\n")
     }
 
     /// Left-aligned columns two spaces apart; the last column is not padded.
