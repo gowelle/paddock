@@ -46,4 +46,25 @@ final class BundledResourcesTests: XCTestCase {
         XCTAssertEqual(resolve(env: ["PADDOCK_RESOURCES": ""]), "/repo/Vendor")
         XCTAssertEqual(resolve(executableDirectory: nil), "/repo/Vendor")
     }
+
+    func testHelperExecutableInsideAnAppFindsTheAppsResources() throws {
+        // paddockd and paddock run from Paddock.app/Contents/MacOS as plain executables, whose main
+        // bundle may be their own directory rather than the .app.
+        let macOS = URL(fileURLWithPath: "/Applications/Paddock.app/Contents/MacOS", isDirectory: true)
+        XCTAssertEqual(resolve(bundle: macOS.path, executableDirectory: macOS),
+                       "/Applications/Paddock.app/Contents/Resources")
+        XCTAssertEqual(resolve(env: ["PADDOCK_RESOURCES": "/override"], bundle: macOS.path, executableDirectory: macOS),
+                       "/override")
+    }
+
+    func testOnlyAnAppsContentsMacOSCountsAsAnApp() throws {
+        XCTAssertNil(Bundled.enclosingApp(ofExecutableIn: URL(fileURLWithPath: "/x/Paddock/Contents/MacOS")))
+        XCTAssertNil(Bundled.enclosingApp(ofExecutableIn: URL(fileURLWithPath: "/x/Paddock.app/Contents/bin")))
+        XCTAssertNil(Bundled.enclosingApp(ofExecutableIn: URL(fileURLWithPath: "/x/Paddock.app/MacOS")))
+        XCTAssertEqual(Bundled.enclosingApp(ofExecutableIn: URL(fileURLWithPath: "/x/P.app/Contents/MacOS/"))?.path,
+                       "/x/P.app")
+        // The copy in bin/ still uses its recorded path.
+        try writeRecord("/recorded")
+        XCTAssertEqual(resolve(), "/recorded")
+    }
 }

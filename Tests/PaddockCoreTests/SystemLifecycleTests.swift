@@ -122,6 +122,40 @@ final class SystemLifecycleTests: XCTestCase {
 
     // MARK: - stop
 
+    // MARK: - start at login
+
+    func testStartsAtLoginFollowsTheAgentPlist() throws {
+        try writeResolver(desired)
+        let fake = runner()
+        XCTAssertFalse(lifecycle(fake).startsAtLogin)
+        XCTAssertTrue(lifecycle(fake).runsWithoutAgent)
+        try lifecycle(fake).setStartsAtLogin(true, daemon: daemon)
+        XCTAssertTrue(lifecycle(fake).startsAtLogin)
+        XCTAssertFalse(lifecycle(fake).runsWithoutAgent)
+        XCTAssertEqual(fake.calls.map(\.arguments), [["print", target], ["bootstrap", "gui/\(getuid())", plist.path]])
+
+        let off = runner(loaded: true)
+        try lifecycle(off).setStartsAtLogin(false, daemon: daemon)
+        XCTAssertEqual(off.calls.map(\.arguments), [["print", target], ["bootout", target]])
+        XCTAssertFalse(lifecycle(off).startsAtLogin)
+        XCTAssertTrue(lifecycle(off).runsWithoutAgent)
+    }
+
+    func testRunsWithoutAgentOnlyOnceTheResolverIsPaddocks() throws {
+        // First launch: nothing installed, so the normal start path (resolver + agent) applies.
+        XCTAssertFalse(lifecycle(runner()).runsWithoutAgent)
+    }
+
+    func testStartAtLoginIsOffAndUntouchableForADevelopmentHome() throws {
+        try writeResolver(desired)
+        let fake = runner()
+        try lifecycle(fake, enabled: false).setStartsAtLogin(true, daemon: daemon)
+        XCTAssertEqual(fake.calls, [])
+        XCTAssertFalse(lifecycle(fake, enabled: false).startsAtLogin)
+        XCTAssertFalse(lifecycle(fake, enabled: false).runsWithoutAgent)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
+    }
+
     func testEnabledStopBootsTheAgentOut() throws {
         let fake = runner(loaded: true)
         XCTAssertTrue(try lifecycle(fake).stopViaSystem())

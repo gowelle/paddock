@@ -10,6 +10,10 @@ Paddock command-line tool.
   Laravel Valet (router) MIT          https://github.com/laravel/valet
   swift-argument-parser  Apache-2.0   https://github.com/apple/swift-argument-parser
 
+The bundled PHP programs (php and php-fpm) are static builds made with
+static-php-cli; they contain the libraries and extensions listed in the
+section "Libraries inside the PHP builds" at the end of this file.
+
 Note on PHP: the PHP License text below is the one that ships with PHP 8.4
 and earlier; PHP 8.5 is distributed under the BSD 3-Clause form shown after it.
 
@@ -592,3 +596,182 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+
+
+================================================================================
+Libraries inside the PHP builds
+================================================================================
+
+The php and php-fpm programs Paddock bundles (PHP 8.5.8, built by
+static-php-cli 2.8.6, https://github.com/crazywhalecc/static-php-cli) and the
+other versions it downloads on request are static builds: the libraries and
+extensions below are compiled into those two programs. They run as separate
+programs; none of this code is linked into Paddock's own binaries. Versions
+are those the bundled build reports (php -i, php -m) where it reports one.
+Each component's licence text is at the URL given, and in that project's
+source distribution. Where a licence identifier is given as "A OR B", the
+component is offered under either.
+
+  Component                  Version     Licence (SPDX)                 Upstream
+  -------------------------  ----------  -----------------------------  ------------------------------------------
+  OpenSSL                    3.6.2       Apache-2.0                     https://www.openssl.org
+  curl (libcurl)             8.20.0      curl                           https://curl.se
+  zlib                       1.3.2       Zlib                           https://zlib.net
+  libxml2                    2.15.3      MIT                            https://gitlab.gnome.org/GNOME/libxml2
+  libxslt / libexslt         1.1.45      MIT                            https://gitlab.gnome.org/GNOME/libxslt
+  SQLite                     3.45.2      blessing (public domain)       https://sqlite.org
+  PCRE2                      10.44       BSD-3-Clause                   https://github.com/PCRE2Project/pcre2
+  Oniguruma                  6.9.10      BSD-2-Clause                   https://github.com/kkos/oniguruma
+  ICU                        77.1        Unicode-3.0                    https://icu.unicode.org
+  libsodium                  1.0.20      ISC                            https://libsodium.org
+  GMP                        6.3.0       LGPL-3.0-or-later OR GPL-2.0-or-later  https://gmplib.org
+  libiconv                   1.19        LGPL-2.1-or-later              https://www.gnu.org/software/libiconv
+  libidn2                    2.3.8       LGPL-3.0-or-later OR GPL-2.0-or-later  https://gitlab.com/libidn/libidn2
+  libunistring (with libidn2)            LGPL-3.0-or-later OR GPL-2.0-or-later  https://www.gnu.org/software/libunistring
+  bzip2                      1.0.8       bzip2-1.0.6                    https://sourceware.org/bzip2
+  xz (liblzma)                           0BSD                           https://tukaani.org/xz
+  Zstandard (zstd)                       BSD-3-Clause OR GPL-2.0-only   https://github.com/facebook/zstd
+  LZ4                                    BSD-2-Clause                   https://github.com/lz4/lz4
+  Brotli                     1.2.0       MIT                            https://github.com/google/brotli
+  nghttp2                                MIT                            https://nghttp2.org
+  ngtcp2 / nghttp3                       MIT                            https://github.com/ngtcp2
+  c-ares                     1.34.6      MIT                            https://c-ares.org
+  libssh2                    1.11.1      BSD-3-Clause                   https://libssh2.org
+  libzip                     1.11.4      BSD-3-Clause                   https://libzip.org
+  libevent                   2.1.12      BSD-3-Clause                   https://libevent.org
+  libedit (Editline)                     BSD-3-Clause                   https://thrysoee.dk/editline
+  ncurses                                X11-distribute-modifications-variant (MIT-style)  https://invisible-island.net/ncurses
+  PostgreSQL client (libpq)  18.3        PostgreSQL                     https://www.postgresql.org
+  OpenLDAP (libldap, liblber)            OLDAP-2.8                      https://www.openldap.org
+  UW IMAP c-client           2007f       Apache-2.0                     https://github.com/uw-imap/imap
+  QDBM                                   LGPL-2.1-or-later              https://dbmx.net/qdbm
+  lexbor                     2.7.0       Apache-2.0                     https://github.com/lexbor/lexbor
+  FreeType                   2.14.3      FTL OR GPL-2.0-or-later        https://freetype.org
+  libjpeg (IJG / libjpeg-turbo)  6b API  IJG AND BSD-3-Clause AND Zlib  https://libjpeg-turbo.org
+  libpng                     1.6.57      libpng-2.0                     http://www.libpng.org
+  libwebp                                BSD-3-Clause                   https://chromium.googlesource.com/webm/libwebp
+  libavif                                BSD-2-Clause                   https://github.com/AOMediaCodec/libavif
+  libaom (AV1 codec for libavif)         BSD-2-Clause (+ AOM patent licence)  https://aomedia.googlesource.com/aom
+  ImageMagick                7.1.2-21    ImageMagick                    https://imagemagick.org
+  libheif (ImageMagick)                  LGPL-3.0-or-later              https://github.com/strukturag/libheif
+  libde265 (with libheif)                LGPL-3.0-or-later              https://github.com/strukturag/libde265
+  libjxl (ImageMagick)                   BSD-3-Clause                   https://github.com/libjxl/libjxl
+  Highway (with libjxl)                  Apache-2.0 OR BSD-3-Clause     https://github.com/google/highway
+  LibTIFF (ImageMagick)                  libtiff                        https://libtiff.gitlab.io/libtiff
+  JBIG-KIT (ImageMagick)                 GPL-2.0-or-later               https://www.cl.cam.ac.uk/~mgk25/jbigkit
+  GD (bundled in PHP)        2.1.0-compat  GD                           https://libgd.github.io
+
+  PHP extensions from PECL and other projects compiled into the builds:
+  APCu                       5.1.28      PHP-3.01                       https://pecl.php.net/package/APCu
+  event                      3.1.4       PHP-3.01                       https://pecl.php.net/package/event
+  imagick                    3.8.1       PHP-3.01                       https://pecl.php.net/package/imagick
+  redis (phpredis)           6.3.0       PHP-3.01                       https://github.com/phpredis/phpredis
+  Swoole                     6.2.0       Apache-2.0                     https://github.com/swoole/swoole-src
+  protobuf                   5.34.1      BSD-3-Clause                   https://github.com/protocolbuffers/protobuf
+  OpenTelemetry              1.2.1       Apache-2.0                     https://github.com/open-telemetry/opentelemetry-php-instrumentation
+
+Library versions left blank are not reported by the build. The Apache
+License 2.0 text under "Caddy" above applies to the Apache-2.0 components
+here. Short licence texts for the most widely used of these libraries follow.
+The LGPL components (GMP, libiconv, libidn2, libunistring, QDBM, libheif,
+libde265) are unmodified upstream releases; their complete corresponding
+source is available from the upstream URLs above and from static-php-cli's
+source downloads for the build version named above.
+
+
+--------------------------------------------------------------------------------
+curl - curl licence
+--------------------------------------------------------------------------------
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright (c) 1996 - 2026, Daniel Stenberg, <daniel@haxx.se>, and many
+contributors, see the THANKS file.
+
+All rights reserved.
+
+Permission to use, copy, modify, and distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright
+notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall not
+be used in advertising or otherwise to promote the sale, use or other dealings
+in this Software without prior written authorization of the copyright holder.
+
+
+--------------------------------------------------------------------------------
+zlib - Zlib licence
+--------------------------------------------------------------------------------
+
+Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+
+--------------------------------------------------------------------------------
+libxml2 - MIT
+--------------------------------------------------------------------------------
+
+Copyright (C) 1998-2012 Daniel Veillard.  All Rights Reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is fur-
+nished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FIT-
+NESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
+--------------------------------------------------------------------------------
+SQLite - public domain
+--------------------------------------------------------------------------------
+
+The author disclaims copyright to this source code.  In place of
+a legal notice, here is a blessing:
+
+   May you do good and not evil.
+   May you find forgiveness for yourself and forgive others.
+   May you share freely, never taking more than you give.
+
+
+--------------------------------------------------------------------------------
+OpenSSL - Apache License 2.0
+--------------------------------------------------------------------------------
+
+OpenSSL 3 is licensed under the Apache License 2.0; the full text is under
+"Caddy" above. Copyright (c) 1998-2026 The OpenSSL Project Authors.
+Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson. All rights reserved.

@@ -13,6 +13,19 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var resolverInstalled: Bool
     /// True iff this engine can make macOS trust Paddock's certificate (it has a trust object).
     public var trustEnabled: Bool
+
+    public init(running: Bool, blockedBy: [PortHolder], sites: [Site], installedPHP: [PHPVersion],
+                defaultPHP: PHPVersion?, processes: [String: String], resolverInstalled: Bool,
+                trustEnabled: Bool) {
+        self.running = running
+        self.blockedBy = blockedBy
+        self.sites = sites
+        self.installedPHP = installedPHP
+        self.defaultPHP = defaultPHP
+        self.processes = processes
+        self.resolverInstalled = resolverInstalled
+        self.trustEnabled = trustEnabled
+    }
 }
 
 public enum EngineError: Error, Equatable {

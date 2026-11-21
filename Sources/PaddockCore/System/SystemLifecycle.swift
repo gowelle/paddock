@@ -74,6 +74,29 @@ public struct SystemLifecycle: Sendable {
         return true
     }
 
+    /// True when the LaunchAgent's plist is in place, so the daemon starts at login.
+    public var startsAtLogin: Bool {
+        isEnabled && FileManager.default.fileExists(atPath: agent.plist.path)
+    }
+
+    /// The owner turned start at login off after setup: the resolver is Paddock's but there is no
+    /// LaunchAgent. The app then runs the daemon itself, only while it is open.
+    public var runsWithoutAgent: Bool {
+        isEnabled && resolver.isInstalled() && !startsAtLogin
+    }
+
+    /// Installs and loads the LaunchAgent (which starts the daemon), or boots it out and deletes it
+    /// (which stops the daemon). Does nothing for a development home.
+    public func setStartsAtLogin(_ on: Bool, daemon: URL) throws {
+        guard isEnabled else { return }
+        let agent = agent
+        if on {
+            if !(agent.isCurrent(daemon: daemon) && agent.isLoaded()) { try agent.install(daemon: daemon) }
+        } else {
+            try agent.uninstall()
+        }
+    }
+
     /// Boots the LaunchAgent out; the daemon gets SIGTERM and shuts down cleanly. Returns false when
     /// there was nothing to boot out (a development home, or a daemon the agent doesn't own).
     public func stopViaSystem() throws -> Bool {

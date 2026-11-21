@@ -26,6 +26,7 @@ enum CLI {
     static var lifecycle: SystemLifecycle {
         SystemLifecycle(services: services, paths: paths, settings: Settings.current)
     }
+    static var launcher: DaemonLauncher { DaemonLauncher(lifecycle: lifecycle, paths: paths) }
     static var tld: String { Settings.current.tld }
     static var currentDirectory: String { FileManager.default.currentDirectoryPath }
 
@@ -46,9 +47,9 @@ enum CLI {
         } catch ClientError.daemonNotRunning {
             throw failure(Messages.daemonNotRunning)
         } catch ClientError.timedOut {
-            throw failure("Paddock didn't answer in time.")
+            throw failure(Messages.didNotAnswer)
         } catch {
-            throw failure("Paddock gave an unexpected answer: \(error)")
+            throw failure(Messages.unexpectedAnswer(error))
         }
     }
 

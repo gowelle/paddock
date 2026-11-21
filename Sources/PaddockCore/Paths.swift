@@ -75,7 +75,8 @@ public struct Bundled {
             .appendingPathComponent("Vendor", isDirectory: true)
     }
 
-    /// Lookup order: PADDOCK_RESOURCES, the enclosing .app, the path recorded in `.resources` next to
+    /// Lookup order: PADDOCK_RESOURCES, the enclosing .app (the main bundle, or an executable in
+    /// `<name>.app/Contents/MacOS/` such as `paddockd` and `paddock`), the path recorded in `.resources` next to
     /// the running executable (the copy in `bin/` records it), then `fallback` (the repo's Vendor/).
     static func resolveResources(environment: [String: String], bundleURL: URL,
                                  executableDirectory: URL?, resolvedExecutableDirectory: URL? = nil,
@@ -86,7 +87,11 @@ public struct Bundled {
         if bundleURL.pathExtension == "app" {
             return bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true)
         }
-        for directory in [executableDirectory, resolvedExecutableDirectory].compactMap({ $0 }) {
+        let directories = [executableDirectory, resolvedExecutableDirectory].compactMap { $0 }
+        if let app = directories.lazy.compactMap(enclosingApp(ofExecutableIn:)).first {
+            return app.appendingPathComponent("Contents/Resources", isDirectory: true)
+        }
+        for directory in directories {
             let record = directory.appendingPathComponent(".resources")
             if let text = try? String(contentsOf: record, encoding: .utf8) {
                 let path = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,5 +99,15 @@ public struct Bundled {
             }
         }
         return fallback
+    }
+
+    /// `/X/Paddock.app` for `/X/Paddock.app/Contents/MacOS`, else nil.
+    static func enclosingApp(ofExecutableIn directory: URL) -> URL? {
+        let macOS = directory.standardizedFileURL
+        let contents = macOS.deletingLastPathComponent()
+        let app = contents.deletingLastPathComponent()
+        guard macOS.lastPathComponent == "MacOS", contents.lastPathComponent == "Contents",
+              app.pathExtension == "app" else { return nil }
+        return app
     }
 }

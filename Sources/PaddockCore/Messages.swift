@@ -2,7 +2,14 @@ import Foundation
 
 /// The plain sentences Paddock's clients print. Pure functions, so they can be tested without a daemon.
 public enum Messages {
-    public static let daemonNotRunning = "Paddock isn't running. Start it with: paddock start"
+    public static let notRunning = "Paddock isn't running."
+    public static let daemonNotRunning = notRunning + " Start it with: paddock start"
+    public static let didNotAnswer = "Paddock didn't answer in time."
+
+    public static func unexpectedAnswer(_ error: Error) -> String {
+        "Paddock gave an unexpected answer: \(error)"
+    }
+
     public static let minimumPHP = "Paddock supports PHP 8.1 and later."
     public static let notASite =
         "This folder isn't a Paddock site. Run this inside a site folder, or link it first with: paddock link"
@@ -47,6 +54,11 @@ public enum Messages {
             if let pid = holder.pid { text += "\nStop it with: sudo kill \(pid)" }
         }
         return text
+    }
+
+    /// The menu bar's one-line form: `Can't start: port 80 in use by nginx`.
+    public static func cantStart(_ holder: PortHolder) -> String {
+        "Can't start: port \(holder.port) in use by \(holder.command ?? "another program")"
     }
 
     /// A site name as the user may have typed it: `My App`, `myapp.test` -> `my-app`, `myapp`.
