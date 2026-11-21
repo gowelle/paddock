@@ -27,16 +27,17 @@ do {
 
 // Trusting Caddy's CA changes the owner's keychain, so a daemon on a throwaway home never does it.
 let trustsCertificate = SystemIntegration.isEnabled(environment: ProcessInfo.processInfo.environment)
-// On the real system launchd's helper forwards ports 80/443; status reports whether it is installed and
-// current for this build (only reads files, never needs privileges).
-let portHelperSource = PortHelperLocator.binary()
+// On the real system launchd's helper forwards ports 80/443. Status reports it working only when this
+// build's files are installed, launchd has the job loaded and 127.0.0.1 accepts a connection on the HTTP
+// port; worked out off the request path and kept for a few seconds, so `status` never waits for it.
+let portHelperCheck: CachedCheck? = trustsCertificate ? CachedCheck { [paths, settings] in
+    guard let source = PortHelperLocator.bundledBinary() else { return false }
+    return PortHelper(source: source, user: NSUserName(), paths: paths, runner: SystemCommandRunner())
+        .isServing(port: settings.httpPort)
+} : nil
 let engine = Engine(paths: paths, settings: settings,
                     trust: trustsCertificate ? CertificateTrust(paths: paths, runner: SystemCommandRunner()) : nil,
-                    portHelperInstalled: {
-                        guard let source = portHelperSource else { return false }
-                        return PortHelper(source: source, user: NSUserName(), paths: paths,
-                                          runner: SystemCommandRunner()).isInstalled()
-                    })
+                    portHelperInstalled: { portHelperCheck?.value ?? false })
 let server = IPCServer(socket: paths.daemonSocket) { await engine.handle($0) }
 
 /// Stops everything and exits; safe to reach more than once. Goes through the engine's serialized

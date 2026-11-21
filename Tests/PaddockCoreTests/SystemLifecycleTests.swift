@@ -16,6 +16,8 @@ final class SystemLifecycleTests: XCTestCase {
     /// What the user-level port check finds on 80/443, one answer per call (the last one repeats).
     private var held: LockedBox<[[PortHolder]]>!
     private var portChecks: LockedCounter!
+    /// Whether the fake launchd has the `system/app.paddock.ports` job; `placeHelper` loads it.
+    private var jobLoaded = false
     private let daemon = URL(fileURLWithPath: "/opt/Paddock/paddockd")
     private let target = "gui/\(getuid())/app.paddock.paddockd"
 
@@ -76,6 +78,12 @@ final class SystemLifecycleTests: XCTestCase {
         }
         try Data(contentsOf: helperSource).write(to: helperBinary)
         try (data ?? portHelper.plistData()).write(to: helperPlist)
+        jobLoaded = true
+    }
+
+    /// The calls, leaving out the read-only checks of the port helper's job.
+    private func withoutPortsJob(_ calls: [RecordingCommandRunner.Call]) -> [RecordingCommandRunner.Call] {
+        calls.filter { $0.arguments.last != portsJob }
     }
 
     /// Everything a previous start set up: the resolver and the port helper.
@@ -104,8 +112,9 @@ final class SystemLifecycleTests: XCTestCase {
     /// launchctl answered by a fake launchd (loaded or not), osascript and `security verify-cert` as given.
     /// `portsJobLoaded`: whether launchd has the `system/app.paddock.ports` job.
     private func runner(trusted: Bool = false, loaded: Bool = false, osascriptStatus: Int32 = 0,
-                        osascriptOutput: String = "", portsJobLoaded: Bool = false) -> RecordingCommandRunner {
+                        osascriptOutput: String = "", portsJobLoaded: Bool? = nil) -> RecordingCommandRunner {
         let launchd = FakeLaunchd(loaded: loaded)
+        let portsJobLoaded = portsJobLoaded ?? jobLoaded
         let portsJob = self.portsJob
         return RecordingCommandRunner { exe, args in
             if exe == "/usr/bin/osascript" { return (osascriptStatus, osascriptOutput) }
@@ -207,7 +216,8 @@ final class SystemLifecycleTests: XCTestCase {
         try placeEverything()
         let fake = runner()
         XCTAssertTrue(try start(lifecycle(fake)))
-        XCTAssertEqual(fake.calls.map(\.executable), ["/bin/launchctl", "/bin/launchctl"])
+        XCTAssertEqual(withoutPortsJob(fake.calls).map(\.executable), ["/bin/launchctl", "/bin/launchctl"])
+        XCTAssertFalse(fake.calls.contains { $0.executable == "/usr/bin/osascript" })
         XCTAssertEqual(portChecks.next(), 0, "no port check either")
     }
 
@@ -262,12 +272,116 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertEqual(osascripts(fake), [])
     }
 
+    // MARK: - A dead launchd job, development builds, sudo
+
+    func testFilesInPlaceButTheJobNotLoadedPromptsToLoadItAgain() throws {
+        try placeEverything()
+        jobLoaded = false // switched off as a background item, or booted out by hand
+        let fake = runner()
+        XCTAssertTrue(try start(lifecycle(fake)))
+        let scripts = osascripts(fake)
+        XCTAssertEqual(scripts.count, 1)
+        XCTAssertTrue(scripts[0].contains("bootstrap system"), "the port steps run again")
+        XCTAssertFalse(scripts[0].contains(b64(desired)), "the resolver is already Paddock's")
+    }
+
+    private func bareLifecycle(_ runner: CommandRunner, source: URL?, uid: uid_t = 501,
+                               client: FakeDaemon = FakeDaemon(running: true)) -> SystemLifecycle {
+        SystemLifecycle(
+            services: SystemServices(runner: runner, resolverFile: resolverFile, launchAgents: agents,
+                                     portHelperSource: source, portHelperBinary: helperBinary,
+                                     portHelperPlist: helperPlist, userName: "someone"),
+            paths: paths, settings: Settings(), environment: [:], userHome: dir,
+            daemonIsRunning: { client.isRunning }, client: client, portHolders: { _ in [] }, effectiveUID: uid)
+    }
+
+    func testADevelopmentBuildChangesNothingOnTheRealSystem() throws {
+        let fake = runner()
+        XCTAssertThrowsError(try bareLifecycle(fake, source: nil).startViaSystem(daemon: daemon) { self.engineStatus() }) {
+            XCTAssertEqual($0 as? DaemonLaunchError, .developmentBuild)
+            XCTAssertEqual(($0 as? DaemonLaunchError)?.message(), "This is a development build of Paddock. To set up "
+                + "ports 80 and 443, run the app from /Applications, or set PADDOCK_HOME to use a test folder.")
+        }
+        XCTAssertEqual(fake.calls, [], "no agent, no prompt")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
+        XCTAssertThrowsError(try bareLifecycle(fake, source: nil).completeSetup()) {
+            XCTAssertEqual($0 as? DaemonLaunchError, .developmentBuild)
+        }
+        XCTAssertEqual(fake.calls, [])
+    }
+
+    func testRunningAsRootIsRefused() throws {
+        let fake = runner()
+        let root = bareLifecycle(fake, source: helperSource, uid: 0)
+        for attempt in [{ _ = try root.startViaSystem(daemon: self.daemon) { self.engineStatus() } },
+                        { try root.completeSetup() }, { _ = try root.uninstall() }] {
+            XCTAssertThrowsError(try attempt()) {
+                XCTAssertEqual($0 as? DaemonLaunchError, .runningAsRoot)
+                XCTAssertEqual(($0 as? DaemonLaunchError)?.message(),
+                               "Don't run Paddock with sudo. Run it as yourself; it asks for your password when it needs it.")
+            }
+        }
+        XCTAssertEqual(fake.calls, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
+    }
+
+    func testCompleteSetupUpdatesAnOutdatedHelperWithoutInstallingTheAgent() throws {
+        // Start at login is off (no agent plist); a newer build finds the old port entry.
+        try writeResolver(desired)
+        try placeHelper(plist: Data("<plist>older</plist>".utf8))
+        let fake = runner()
+        let lifecycle = lifecycle(fake)
+        XCTAssertTrue(lifecycle.runsWithoutAgent)
+        try lifecycle.completeSetup()
+        XCTAssertEqual(osascripts(fake).count, 1)
+        XCTAssertFalse(fake.calls.contains { $0.arguments.first == "bootstrap" }, "no LaunchAgent")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
+        XCTAssertTrue(lifecycle.runsWithoutAgent, "start at login stays off")
+    }
+
+    // MARK: - A daemon of another build
+
+    private func status(version: Int, executable: String?) -> EngineStatus {
+        var s = engineStatus()
+        s.version = version
+        s.executablePath = executable
+        return s
+    }
+
+    func testAnOutdatedDaemonIsRestartedOnce() throws {
+        try placeEverything()
+        _ = try start(lifecycle(runner())) // the agent for this daemon
+        let old = FakeDaemon(running: true, status: status(version: 0, executable: daemon.path))
+        let fake = runner(loaded: true)
+        XCTAssertTrue(try start(lifecycle(fake, client: old)))
+        let agentCalls = withoutPortsJob(fake.calls).map { $0.arguments.first ?? "" }
+        XCTAssertEqual(agentCalls.filter { $0 == "bootout" }.count, 1, "\(agentCalls)")
+        XCTAssertEqual(agentCalls.filter { $0 == "bootstrap" }.count, 1, "\(agentCalls)")
+
+        let current = FakeDaemon(running: true, status: status(version: PaddockBuild.number, executable: daemon.path))
+        let again = runner(loaded: true)
+        _ = try start(lifecycle(again, client: current))
+        XCTAssertEqual(withoutPortsJob(again.calls).map(\.arguments), [["print", target]], "left alone")
+    }
+
+    func testDaemonIsOutdatedComparesVersionAndProgram() {
+        func outdated(_ daemonStatus: EngineStatus?, running: Bool = true) -> Bool {
+            lifecycle(runner(), client: FakeDaemon(running: running, status: daemonStatus)).daemonIsOutdated(daemon: daemon)
+        }
+        XCTAssertFalse(outdated(status(version: PaddockBuild.number, executable: daemon.path)))
+        XCTAssertTrue(outdated(status(version: PaddockBuild.number - 1, executable: daemon.path)))
+        XCTAssertTrue(outdated(status(version: PaddockBuild.number, executable: "/elsewhere/paddockd")))
+        XCTAssertFalse(outdated(status(version: PaddockBuild.number, executable: nil)))
+        XCTAssertFalse(outdated(nil), "no answer: nothing to compare")
+        XCTAssertFalse(outdated(nil, running: false))
+    }
+
     func testEnabledStartLeavesAnUpToDateLoadedAgentAlone() throws {
         try placeEverything()
         _ = try start(lifecycle(runner()))
         let fake = runner(loaded: true)
         _ = try start(lifecycle(fake))
-        XCTAssertEqual(fake.calls.map(\.arguments), [["print", target]])
+        XCTAssertEqual(withoutPortsJob(fake.calls).map(\.arguments), [["print", target]])
     }
 
     func testLoadedAgentWhoseDaemonExitedIsKickstarted() throws {
@@ -275,8 +389,8 @@ final class SystemLifecycleTests: XCTestCase {
         _ = try start(lifecycle(runner()))
         let fake = runner(loaded: true)
         _ = try start(lifecycle(fake, daemonRunning: false))
-        XCTAssertEqual(fake.calls.map(\.arguments), [["print", target], ["kickstart", target]])
-        XCTAssertEqual(fake.calls.last?.executable, "/bin/launchctl")
+        XCTAssertEqual(withoutPortsJob(fake.calls).map(\.arguments), [["print", target], ["kickstart", target]])
+        XCTAssertFalse(fake.calls.contains { $0.executable == "/usr/bin/osascript" })
     }
 
     func testWithoutADaemonBinaryACurrentLoadedAgentIsUsed() throws {
@@ -285,7 +399,7 @@ final class SystemLifecycleTests: XCTestCase {
         _ = try start(lifecycle(runner()), daemon: installed)
         let fake = runner(loaded: true)
         XCTAssertTrue(try lifecycle(fake, daemonRunning: false).startViaSystem(daemon: nil) { self.engineStatus() })
-        XCTAssertEqual(fake.calls.map(\.arguments), [["print", target], ["kickstart", target]])
+        XCTAssertEqual(withoutPortsJob(fake.calls).map(\.arguments), [["print", target], ["kickstart", target]])
     }
 
     func testWithoutADaemonBinaryOrAnAgentStartFails() throws {
@@ -360,13 +474,16 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertTrue(lifecycle(off).runsWithoutAgent)
     }
 
-    func testRunsWithoutAgentOnlyOnceTheResolverAndPortHelperArePaddocks() throws {
+    func testRunsWithoutAgentOnceSetupHappenedAndTheAgentIsGone() throws {
         // First launch: nothing installed, so the normal start path (resolver + agent) applies.
         XCTAssertFalse(lifecycle(runner()).runsWithoutAgent)
         try writeResolver(desired)
-        XCTAssertFalse(lifecycle(runner()).runsWithoutAgent, "the port helper still needs the setup prompt")
-        try placeHelper()
-        XCTAssertTrue(lifecycle(runner()).runsWithoutAgent)
+        XCTAssertTrue(lifecycle(runner()).runsWithoutAgent, "setup happened (an older Paddock, before ports)")
+        try FileManager.default.removeItem(at: resolverFile)
+        try placeHelper(plist: Data("<plist>older</plist>".utf8))
+        XCTAssertTrue(lifecycle(runner()).runsWithoutAgent, "an outdated port entry also counts")
+        try lifecycle(runner()).setStartsAtLogin(true, daemon: daemon)
+        XCTAssertFalse(lifecycle(runner()).runsWithoutAgent, "start at login is on")
     }
 
     func testStartAtLoginIsOffAndUntouchableForADevelopmentHome() throws {
@@ -537,8 +654,13 @@ final class FakeDaemon: ClientProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var running: Bool
     private var recorded: [Request] = []
+    /// What `status` answers with, if set; otherwise every request gets an error.
+    var status: EngineStatus?
 
-    init(running: Bool) { self.running = running }
+    init(running: Bool, status: EngineStatus? = nil) {
+        self.running = running
+        self.status = status
+    }
 
     var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
     var requests: [Request] { lock.lock(); defer { lock.unlock() }; return recorded }
@@ -549,6 +671,7 @@ final class FakeDaemon: ClientProtocol, @unchecked Sendable {
         guard running else { throw ClientError.daemonNotRunning }
         recorded.append(r)
         if r == .shutdown { running = false }
+        if r == .status, let status { return .ok(status) }
         return .error(code: ErrorCode.internal, message: "fake")
     }
 }

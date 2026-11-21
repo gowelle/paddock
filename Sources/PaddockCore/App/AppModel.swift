@@ -72,6 +72,8 @@ public final class AppModel: ObservableObject {
     public static let unavailableCaption = "Not available for this Paddock home."
     /// The action offered while setup is unfinished; it runs the same start path.
     public static let finishSetupTitle = "Finish Setup\u{2026}"
+    /// The action offered while the web ports are held; it runs the same start path.
+    public static let tryAgainTitle = "Try Again"
 
     private let client: ClientProtocol
     private let services: AppServices?
@@ -115,6 +117,14 @@ public final class AppModel: ObservableObject {
     private var heldPorts: [PortHolder] {
         if let blocked = status?.blockedBy, !blocked.isEmpty { return blocked }
         return setupBlockedBy
+    }
+
+    /// The start-path action to offer next to the status line, whether or not a Quit button is offered:
+    /// `Try Again` while the ports are held, `Finish Setup…` while setup is unfinished, else nil.
+    public var setupActionTitle: String? {
+        if isBlocked { return Self.tryAgainTitle }
+        if needsSetup { return Self.finishSetupTitle }
+        return nil
     }
 
     public var statusLine: String {
@@ -186,6 +196,8 @@ public final class AppModel: ObservableObject {
         switch result {
         case .success(.ok(let fresh)):
             status = fresh
+            // Setup finished meanwhile (say, from the command line): the held ports are old news.
+            if fresh.running && fresh.portHelperInstalled { setupBlockedBy = [] }
             if errorCameFromRefresh { lastError = nil }
         case .success(.error(_, let message)):
             showRefreshError(message)
@@ -296,7 +308,8 @@ public final class AppModel: ObservableObject {
         await perform(.start)
     }
 
-    /// `Finish Setup…`: the start path, which asks for the password once to install what is missing.
+    /// `Finish Setup…` and `Try Again`: the start path, which checks the ports again and asks for the
+    /// password once to install what is missing.
     public func finishSetup() async {
         await start()
     }

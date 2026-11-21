@@ -14,6 +14,12 @@ public enum DaemonLaunchError: Error, Equatable {
     case portsBlocked([PortHolder])
     /// The resolver file isn't one Paddock could put back on uninstall, so it was left alone.
     case resolverUnrestorable(path: String)
+    /// The privileged script's port-helper steps failed.
+    case portsSetupFailed(String)
+    /// The real system, but this program isn't inside Paddock.app: no system changes from it.
+    case developmentBuild
+    /// Run as root (`sudo`).
+    case runningAsRoot
     case failed(String)
 
     /// The plain sentence for this failure. `retry` is how the reader tries again (e.g. `Run paddock start`).
@@ -21,7 +27,7 @@ public enum DaemonLaunchError: Error, Equatable {
         let again = retry.map { " \($0) to try again." } ?? ""
         switch self {
         case .noDaemonBinary: return "Can't find paddockd next to paddock."
-        case .passwordCancelled: return "Paddock needs your password once to route .test domains." + again
+        case .passwordCancelled: return "Paddock needs your password once to finish setup." + again
         case .resolverChangedDuringInstall(let path):
             return "\(path) changed while Paddock was waiting for your password." + again
         case .resolverFailed(let message): return "Couldn't route .test domains to Paddock: \(message)"
@@ -31,6 +37,9 @@ public enum DaemonLaunchError: Error, Equatable {
                 + "Use a shorter PADDOCK_HOME."
         case .portsBlocked(let holders): return Messages.portsBlocked(holders)
         case .resolverUnrestorable(let path): return ResolverError.cannotRestoreLater(path: path).message
+        case .portsSetupFailed(let detail): return Messages.portsSetupFailed(detail)
+        case .developmentBuild: return Messages.developmentBuild
+        case .runningAsRoot: return Messages.runningAsRoot
         case .failed(let message): return "Couldn't start Paddock: \(message)"
         }
     }
@@ -67,29 +76,48 @@ public struct DaemonLauncher: Sendable {
     /// then, unless the port helper and the resolver are both in place, (only if the web ports are free)
     /// installs them with one password prompt, and has the engine start.
     ///
-    /// `honouringLoginSetting` (the app): when the owner turned start at login off, launch the daemon
-    /// directly instead of reinstalling the LaunchAgent.
+    /// `honouringLoginSetting` (the app): when the owner turned start at login off, finish or update setup
+    /// without the LaunchAgent (`SystemLifecycle.completeSetup`) and launch the daemon directly, restarting
+    /// one of another build, instead of reinstalling the LaunchAgent.
     public func ensureRunning(honouringLoginSetting: Bool = false) throws -> Outcome {
         guard Wire.socketAddress(paths.daemonSocket.path) != nil else {
             throw DaemonLaunchError.socketPathTooLong(path: paths.daemonSocket.path)
         }
         if honouringLoginSetting && lifecycle.runsWithoutAgent {
-            if client.daemonIsRunning { return .alreadyRunning }
+            try Self.plainErrors(resolverPath: lifecycle.resolverPath) { try lifecycle.completeSetup() }
+            if client.daemonIsRunning {
+                guard lifecycle.daemonIsOutdated(daemon: daemon) else { return .alreadyRunning }
+                _ = try? client.send(.shutdown, timeout: 60)
+                waitForDaemonToExit()
+            }
             guard let daemon else { throw DaemonLaunchError.noDaemonBinary }
             try spawn(daemon)
             return .spawned
         }
-        let started: Bool
+        let started = try Self.plainErrors(resolverPath: lifecycle.resolverPath) {
+            try lifecycle.startViaSystem(daemon: daemon, startEngine: startEngine)
+        }
+        if started { return .viaSystem }
+        if client.daemonIsRunning { return .alreadyRunning }
+        guard let daemon else { throw DaemonLaunchError.noDaemonBinary }
+        try spawn(daemon)
+        return .spawned
+    }
+
+    /// Runs `body`, turning resolver, setup and engine errors into `DaemonLaunchError`s with plain sentences.
+    private static func plainErrors<T>(resolverPath: String, _ body: () throws -> T) throws -> T {
         do {
-            started = try lifecycle.startViaSystem(daemon: daemon, startEngine: startEngine)
+            return try body()
         } catch let error as DaemonLaunchError {
             throw error
         } catch ResolverError.cancelled {
             throw DaemonLaunchError.passwordCancelled
         } catch ResolverError.changedDuringInstall {
-            throw DaemonLaunchError.resolverChangedDuringInstall(path: lifecycle.resolverPath)
+            throw DaemonLaunchError.resolverChangedDuringInstall(path: resolverPath)
         } catch ResolverError.failed(let message) {
             throw DaemonLaunchError.resolverFailed(message)
+        } catch ResolverError.portsSetupFailed(let detail) {
+            throw DaemonLaunchError.portsSetupFailed(detail)
         } catch ResolverError.cannotRestoreLater(let path) {
             throw DaemonLaunchError.resolverUnrestorable(path: path)
         } catch let error as ResolverError {
@@ -101,11 +129,6 @@ public struct DaemonLauncher: Sendable {
         } catch {
             throw DaemonLaunchError.failed("\(error)")
         }
-        if started { return .viaSystem }
-        if client.daemonIsRunning { return .alreadyRunning }
-        guard let daemon else { throw DaemonLaunchError.noDaemonBinary }
-        try spawn(daemon)
-        return .spawned
     }
 
     /// Waits for the daemon, asks it to start (queued behind its own start, so the port check is done

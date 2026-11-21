@@ -6,10 +6,13 @@ public final class RecordingCommandRunner: CommandRunner, @unchecked Sendable {
     public struct Call: Equatable {
         public let executable: String
         public let arguments: [String]
+        /// The environment the program was given; nil means it inherits this process's.
+        public let environment: [String: String]?
 
-        public init(executable: String, arguments: [String]) {
+        public init(executable: String, arguments: [String], environment: [String: String]? = nil) {
             self.executable = executable
             self.arguments = arguments
+            self.environment = environment
         }
     }
 
@@ -27,9 +30,10 @@ public final class RecordingCommandRunner: CommandRunner, @unchecked Sendable {
         return recorded
     }
 
-    public func run(_ executable: String, _ arguments: [String]) throws -> (status: Int32, output: String) {
+    public func run(_ executable: String, _ arguments: [String],
+                    environment: [String: String]?) throws -> (status: Int32, output: String) {
         lock.lock()
-        recorded.append(Call(executable: executable, arguments: arguments))
+        recorded.append(Call(executable: executable, arguments: arguments, environment: environment))
         lock.unlock()
         return handler(executable, arguments)
     }

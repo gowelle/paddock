@@ -134,6 +134,11 @@ public struct LaunchAgent: Sendable {
         try launchctl(["kickstart", service])
     }
 
+    /// Stops the running daemon and starts it again (`kickstart -k`), for a daemon of another build.
+    public func restart() throws {
+        try launchctl(["kickstart", "-k", service])
+    }
+
     public func isLoaded() -> Bool {
         (try? runner.run(Self.launchctl, ["print", service]))?.status == 0
     }

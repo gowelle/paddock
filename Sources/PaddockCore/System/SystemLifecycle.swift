@@ -5,7 +5,8 @@ public struct SystemServices: Sendable {
     public var runner: CommandRunner
     public var resolverFile: URL
     public var launchAgents: URL
-    /// The bundled `paddock-ports` this build installs; nil when there is none beside this program.
+    /// The `paddock-ports` of the Paddock.app this program belongs to; nil for a repository or debug
+    /// build, which then makes no system changes (`DaemonLaunchError.developmentBuild`).
     public var portHelperSource: URL?
     /// Where the port helper and its LaunchDaemon plist are installed.
     public var portHelperBinary: URL
@@ -14,7 +15,7 @@ public struct SystemServices: Sendable {
     public var userName: String
 
     public init(runner: CommandRunner, resolverFile: URL, launchAgents: URL,
-                portHelperSource: URL? = PortHelperLocator.binary(),
+                portHelperSource: URL? = PortHelperLocator.bundledBinary(),
                 portHelperBinary: URL = PortHelper.defaultInstalledBinary,
                 portHelperPlist: URL = PortHelper.defaultPlist, userName: String = NSUserName()) {
         self.runner = runner
@@ -47,6 +48,8 @@ public struct SystemLifecycle: Sendable {
     let client: ClientProtocol
     /// Who answers on the given TCP ports (`PortCheck.holders`); tests substitute it.
     let portHolders: @Sendable ([Int]) -> [PortHolder]
+    /// The effective user id; 0 (`sudo`) is refused on the real system.
+    let effectiveUID: uid_t
     /// The shell rc file `ShellPath` adds its PATH line to: `~/.zshrc` in `userHome`.
     var rcFile: URL { userHome.appendingPathComponent(".zshrc") }
 
@@ -56,8 +59,9 @@ public struct SystemLifecycle: Sendable {
                 environment: [String: String] = ProcessInfo.processInfo.environment,
                 userHome: URL = FileManager.default.homeDirectoryForCurrentUser,
                 daemonIsRunning: (@Sendable () -> Bool)? = nil, client: ClientProtocol? = nil,
-                portHolders: (@Sendable ([Int]) -> [PortHolder])? = nil) {
+                portHolders: (@Sendable ([Int]) -> [PortHolder])? = nil, effectiveUID: uid_t = geteuid()) {
         self.services = services
+        self.effectiveUID = effectiveUID
         self.portHolders = portHolders ?? { PortCheck.holders(of: $0) }
         self.paths = paths
         self.settings = SystemIntegration.isEnabled(environment: environment) ? Settings() : settings
@@ -75,7 +79,7 @@ public struct SystemLifecycle: Sendable {
     private var resolver: Resolver {
         Resolver(file: services.resolverFile, settings: settings, store: store, runner: services.runner)
     }
-    /// Nil when this program has no `paddock-ports` beside it to install.
+    /// Nil for a development build (no Paddock.app around this program).
     private var portHelper: PortHelper? {
         services.portHelperSource.map {
             PortHelper(source: $0, user: services.userName, paths: paths, runner: services.runner,
@@ -103,16 +107,24 @@ public struct SystemLifecycle: Sendable {
     /// `daemon` may be nil when this program has no `paddockd` of its own; a loaded agent whose plist is
     /// current is then used as is. Returns false, having done nothing, for a development home: launch the
     /// daemon directly. Throws `ResolverError.cancelled` if the password prompt is dismissed; an agent
-    /// this call installed is then removed again, and nothing was installed.
+    /// this call installed is then removed again, and nothing was installed. A daemon of another build
+    /// (`daemonIsOutdated`) is restarted once. Refuses to run as root, and from a development build
+    /// (`DaemonLaunchError.developmentBuild`) before touching anything.
     public func startViaSystem(daemon: URL?, startEngine: () throws -> EngineStatus) throws -> Bool {
         guard isEnabled else { return false }
+        try checkMayChangeSystem()
+        guard portHelper != nil else { throw DaemonLaunchError.developmentBuild }
         let agent = agent
         var installedAgent = false
         // The plist is current if it runs this daemon (or, with none of our own, any daemon still there).
         let plistIsCurrent = daemon.map(agent.isCurrent(daemon:)) ?? (agent.installedDaemon() != nil)
         if plistIsCurrent && agent.isLoaded() {
             // launchd doesn't restart a daemon that exited cleanly (KeepAlive SuccessfulExit false).
-            if !daemonIsRunning() { try agent.kickstart() }
+            if !daemonIsRunning() {
+                try agent.kickstart()
+            } else if daemonIsOutdated(daemon: daemon) {
+                if let daemon { try agent.install(daemon: daemon) } else { try agent.restart() }
+            }
         } else if let daemon {
             try agent.install(daemon: daemon)
             installedAgent = true
@@ -122,9 +134,9 @@ public struct SystemLifecycle: Sendable {
 
         do {
             try installSystemPieces()
-        } catch let error as DaemonLaunchError {
+        } catch DaemonLaunchError.portsBlocked(let holders) {
             // Ports held: the daemon keeps answering .test DNS; a later start finishes setup.
-            throw error
+            throw DaemonLaunchError.portsBlocked(holders)
         } catch {
             if installedAgent { try? agent.uninstall() }
             throw error
@@ -133,17 +145,32 @@ public struct SystemLifecycle: Sendable {
         return true
     }
 
-    /// The one privileged call of `startViaSystem`, if anything is missing.
+    /// Installs whatever of the port helper and the resolver is missing, outdated or (for the helper)
+    /// not loaded by launchd, with one password prompt, without touching the LaunchAgent: the app's start
+    /// path when the owner turned start at login off. Does nothing for a development home.
+    public func completeSetup() throws {
+        guard isEnabled else { return }
+        try checkMayChangeSystem()
+        try installSystemPieces()
+    }
+
+    /// True when the daemon answering is another build than this one (its status reports another
+    /// `PaddockBuild.number`, or another program than `daemon`), so it should be restarted.
+    public func daemonIsOutdated(daemon: URL?) -> Bool {
+        guard case .ok(let status)? = try? client.send(.status, timeout: 10) else { return false }
+        if status.version != PaddockBuild.number { return true }
+        guard let daemon, let running = status.executablePath else { return false }
+        return running != daemon.resolvingSymlinksInPath().path
+    }
+
+    private func checkMayChangeSystem() throws {
+        if effectiveUID == 0 { throw DaemonLaunchError.runningAsRoot }
+    }
+
+    /// The one privileged call of `startViaSystem` and `completeSetup`, if anything needs it.
     private func installSystemPieces() throws {
         let resolver = resolver
-        guard let portHelper else {
-            // Nothing to install the helper from (or to compare an installed one with).
-            let fm = FileManager.default
-            let installed = fm.fileExists(atPath: services.portHelperBinary.path)
-                && fm.fileExists(atPath: services.portHelperPlist.path)
-            guard installed && resolver.isInstalled() else { throw EngineError.portHelperMissing }
-            return
-        }
+        guard let portHelper else { throw DaemonLaunchError.developmentBuild }
         let helperInstalled = portHelper.isInstalled()
         guard !(helperInstalled && resolver.isInstalled()) else { return }
         if let path = paths.tooLongSocket { throw EngineError.socketPathTooLong(path: path) }
@@ -164,10 +191,13 @@ public struct SystemLifecycle: Sendable {
         isEnabled && FileManager.default.fileExists(atPath: agent.plist.path)
     }
 
-    /// The owner turned start at login off after setup: the resolver is Paddock's but there is no
-    /// LaunchAgent. The app then runs the daemon itself, only while it is open.
+    /// The owner turned start at login off after setup: setup happened (the resolver is Paddock's, or the
+    /// port helper's launchd entry is there) but there is no LaunchAgent. The app then runs the daemon
+    /// itself, only while it is open, and finishes or updates setup with `completeSetup()` without
+    /// installing the agent again.
     public var runsWithoutAgent: Bool {
-        isEnabled && resolver.isInstalled() && (portHelper?.isInstalled() ?? false) && !startsAtLogin
+        isEnabled && !startsAtLogin
+            && (resolver.isInstalled() || FileManager.default.fileExists(atPath: services.portHelperPlist.path))
     }
 
     /// Installs and loads the LaunchAgent (which starts the daemon), or boots it out and deletes it
@@ -194,6 +224,7 @@ public struct SystemLifecycle: Sendable {
     /// alone. Returns the lines to print. Safe to run again after a partial failure.
     public func uninstall() throws -> [String] {
         guard isEnabled else { return ["Nothing to uninstall for this Paddock home."] }
+        try checkMayChangeSystem()
         var lines: [String] = []
         // One prompt: the resolver first, then the port helper's launchd entry. If the prompt is cancelled
         // we stop here with the agent still running, so `.test` keeps resolving.

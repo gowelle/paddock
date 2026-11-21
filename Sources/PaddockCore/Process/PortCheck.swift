@@ -65,6 +65,11 @@ public enum PortCheck {
         connects(port: port, ipv6: false) || connects(port: port, ipv6: true)
     }
 
+    /// Whether 127.0.0.1:<port> accepts a TCP connection within `connectTimeout`.
+    public static func acceptsIPv4(port: Int) -> Bool {
+        connects(port: port, ipv6: false)
+    }
+
     /// One holder per listening process, from `lsof -F pcu` output.
     static func lsofListeners(port: Int) -> [PortHolder] {
         let lsof = Process()

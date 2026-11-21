@@ -68,6 +68,33 @@ public enum Messages {
     public static let stoppedKeepingPorts =
         "Paddock stopped. Ports 80 and 443 stay reserved for Paddock until you uninstall it."
 
+    /// The privileged script's port-helper steps failed (they removed what they created).
+    public static func portsSetupFailed(_ detail: String) -> String {
+        "Couldn't set up ports 80 and 443: \(detail)"
+    }
+
+    /// The privileged script's port-helper removal failed; `resolverRestored` if the resolver step before
+    /// it put the owner's file back.
+    public static func portsReleaseFailed(_ detail: String, resolverRestored: Bool) -> String {
+        (resolverRestored ? "Paddock restored your .test DNS setting but couldn't release ports 80 and 443: "
+                          : "Couldn't release ports 80 and 443: ")
+            + "\(detail). Run paddock uninstall again."
+    }
+
+    /// Uninstall removed the port helper but would not write a saved resolver copy that doesn't look like one.
+    public static func portsReleasedResolverLeft(_ path: String) -> String {
+        "Paddock released ports 80 and 443, but its saved copy of your original resolver file doesn't look "
+            + "like a resolver file, so \(path) was left as it is."
+    }
+
+    /// The running program isn't inside Paddock.app (a repository or debug build) on the real system.
+    public static let developmentBuild = "This is a development build of Paddock. To set up ports 80 and 443, "
+        + "run the app from /Applications, or set PADDOCK_HOME to use a test folder."
+
+    /// `sudo paddock …` on the real system.
+    public static let runningAsRoot =
+        "Don't run Paddock with sudo. Run it as yourself; it asks for your password when it needs it."
+
     /// A PHP install cut short because the daemon is shutting down; nothing of it was kept.
     public static func phpInstallCancelled(_ version: PHPVersion) -> String {
         "Installing PHP \(version) was cancelled because Paddock is shutting down."

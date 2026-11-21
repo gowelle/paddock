@@ -126,4 +126,30 @@ final class MessagesTests: XCTestCase {
         XCTAssertEqual(DaemonLaunchError.resolverUnrestorable(path: "/etc/resolver/test").message(),
                        "/etc/resolver/test has contents Paddock can't safely restore later, so Paddock left it alone.")
     }
+
+    func testPortStageSentences() {
+        XCTAssertEqual(Messages.portsSetupFailed("x"), "Couldn't set up ports 80 and 443: x")
+        XCTAssertEqual(Messages.portsReleaseFailed("x", resolverRestored: true),
+                       "Paddock restored your .test DNS setting but couldn't release ports 80 and 443: x. "
+                       + "Run paddock uninstall again.")
+        XCTAssertEqual(Messages.portsReleaseFailed("x", resolverRestored: false),
+                       "Couldn't release ports 80 and 443: x. Run paddock uninstall again.")
+        XCTAssertEqual(DaemonLaunchError.portsSetupFailed("x").message(), "Couldn't set up ports 80 and 443: x")
+    }
+
+    func testCancelledPromptAndPromptTexts() {
+        XCTAssertEqual(DaemonLaunchError.passwordCancelled.message(retry: "Run paddock start"),
+                       "Paddock needs your password once to finish setup. Run paddock start to try again.")
+        XCTAssertEqual(Resolver.installPrompt, "Paddock needs your password once to serve sites on ports 80 and 443 "
+                       + "and to route .test domains to this Mac.")
+        XCTAssertEqual(Resolver.uninstallPrompt,
+                       "Paddock needs your password to release ports 80 and 443 and put your .test DNS setting back.")
+    }
+
+    func testDevelopmentBuildAndSudoSentences() {
+        XCTAssertEqual(Messages.developmentBuild, "This is a development build of Paddock. To set up ports 80 and 443, "
+                       + "run the app from /Applications, or set PADDOCK_HOME to use a test folder.")
+        XCTAssertEqual(Messages.runningAsRoot,
+                       "Don't run Paddock with sudo. Run it as yourself; it asks for your password when it needs it.")
+    }
 }

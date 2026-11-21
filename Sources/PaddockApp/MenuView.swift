@@ -80,16 +80,17 @@ private struct StatusHeader: View {
             if model.canQuitBlockingHolder {
                 Button(model.quitButtonTitle) { Task { await model.quitBlockingHolder() } }
                     .controlSize(.small)
-            } else if model.needsSetup && !model.isBlocked {
-                Button(AppModel.finishSetupTitle) { Task { await model.finishSetup() } }
-                    .controlSize(.small)
-                    .disabled(model.isBusy(.start))
             } else if let explanation = model.blockedExplanation {
                 Text(explanation)
                     .font(.caption)
                     .foregroundStyle(Theme.inkMuted)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+            }
+            if let title = model.setupActionTitle {
+                Button(title) { Task { await model.finishSetup() } }
+                    .controlSize(.small)
+                    .disabled(model.isBusy(.start))
             }
         }
         .padding(.horizontal, 12)

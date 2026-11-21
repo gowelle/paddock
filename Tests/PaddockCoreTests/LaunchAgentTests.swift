@@ -166,4 +166,10 @@ final class LaunchAgentTests: XCTestCase {
         try agent(runner).kickstart()
         XCTAssertEqual(runner.calls, [.init(executable: "/bin/launchctl", arguments: ["kickstart", target])])
     }
+
+    func testRestartKillsAndStartsTheLoadedJob() throws {
+        let runner = fake(loaded: true)
+        try agent(runner).restart()
+        XCTAssertEqual(runner.calls.map(\.arguments), [["kickstart", "-k", target]])
+    }
 }

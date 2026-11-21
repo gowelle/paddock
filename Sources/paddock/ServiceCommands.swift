@@ -51,8 +51,18 @@ struct Uninstall: ParsableCommand {
             for line in try CLI.lifecycle.uninstall() { print(line) }
         } catch ResolverError.cancelled {
             throw CLI.failure(Self.stillInstalled)
+        } catch let error as DaemonLaunchError {
+            throw CLI.failure(error.message())
         } catch let error as ResolverError {
-            CLI.printError("Couldn't restore the resolver: \(error.message)")
+            switch error {
+            case .portsReleaseFailed:
+                // A whole sentence, ending in what to do.
+                throw CLI.failure(error.message)
+            case .savedCopyRejectedPortsReleased:
+                CLI.printError(error.message)
+            default:
+                CLI.printError("Couldn't restore the resolver: \(error.message)")
+            }
             throw CLI.failure(Self.stillInstalled)
         } catch {
             throw CLI.failure("Couldn't uninstall Paddock: \(error)")

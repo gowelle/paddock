@@ -281,9 +281,33 @@ final class IPCTests: XCTestCase {
         XCTAssertEqual(rc, 0)
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.daemonSocket.path))
     }
+    // MARK: - Status across builds
+
+    func testStatusFromAnOlderDaemonDecodesWithDefaults() throws {
+        // What a first-version daemon sent: no portHelperInstalled, version or executablePath.
+        let status = try JSONDecoder().decode(EngineStatus.self, from: Data(
+            #"{"running":true,"blockedBy":[],"sites":[],"installedPHP":[],"processes":{},"resolverInstalled":true,"#
+            .appending(#""trustEnabled":true,"dnsRunning":true}"#).utf8))
+        XCTAssertTrue(status.running)
+        XCTAssertTrue(status.resolverInstalled)
+        XCTAssertFalse(status.portHelperInstalled)
+        XCTAssertEqual(status.version, 0, "older than this field")
+        XCTAssertNil(status.executablePath)
+        XCTAssertNil(status.defaultPHP)
+        let minimal = try JSONDecoder().decode(EngineStatus.self, from: Data("{}".utf8))
+        XCTAssertFalse(minimal.running)
+        XCTAssertEqual(minimal.sites, [])
+    }
+
+    func testStatusCarriesTheBuildAndProgram() throws {
+        let status = sampleStatus()
+        XCTAssertEqual(status.version, PaddockBuild.number)
+        XCTAssertEqual(status.executablePath, PaddockBuild.runningExecutable)
+        let decoded = try JSONDecoder().decode(EngineStatus.self, from: JSONEncoder().encode(status))
+        XCTAssertEqual(decoded, status)
+    }
 }
 
-/// Minimal thread-safe box for values touched by the server's handler threads.
 final class Locked<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: T

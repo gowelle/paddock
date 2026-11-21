@@ -546,4 +546,69 @@ final class AppModelTests: XCTestCase {
         await model.start()
         XCTAssertEqual(model.blockedExplanation, Messages.portsBlocked([holder]))
     }
+
+    // MARK: - Retrying setup
+
+    func testSetupActionIsOfferedEvenWithAQuitButton() async {
+        let services = FakeServices()
+        services.startError = DaemonLaunchError.portsBlocked(herdHolders())
+        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) },
+                             services: services, quitter: FakeQuitter(quittable: [herdApp]))
+        await model.start()
+        XCTAssertTrue(model.canQuitBlockingHolder)
+        XCTAssertEqual(model.setupActionTitle, "Try Again")
+    }
+
+    func testAHolderThatCannotBeQuitStillGetsTryAgainWhichRetries() async {
+        let holder = PortHolder(port: 80, pid: 9, command: "httpd", ownedByCurrentUser: false)
+        let client = FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) }
+        let services = FakeServices()
+        services.startError = DaemonLaunchError.portsBlocked([holder])
+        let model = AppModel(client: client, services: services, quitter: FakeQuitter())
+        await model.start()
+        XCTAssertFalse(model.canQuitBlockingHolder)
+        XCTAssertEqual(model.blockedExplanation, Messages.portsBlocked([holder]))
+        XCTAssertEqual(model.setupActionTitle, "Try Again")
+
+        // The owner stopped httpd; Try Again finishes setup.
+        services.startError = nil
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.finishSetup()
+        XCTAssertEqual(services.startCalls, 2)
+        XCTAssertNil(model.setupActionTitle)
+        XCTAssertEqual(model.statusLine, "Running")
+    }
+
+    func testSetupNeededOffersFinishSetupAndRunningOffersNothing() async {
+        let client = FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) }
+        let model = AppModel(client: client)
+        await model.refresh()
+        XCTAssertEqual(model.setupActionTitle, "Finish Setup\u{2026}")
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.refresh()
+        XCTAssertNil(model.setupActionTitle)
+    }
+
+    func testARefreshShowingTheHelperInstalledClearsStaleHeldPorts() async {
+        let client = FakeClient { _ in .ok(sampleStatus(portHelperInstalled: false)) }
+        let services = FakeServices()
+        services.startError = DaemonLaunchError.portsBlocked(herdHolders())
+        let model = AppModel(client: client, services: services, quitter: FakeQuitter())
+        await model.start()
+        XCTAssertEqual(model.setupBlockedBy, herdHolders())
+        // Setup was finished elsewhere (paddock start in Terminal).
+        client.handler = { _ in .ok(sampleStatus()) }
+        await model.refresh()
+        XCTAssertEqual(model.setupBlockedBy, [])
+        XCTAssertEqual(model.statusLine, "Running")
+        XCTAssertNil(model.blockedExplanation)
+    }
+
+    func testSudoIsReportedAsOneLine() async {
+        let services = FakeServices()
+        services.startError = DaemonLaunchError.runningAsRoot
+        let model = AppModel(client: FakeClient { _ in throw ClientError.daemonNotRunning }, services: services)
+        await model.start()
+        XCTAssertEqual(model.lastError, Messages.runningAsRoot)
+    }
 }

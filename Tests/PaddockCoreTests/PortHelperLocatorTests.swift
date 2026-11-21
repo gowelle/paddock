@@ -52,4 +52,39 @@ final class PortHelperLocatorTests: XCTestCase {
         XCTAssertNil(PortHelperLocator.binary(executableDirectories: [dir],
                                               resources: dir.appendingPathComponent("Vendor")))
     }
+
+    // MARK: - Only an app's helper may be installed as root
+
+    func testTheAppsOwnHelperIsTheOnlyOneToInstall() throws {
+        let helper = try placeholder("Paddock.app/Contents/MacOS/paddock-ports")
+        let macOS = dir.appendingPathComponent("Paddock.app/Contents/MacOS")
+        XCTAssertEqual(PortHelperLocator.bundledBinary(executableDirectories: [macOS])?.path, helper.path)
+    }
+
+    func testTheCopyInBinUsesTheHelperOfTheAppItsRecordNames() throws {
+        let helper = try placeholder("Paddock.app/Contents/MacOS/paddock-ports")
+        let bin = dir.appendingPathComponent("home/bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try Data(dir.appendingPathComponent("Paddock.app/Contents/Resources").path.utf8)
+            .write(to: bin.appendingPathComponent(".resources"))
+        XCTAssertEqual(PortHelperLocator.bundledBinary(executableDirectories: [bin])?.path, helper.path)
+    }
+
+    func testARepositoryBuildHasNoHelperToInstallEvenWithOneBesideIt() throws {
+        try placeholder("build/debug/paddock-ports")
+        let build = dir.appendingPathComponent("build/debug")
+        XCTAssertNil(PortHelperLocator.bundledBinary(executableDirectories: [build]))
+        XCTAssertNotNil(PortHelperLocator.binary(executableDirectories: [build], resources: dir),
+                        "a development home still runs it")
+        // A record naming a Resources folder that isn't inside an app doesn't count.
+        try placeholder("Vendor/MacOS/paddock-ports")
+        try Data(dir.appendingPathComponent("Vendor/Resources").path.utf8)
+            .write(to: build.appendingPathComponent(".resources"))
+        XCTAssertNil(PortHelperLocator.bundledBinary(executableDirectories: [build]))
+    }
+
+    func testAnAppWithoutAHelperHasNone() throws {
+        try placeholder("Paddock.app/Contents/MacOS/paddockd")
+        XCTAssertNil(PortHelperLocator.bundledBinary(executableDirectories: [dir.appendingPathComponent("Paddock.app/Contents/MacOS")]))
+    }
 }

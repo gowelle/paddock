@@ -1,6 +1,17 @@
 import Darwin
 import Foundation
 
+/// Which build of Paddock this is, so a client can tell a daemon from another build.
+public enum PaddockBuild {
+    /// Raised with every release whose daemon and clients must match (it is in every status reply).
+    public static let number = 2
+
+    /// The running program, symlinks resolved.
+    public static var runningExecutable: String? {
+        Bundle.main.executableURL?.resolvingSymlinksInPath().path
+    }
+}
+
 public struct EngineStatus: Codable, Equatable, Sendable {
     public var running: Bool
     /// Listeners on the HTTP/HTTPS ports that stopped the last `start()`.
@@ -19,10 +30,15 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     /// Whether something forwards the web ports to Caddy's Unix sockets: always true in a development
     /// home, whose engine runs the helper itself; on the real system, whether launchd's helper is installed.
     public var portHelperInstalled: Bool
+    /// The daemon's `PaddockBuild.number`; 0 from a daemon older than this field.
+    public var version: Int
+    /// The daemon's own program, if it reported one.
+    public var executablePath: String?
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
-                resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool) {
+                resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
+                version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
         self.sites = sites
@@ -33,6 +49,31 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.trustEnabled = trustEnabled
         self.dnsRunning = dnsRunning
         self.portHelperInstalled = portHelperInstalled
+        self.version = version
+        self.executablePath = executablePath
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
+        case dnsRunning, portHelperInstalled, version, executablePath
+    }
+
+    /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
+    /// installed, version 0), so a newer client can still read an older daemon and see it is outdated.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        running = try c.decodeIfPresent(Bool.self, forKey: .running) ?? false
+        blockedBy = try c.decodeIfPresent([PortHolder].self, forKey: .blockedBy) ?? []
+        sites = try c.decodeIfPresent([Site].self, forKey: .sites) ?? []
+        installedPHP = try c.decodeIfPresent([PHPVersion].self, forKey: .installedPHP) ?? []
+        defaultPHP = try c.decodeIfPresent(PHPVersion.self, forKey: .defaultPHP)
+        processes = try c.decodeIfPresent([String: String].self, forKey: .processes) ?? [:]
+        resolverInstalled = try c.decodeIfPresent(Bool.self, forKey: .resolverInstalled) ?? false
+        trustEnabled = try c.decodeIfPresent(Bool.self, forKey: .trustEnabled) ?? false
+        dnsRunning = try c.decodeIfPresent(Bool.self, forKey: .dnsRunning) ?? false
+        portHelperInstalled = try c.decodeIfPresent(Bool.self, forKey: .portHelperInstalled) ?? false
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
+        executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
 }
 

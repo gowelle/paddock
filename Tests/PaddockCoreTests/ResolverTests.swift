@@ -74,7 +74,10 @@ final class ResolverTests: XCTestCase {
         XCTAssertEqual(call.arguments.first, "-e")
         let script = call.arguments[1]
         XCTAssertTrue(script.hasPrefix("do shell script \""), script)
-        XCTAssertTrue(script.contains("with prompt \"Paddock needs your password to route .test domains to this Mac.\""), script)
+        XCTAssertTrue(script.contains("with prompt \"Paddock needs your password once to serve sites on ports 80 and 443 "
+            + "and to route .test domains to this Mac.\""), script)
+        XCTAssertEqual(call.environment, ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], "a fixed minimal environment")
+        XCTAssertTrue(script.contains("/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/sh -c '"), script)
         XCTAssertTrue(script.hasSuffix("with administrator privileges"), script)
         XCTAssertTrue(script.contains("mktemp"), script)
         XCTAssertTrue(script.contains("chmod 644"), script)
@@ -158,7 +161,10 @@ final class ResolverTests: XCTestCase {
         XCTAssertEqual(outcome, .restored)
         XCTAssertEqual(runner.calls.count, 1)
         XCTAssertEqual(runner.calls[0].executable, osascript)
+        XCTAssertEqual(runner.calls[0].environment, ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
         let script = runner.calls[0].arguments[1]
+        XCTAssertTrue(script.contains("with prompt \"Paddock needs your password to release ports 80 and 443 "
+            + "and put your .test DNS setting back.\""), script)
         XCTAssertTrue(script.contains(b64("nameserver 127.0.0.1\n")), script)
         XCTAssertTrue(script.contains(b64(r.desiredContents)), "guards on Paddock's own contents")
         XCTAssertNil(store.load().previousResolver)
@@ -444,13 +450,11 @@ final class ResolverTests: XCTestCase {
         let shell = Resolver.guardedScript(destination: tricky, expected: nil, action: .remove)
         XCTAssertTrue(shell.hasPrefix("D='/Users/x/Application Support/it'\\''s \"odd\"/test'; "
             + "DIR='/Users/x/Application Support/it'\\''s \"odd\"'; "), shell)
-        let apple = Resolver.appleScript(shell: shell)
-        let literalStart = try XCTUnwrap(apple.range(of: "do shell script \""))
-        let literalEnd = try XCTUnwrap(apple.range(of: "\" with prompt"))
-        let literal = String(apple[literalStart.upperBound..<literalEnd.lowerBound])
-        let unescaped = literal.replacingOccurrences(of: "\\\"", with: "\"")
-            .replacingOccurrences(of: "\\\\", with: "\\")
-        XCTAssertEqual(unescaped, shell)
+        // AppleScript literal, then the env -i … /bin/sh -c '…' layer, both undone exactly.
+        XCTAssertEqual(try PortHelperInstallTests.innerScript(ofAppleScript: Resolver.appleScript(shell: shell)), shell)
+        let backslashes = "a\\b\\\\c 'q' \"d\" $(x)"
+        XCTAssertEqual(try PortHelperInstallTests.innerScript(ofAppleScript: Resolver.appleScript(shell: backslashes)),
+                       backslashes)
     }
 
     // MARK: - The privileged script itself, run as the current user on temp files
@@ -532,6 +536,127 @@ final class ResolverTests: XCTestCase {
         XCTAssertTrue(engine.status().resolverInstalled)
         try writeFile("nameserver 127.0.0.1\n")
         XCTAssertFalse(engine.status().resolverInstalled)
+    }
+
+    // MARK: - Which step failed, in plain words
+
+    func testAFailedPortSetupSaysSoAndRollsBack() throws {
+        try writeFile("nameserver 10.0.0.1\n")
+        let runner = RecordingCommandRunner { _, _ in
+            (1, "0:120: execution error: PADDOCK_FAILED_PORTS_INSTALL paddock-ports did not match its checksum (1)")
+        }
+        XCTAssertThrowsError(try resolver(runner).install(preceding: portStep)) {
+            XCTAssertEqual($0 as? ResolverError, .portsSetupFailed("paddock-ports did not match its checksum"))
+            XCTAssertEqual(($0 as? ResolverError)?.message,
+                           "Couldn't set up ports 80 and 443: paddock-ports did not match its checksum")
+        }
+        XCTAssertNil(store.load().previousResolver)
+    }
+
+    func testAFailedResolverWriteIsAResolverFailureWithItsDetail() throws {
+        let runner = RecordingCommandRunner { _, _ in
+            (1, "execution error: PADDOCK_FAILED_RESOLVER_WRITE could not write /etc/resolver/test (1)")
+        }
+        XCTAssertThrowsError(try resolver(runner).install()) {
+            XCTAssertEqual($0 as? ResolverError, .failed("could not write /etc/resolver/test"))
+        }
+    }
+
+    func testAFailedPortRemovalAfterARestoreSaysTheResolverWasRestored() throws {
+        let r = resolver(RecordingCommandRunner())
+        try writeFile(r.desiredContents)
+        try store.update { $0.previousResolver = "nameserver 10.0.0.1\n" }
+        let failing = RecordingCommandRunner { _, _ in
+            (1, "execution error: PADDOCK_FAILED_PORTS_REMOVAL app.paddock.ports is still loaded (1)")
+        }
+        XCTAssertThrowsError(try resolver(failing).restore(then: portStep)) {
+            XCTAssertEqual($0 as? ResolverError, .portsReleaseFailed("app.paddock.ports is still loaded", resolverRestored: true))
+            XCTAssertEqual(($0 as? ResolverError)?.message,
+                           "Paddock restored your .test DNS setting but couldn't release ports 80 and 443: "
+                           + "app.paddock.ports is still loaded. Run paddock uninstall again.")
+        }
+        let changedThenFailed = RecordingCommandRunner { _, _ in
+            (1, "execution error: PADDOCK_CHANGED\nPADDOCK_FAILED_PORTS_REMOVAL app.paddock.ports is still loaded (1)")
+        }
+        XCTAssertThrowsError(try resolver(changedThenFailed).restore(then: portStep)) {
+            XCTAssertEqual($0 as? ResolverError, .portsReleaseFailed("app.paddock.ports is still loaded", resolverRestored: false))
+        }
+    }
+
+    func testAFailedPortRemovalAloneDoesNotClaimARestore() throws {
+        try writeFile("nameserver 8.8.8.8\n")
+        let failing = RecordingCommandRunner { _, _ in (1, "PADDOCK_FAILED_PORTS_REMOVAL could not remove its files") }
+        XCTAssertThrowsError(try resolver(failing).restore(then: portStep)) {
+            XCTAssertEqual(($0 as? ResolverError)?.message,
+                           "Couldn't release ports 80 and 443: could not remove its files. Run paddock uninstall again.")
+        }
+    }
+
+    // MARK: - A rejected saved copy doesn't keep the ports reserved
+
+    func testARejectedSavedCopyStillReleasesThePorts() throws {
+        let r = resolver(RecordingCommandRunner())
+        try writeFile(r.desiredContents)
+        try store.update { $0.previousResolver = "rm -rf /\n" }
+        let runner = RecordingCommandRunner()
+        XCTAssertThrowsError(try resolver(runner).restore(then: portStep)) {
+            XCTAssertEqual($0 as? ResolverError, .savedCopyRejectedPortsReleased(path: file.path))
+            XCTAssertEqual(($0 as? ResolverError)?.message,
+                           "Paddock released ports 80 and 443, but its saved copy of your original resolver file "
+                           + "doesn't look like a resolver file, so \(file.path) was left as it is.")
+        }
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertTrue(runner.calls[0].arguments[1].contains(portStep))
+        XCTAssertFalse(runner.calls[0].arguments[1].contains(b64("rm -rf /\n")), "the rejected copy is never sent")
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), r.desiredContents, "left as it is")
+    }
+
+    // MARK: - The resolver is checked before the port helper is touched
+
+    func testAResolverChangedDuringThePromptStopsTheInstallScriptBeforeThePortSteps() throws {
+        let marker = dir.appendingPathComponent("port-step-ran")
+        let fragment = "/usr/bin/touch " + Resolver.shellQuote(marker.path)
+        try FileManager.default.createDirectory(at: tricky.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "someone else's\n".write(to: tricky, atomically: true, encoding: .utf8)
+        let script = Resolver.installScript(destination: tricky, expected: "nameserver 127.0.0.1\n",
+                                            contents: "nameserver 127.0.0.1\nport 53535\n", preceding: fragment)
+        let result = try runShell(script)
+        XCTAssertEqual(result.status, 0, result.out)
+        XCTAssertTrue(result.out.contains(Resolver.changedMarker), result.out)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "the port steps never ran")
+        XCTAssertEqual(try String(contentsOf: tricky, encoding: .utf8), "someone else's\n")
+
+        // Unchanged: the port step runs, then the guarded write.
+        try "nameserver 127.0.0.1\n".write(to: tricky, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try runShell(script).status, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertEqual(try String(contentsOf: tricky, encoding: .utf8), "nameserver 127.0.0.1\nport 53535\n")
+    }
+
+    func testAnInterruptedResolverWriteRemovesItsTempFile() throws {
+        try FileManager.default.createDirectory(at: tricky.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Stand in for a slow step after the temp file exists: stop just before the move.
+        let script = Resolver.privilegedScript([
+            Resolver.guardedScript(destination: tricky, expected: nil, action: .write("x\n"))
+                .replacingOccurrences(of: "&& /bin/mv -f", with: "&& /bin/sleep 1 && /bin/mv -f"),
+        ])
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", script]
+        p.environment = [:]
+        try p.run()
+        let folder = tricky.deletingLastPathComponent()
+        let deadline = Date().addingTimeInterval(5)
+        func temps() -> [String] {
+            ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0.hasPrefix(".paddock.") }
+        }
+        while temps().isEmpty && Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        XCTAssertEqual(temps().count, 1)
+        Thread.sleep(forTimeInterval: 0.2)
+        kill(p.processIdentifier, SIGTERM)
+        p.waitUntilExit()
+        XCTAssertEqual(temps(), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tricky.path))
     }
 }
 
