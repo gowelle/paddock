@@ -166,6 +166,73 @@ final class PortHelperTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 1)
     }
 
+    // MARK: - Holding resources
+
+    func testIdleClientIsReleasedAfterUpstreamCloses() throws {
+        startServer(at: httpSocket, handler: UnixServer.sayGoodbye)
+        try startHelper(tuning: ["1"])
+        let pid = helper!.processIdentifier
+        let baseline = try openFileCount(pid: pid)
+
+        // Reads the reply and the EOF, then sits idle without closing.
+        let idle = try Client.connect(port: httpPort)
+        defer { close(idle) }
+        XCTAssertEqual(String(decoding: Client.readToEOF(idle), as: UTF8.self), "bye")
+        XCTAssertGreaterThan(try openFileCount(pid: pid), baseline, "connection should still be held")
+
+        try waitUntil("idle connection released", timeout: 5) { try openFileCount(pid: pid) <= baseline }
+        XCTAssertTrue(helper!.isRunning)
+        let next = try Client.connect(port: httpPort)
+        defer { close(next) }
+        XCTAssertEqual(String(decoding: Client.readToEOF(next), as: UTF8.self), "bye")
+    }
+
+    func testSlowReplyAfterHalfCloseIsComplete() throws {
+        // The idle timeout is between reads, not a total: a reply that keeps making progress
+        // for longer than the timeout still arrives whole.
+        startServer(at: httpSocket, handler: UnixServer.slowReplyAfterEOF)
+        try startHelper(tuning: ["1"])
+
+        let fd = try Client.connect(port: httpPort)
+        defer { close(fd) }
+        XCTAssertTrue(Client.writeAll(fd, Data("request".utf8)))
+        shutdown(fd, SHUT_WR)
+        let started = Date()
+        XCTAssertEqual(String(decoding: Client.readToEOF(fd), as: UTF8.self), "one two three four five ")
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 1.5)
+    }
+
+    func testConnectionCapClosesExtraConnections() throws {
+        startServer(at: httpSocket, handler: UnixServer.echo)
+        try startHelper(tuning: ["60", "4"])
+
+        var held = try (0..<4).map { _ in try Client.connect(port: httpPort) }
+        defer { held.forEach { close($0) } }
+        for (i, fd) in held.enumerated() {
+            XCTAssertTrue(Client.writeAll(fd, Data("held \(i)".utf8)))
+            XCTAssertEqual(String(decoding: Client.readExactly(fd, count: 6), as: UTF8.self), "held \(i)")
+        }
+
+        let extra = try Client.connect(port: httpPort)
+        defer { close(extra) }
+        Client.setReceiveTimeout(extra, seconds: 1)
+        let started = Date()
+        var byte: UInt8 = 0
+        let n = read(extra, &byte, 1)
+        let failure = errno
+        XCTAssertTrue(n == 0 || (n < 0 && failure == ECONNRESET), "read returned \(n), errno \(failure)")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+
+        close(held.removeFirst())
+        try waitUntil("a slot frees up") {
+            let fd = try Client.connect(port: httpPort)
+            defer { close(fd) }
+            guard Client.writeAll(fd, Data("again".utf8)) else { return false }
+            return String(decoding: Client.readExactly(fd, count: 5), as: UTF8.self) == "again"
+        }
+        XCTAssertTrue(helper!.isRunning)
+    }
+
     // MARK: - Process behaviour
 
     func testBadArgumentsExit64() throws {
@@ -177,6 +244,11 @@ final class PortHelperTests: XCTestCase {
             ["listen", "0", "\(httpsPort)", httpSocket, httpsSocket],
             ["listen", "70000", "\(httpsPort)", httpSocket, httpsSocket],
             ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "extra"],
+            ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "0"],
+            ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "1", "0"],
+            ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "1", "513"],
+            ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "1", "4", "9"],
+            ["launchd", httpSocket, httpsSocket, "1"],
             ["launchd", httpSocket],
         ]
         for arguments in bad {
@@ -189,7 +261,23 @@ final class PortHelperTests: XCTestCase {
     func testLaunchdFormOutsideLaunchdExits78() throws {
         let result = try runToExit(["launchd", httpSocket, httpsSocket])
         XCTAssertEqual(result.status, 78)
-        XCTAssertFalse(result.stderr.isEmpty)
+        XCTAssertTrue(result.stderr.contains("launchd"), result.stderr)
+    }
+
+    func testSocketPathLengthBoundary() throws {
+        // sun_path holds 104 bytes including the terminating NUL: 103 usable.
+        let prefix = root.path + "/"
+        let fits = prefix + String(repeating: "s", count: 103 - prefix.utf8.count)
+        let tooLong = fits + "s"
+        XCTAssertEqual(fits.utf8.count, 103)
+
+        let rejected = try runToExit(["listen", "\(httpPort)", "\(httpsPort)", tooLong, httpsSocket])
+        XCTAssertEqual(rejected.status, 1)
+        XCTAssertTrue(rejected.stderr.contains("too long"), rejected.stderr)
+
+        startServer(at: fits, handler: UnixServer.taggedEcho("long:"))
+        try startHelper(httpSocketPath: fits)
+        try assertExchange(port: httpPort, send: "edge", reply: "long:edge")
     }
 
     func testOverlongSocketPathExits1() throws {
@@ -237,10 +325,12 @@ final class PortHelperTests: XCTestCase {
     }
 
     /// Starts `paddock-ports listen …` and waits for its start line.
-    private func startHelper() throws {
+    /// `tuning` are the listen form's hidden trailing arguments: idle seconds, connection cap.
+    private func startHelper(tuning: [String] = [], httpSocketPath: String? = nil) throws {
         let process = Process()
         process.executableURL = try helperBinary()
-        process.arguments = ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket]
+        process.arguments = ["listen", "\(httpPort)", "\(httpsPort)", httpSocketPath ?? httpSocket, httpsSocket]
+            + tuning
         process.environment = [:]
         let errors = Pipe()
         process.standardError = errors
@@ -484,6 +574,20 @@ private final class UnixServer: @unchecked Sendable {
         { fd in
             guard Client.writeAll(fd, Data(tag.utf8)) else { return }
             echo(fd)
+        }
+    }
+
+    /// Replies at once and closes, whatever the client does.
+    static let sayGoodbye: @Sendable (Int32) -> Void = { fd in
+        _ = Client.writeAll(fd, Data("bye".utf8))
+    }
+
+    /// After the request's EOF, replies in five pieces 0.4 s apart (2 s in all).
+    static let slowReplyAfterEOF: @Sendable (Int32) -> Void = { fd in
+        _ = Client.readToEOF(fd)
+        for word in ["one", "two", "three", "four", "five"] {
+            Thread.sleep(forTimeInterval: 0.4)
+            guard Client.writeAll(fd, Data("\(word) ".utf8)) else { return }
         }
     }
 

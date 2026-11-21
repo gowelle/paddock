@@ -28,6 +28,8 @@ enum {
     EXIT_USAGE = 64,          // EX_USAGE
     EXIT_NO_LAUNCHD = 78,     // EX_CONFIG
     MAX_CONNECTIONS = 512,
+    IDLE_SECONDS = 60,        // see `pump`
+    BACKOFF_MICROSECONDS = 100 * 1000,
     BUFFER_SIZE = 64 * 1024,  // per direction; the only buffering, so memory stays bounded
     THREAD_STACK = 256 * 1024,
 };
@@ -41,6 +43,10 @@ struct listener {
 
 static const char *socket_paths[2];
 static atomic_int active_connections;
+// Fixed at MAX_CONNECTIONS and IDLE_SECONDS except in the `listen` form, whose hidden trailing
+// arguments let tests use small values. Never read from the environment or a file.
+static int max_connections = MAX_CONNECTIONS;
+static int idle_seconds = IDLE_SECONDS;
 static pthread_attr_t joinable_threads;  // the second direction of a connection
 static pthread_attr_t detached_threads;  // one per connection
 
@@ -86,8 +92,13 @@ static bool write_all(int fd, const char *bytes, size_t count) {
 
 /// Copies `from` to `to` with blocking I/O: while a write blocks, nothing more is read from
 /// `from`, which is the back-pressure. Ends on EOF (propagated as a half-close) or on an error.
+/// Reads wake every `idle_seconds`; once the other direction has ended, a read that waits that
+/// long with no data ends this direction too, so a peer that never closes cannot hold a slot.
+/// While both directions are open, idle waits are unlimited (a slow request is not cut off).
 static void pump(struct direction *d) {
     char buffer[BUFFER_SIZE];
+    struct timeval idle = { .tv_sec = idle_seconds };
+    (void)setsockopt(d->from, SOL_SOCKET, SO_RCVTIMEO, &idle, sizeof idle);
     for (;;) {
         ssize_t n = read(d->from, buffer, sizeof buffer);
         if (n > 0) {
@@ -100,6 +111,10 @@ static void pump(struct direction *d) {
             continue;
         }
         if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!atomic_load(&d->other->done)) continue;
+            n = 0;  // idle after the other direction ended: finish as if `from` had closed
+        }
         if (n == 0) {
             shutdown(d->to, SHUT_WR);
         } else {
@@ -167,7 +182,7 @@ static void accept_one(const struct listener *listener) {
     int client = accept(listener->fd, NULL, NULL);
     if (client < 0) {
         // Out of descriptors or memory: wait a little instead of spinning on a ready listener.
-        if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) usleep(100 * 1000);
+        if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) usleep(BACKOFF_MICROSECONDS);
         return;
     }
     int flags = fcntl(client, F_GETFL);
@@ -175,7 +190,7 @@ static void accept_one(const struct listener *listener) {
     set_option(client, SOL_SOCKET, SO_NOSIGPIPE);
     set_option(client, IPPROTO_TCP, TCP_NODELAY);
 
-    if (atomic_fetch_add(&active_connections, 1) >= MAX_CONNECTIONS) goto refuse;
+    if (atomic_fetch_add(&active_connections, 1) >= max_connections) goto refuse;
     struct connection *connection = malloc(sizeof *connection);
     if (connection == NULL) goto refuse;
     connection->client = client;
@@ -201,12 +216,19 @@ static void serve_forever(const struct listener *listeners, int count) {
     for (;;) {
         if (poll(polled, (nfds_t)count, -1) < 0) {
             if (errno == EINTR) continue;
+            // Darwin's poll can fail with EAGAIN transiently under memory pressure.
+            if (errno == EAGAIN) { usleep(BACKOFF_MICROSECONDS); continue; }
             fatal(1, "poll", strerror(errno));
         }
+        bool only_errors = false;
         for (int i = 0; i < count; i++) {
-            if (polled[i].revents & POLLNVAL) fatal(1, "listening socket", "closed unexpectedly");
-            if (polled[i].revents & (POLLIN | POLLERR | POLLHUP)) accept_one(&listeners[i]);
+            short events = polled[i].revents;
+            if (events & POLLNVAL) fatal(1, "listening socket", "closed unexpectedly");
+            if (events & POLLIN) accept_one(&listeners[i]);
+            else if (events & (POLLERR | POLLHUP)) only_errors = true;
         }
+        // A listener in an error state stays "ready": wait instead of spinning on it.
+        if (only_errors) usleep(BACKOFF_MICROSECONDS);
     }
 }
 
@@ -240,6 +262,7 @@ static int launchd_listeners(struct listener **out) {
 static int listen_on(int family, const char *address, int port) {
     int fd = socket(family, SOCK_STREAM, 0);
     int status = -1;
+    int error = errno;
     if (fd >= 0) {
         set_option(fd, SOL_SOCKET, SO_REUSEADDR);
         if (family == AF_INET6) {
@@ -254,11 +277,12 @@ static int listen_on(int family, const char *address, int port) {
             status = bind(fd, (struct sockaddr *)&sa, sizeof sa);
         }
         if (status == 0) status = listen(fd, SOMAXCONN);
+        error = errno;
     }
     if (status != 0) {
         char what[64];
         snprintf(what, sizeof what, "cannot listen on %s port %d", address, port);
-        fatal(1, what, strerror(errno));
+        fatal(1, what, strerror(error));
     }
     return fd;
 }
@@ -277,12 +301,13 @@ static int bound_listeners(const int ports[2], struct listener **out) {
 
 // MARK: - Startup
 
-static int parse_port(const char *text) {
+/// A decimal number in [minimum, maximum], or a usage error.
+static int parse_number(const char *text, int minimum, int maximum) {
     if (*text == '\0' || strlen(text) > 5) usage();
     for (const char *c = text; *c; c++) if (*c < '0' || *c > '9') usage();
-    int port = atoi(text);
-    if (port < 1 || port > 65535) usage();
-    return port;
+    int value = atoi(text);
+    if (value < minimum || value > maximum) usage();
+    return value;
 }
 
 static void check_socket_path(const char *path) {
@@ -317,12 +342,15 @@ int main(int argc, char *argv[]) {
         from_launchd = true;
         socket_paths[HTTP] = argv[2];
         socket_paths[HTTPS] = argv[3];
-    } else if (argc == 6 && strcmp(argv[1], "listen") == 0) {
+    } else if (argc >= 6 && argc <= 8 && strcmp(argv[1], "listen") == 0) {
         from_launchd = false;
-        ports[HTTP] = parse_port(argv[2]);
-        ports[HTTPS] = parse_port(argv[3]);
+        ports[HTTP] = parse_number(argv[2], 1, 65535);
+        ports[HTTPS] = parse_number(argv[3], 1, 65535);
         socket_paths[HTTP] = argv[4];
         socket_paths[HTTPS] = argv[5];
+        // Hidden, for tests only: [idle-seconds [max-connections]], never above the defaults.
+        if (argc >= 7) idle_seconds = parse_number(argv[6], 1, IDLE_SECONDS);
+        if (argc == 8) max_connections = parse_number(argv[7], 1, MAX_CONNECTIONS);
     } else {
         usage();
     }
