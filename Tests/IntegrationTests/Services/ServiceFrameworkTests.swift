@@ -417,11 +417,12 @@ final class ServiceFrameworkTests: XCTestCase {
         XCTAssertFalse(PortCheck.acceptsIPv4(port: port))
 
         try launchDaemon(catalog: catalog)
+        // Status can say running a moment before the service accepts connections (the supervisor has started
+        // it and the manager hasn't yet marked it starting): wait for both, with a deadline.
         XCTAssertTrue(waitFor(30) {
             guard case .ok(let status)? = try? client.send(.status, timeout: 5) else { return false }
-            return status.services.first?.state == .running
-        }, "the autostart service came back")
-        XCTAssertTrue(PortCheck.acceptsIPv4(port: port))
+            return status.services.first?.state == .running && PortCheck.acceptsIPv4(port: port)
+        }, "the autostart service came back and accepts connections")
         guard case .ok(let status) = try client.send(.status, timeout: 5) else { return XCTFail("status") }
         let secondGroup = try XCTUnwrap(status.processes["service-fake"].flatMap(TestSupport.pid(from:)))
         try stopDaemon()
