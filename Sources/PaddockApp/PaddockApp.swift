@@ -90,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let manifest = (try? PHPManifest.bundled())?.builds.map(\.version) ?? []
         return AppModel(client: PaddockClient(), services: LiveAppServices(), quitter: AppKitQuitter(),
                         availablePHP: Array(Set(manifest)), paths: .current,
-                        copyText: { NSPasteboard.general.clearContents(); NSPasteboard.general.setString($0, forType: .string) },
+                        copyText: Pasteboard.copy,
                         open: { NSWorkspace.shared.open($0) })
     }()
 

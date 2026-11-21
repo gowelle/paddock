@@ -34,6 +34,7 @@ enum Snapshots {
             ("settings-tasks-needs-approval", AnyView(TasksTab().settingsTheme().environmentObject(tasksModel(.needsApproval))),
              SettingsView.size),
             ("approval-sheet", AnyView(ApprovalSheet().environmentObject(approvalModel())), nil),
+            ("approval-sheet-nothing", AnyView(ApprovalSheet().environmentObject(approvalModel(nothing: true))), nil),
         ]
         var ok = true
         for (name, view, size) in shots {
@@ -225,9 +226,12 @@ enum Snapshots {
                                pending: pending, pendingHash: "v1:sample", notice: nil)
     }
 
-    private static func approvalModel() -> AppModel {
+    /// The sheet for a site with something to approve; with `nothing`, for one whose file went away.
+    private static func approvalModel(nothing: Bool = false) -> AppModel {
+        let gone = SiteTasksStatus(approval: .changed, tasks: [task("queue", "php artisan queue:work", .running(pid: 4182))],
+                                   pending: [], pendingHash: nil, notice: Messages.tasksFileRemoved(site: "shop"))
         let site = Site(name: "shop", path: shopPath, kind: .parked, secured: true, php: v85, pinned: false,
-                        tasks: approvalStatus())
+                        tasks: nothing ? gone : approvalStatus())
         let model = model(runningStatus(sites: [site]))
         settle { await model.showApproval(site: "shop") }
         return model

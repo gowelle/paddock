@@ -21,7 +21,8 @@ struct TasksTab: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .tableSurface()
-            SettingsFooter().padding(.horizontal, -20).padding(.bottom, -12)
+            if let notice = model.taskNotice { Caption(notice) }
+            DismissibleErrorLine()
         }
         .padding(20)
         .sheet(isPresented: Binding(get: { model.approvalSite != nil }, set: { if !$0 { model.dismissApproval() } })) {
@@ -123,7 +124,8 @@ struct TaskRowView: View {
 }
 
 /// Every command and forwarding line the site's `paddock.json` would run, exactly as the daemon reported them, in
-/// full. `Approve` approves exactly what is shown; it is never the default button.
+/// full; or why there is nothing to approve. `Approve` approves exactly what is shown; it is never the default
+/// button.
 struct ApprovalSheet: View {
     @EnvironmentObject private var model: AppModel
 
@@ -131,7 +133,13 @@ struct ApprovalSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(verbatim: "Approve the tasks of \(model.approvalSite ?? "")?")
                 .font(.headline)
-            if let shown = model.shownApproval {
+            switch model.approvalState {
+            case .loading:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading paddock.json…")
+                }
+            case .ready(let shown):
                 Text(verbatim: shown.heading)
                     .fixedSize(horizontal: false, vertical: true)
                 ScrollView {
@@ -151,27 +159,37 @@ struct ApprovalSheet: View {
                 Caption(shown.isChange
                         ? "The approved version keeps running until you approve this one."
                         : "Paddock runs these commands in the site's folder whenever it runs, until you turn them off.")
-            } else {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Reading paddock.json…")
-                }
+            case .nothingToApprove(let reason), .failed(let reason):
+                Text(verbatim: reason)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if let error = model.lastError { ErrorLine(text: error) }
+            if let error = model.approvalError { ErrorLine(text: error) }
             HStack {
                 Spacer()
-                Button("Not Now") { model.dismissApproval() }
-                    .keyboardShortcut(.cancelAction)
-                // No default-action shortcut: Return must not approve.
-                Button("Approve") {
-                    if let site = model.approvalSite { Task { await model.approveTasks(site: site) } }
+                switch model.approvalState {
+                case .loading, .ready:
+                    Button("Not Now") { model.dismissApproval() }
+                        .keyboardShortcut(.cancelAction)
+                    // No default-action shortcut: Return must not approve.
+                    Button("Approve") {
+                        if let site = model.approvalSite { Task { await model.approveTasks(site: site) } }
+                    }
+                    .disabled(!model.canApprove || approving)
+                case .nothingToApprove, .failed:
+                    Button("Close") { model.dismissApproval() }
+                        .keyboardShortcut(.cancelAction)
                 }
-                .disabled(!model.canApprove || model.approvalSite.map { model.isBusy(.tasksApprove(site: $0, hash: model.shownApproval?.hash ?? "")) } ?? true)
             }
         }
         .padding(20)
         .frame(width: 560)
         .foregroundStyle(Theme.ink)
         .background(Theme.ground)
+    }
+
+    /// An approval of what is shown is in flight.
+    private var approving: Bool {
+        guard let site = model.approvalSite, let hash = model.shownApproval?.hash else { return false }
+        return model.isBusy(.tasksApprove(site: site, hash: hash))
     }
 }

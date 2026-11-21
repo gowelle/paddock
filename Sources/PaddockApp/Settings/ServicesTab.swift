@@ -44,18 +44,22 @@ struct ServicesTab: View {
             if let notice = model.serviceNotice {
                 Caption(notice)
             }
-            SettingsFooter().padding(.horizontal, -20).padding(.bottom, -12)
+            DismissibleErrorLine()
         }
         .padding(20)
         .task { await model.loadCatalog() }
+        // Leaving the tab (or the window closing) withdraws an unanswered question.
+        .onDisappear { model.cancelRemoveAndDeleteData() }
         .confirmationDialog(model.deleteDataQuestion ?? "", isPresented: Binding(
             get: { model.deleteDataQuestion != nil },
-            // Cancel says so itself: a dismissal after the destructive button must not withdraw its confirmation.
-            set: { _ in })) {
+            // Any dismissal withdraws the question; the destructive button has used it up already.
+            set: { if !$0 { model.cancelRemoveAndDeleteData() } }), titleVisibility: .visible) {
             Button("Remove and Delete Data", role: .destructive) {
-                if let id = model.dataDeletionAsked { Task { await model.removeService(id, deleteData: true) } }
+                if let id = model.dataDeletionAsked { model.confirmRemoveAndDeleteData(id) }
             }
             Button("Cancel", role: .cancel) { model.cancelRemoveAndDeleteData() }
+        } message: {
+            Text(verbatim: model.deleteDataMessage ?? "")
         }
         .sheet(isPresented: Binding(get: { databaseFor != nil }, set: { if !$0 { databaseFor = nil } })) {
             createDatabaseSheet
@@ -68,9 +72,10 @@ struct ServicesTab: View {
                 Button {
                     Task { await model.addService(kind: entry.kind, version: entry.version) }
                 } label: {
-                    Text(verbatim: "\(entry.title) (\(entry.licence))")
+                    Text(verbatim: "\(entry.title) (\(entry.licence))"
+                         + (entry.unavailableReason.map { " \u{2014} \($0)" } ?? ""))
                 }
-                .disabled(entry.isAdding)
+                .disabled(entry.isAdding || entry.unavailableReason != nil)
             }
             if model.catalog.isEmpty {
                 Text("No services available")
@@ -155,5 +160,23 @@ struct ServiceRowView: View {
         [Request.serviceStart(name: row.id), .serviceStop(name: row.id), .serviceRestart(name: row.id),
          .serviceRemove(name: row.id, deleteData: false), .serviceRemove(name: row.id, deleteData: true)]
             .contains(where: model.isBusy)
+    }
+}
+
+/// The error line at the foot of the Services and Tasks tabs, with a button to dismiss it (an error stays until
+/// dismissed, replaced, or the same action succeeds).
+struct DismissibleErrorLine: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if let error = model.lastError {
+            HStack(alignment: .firstTextBaseline) {
+                ErrorLine(text: error)
+                Spacer()
+                Button("Dismiss") { model.dismissError() }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+        }
     }
 }
