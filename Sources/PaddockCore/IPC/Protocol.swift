@@ -9,6 +9,7 @@ public enum Request: Codable, Equatable, Sendable {
     case isolate(site: String, version: PHPVersion), unisolate(site: String)
     case use(version: PHPVersion)
     case installPHP(version: PHPVersion), removePHP(version: PHPVersion)
+    case trust
     case shutdown
 }
 
@@ -25,7 +26,7 @@ public enum ErrorCode {
     public static let phpInUse = "php_in_use"
     public static let phpNotAvailable = "php_not_available"
     public static let portsBlocked = "ports_blocked"
-    /// Declared for Task 11 (certificate trust); nothing returns it yet.
+    /// A site is served over HTTPS but macOS does not trust Paddock's certificate authority.
     public static let needsTrust = "needs_trust"
     public static let `internal` = "internal"
 }

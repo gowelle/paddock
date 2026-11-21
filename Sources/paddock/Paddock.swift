@@ -9,7 +9,7 @@ struct Paddock: ParsableCommand {
         subcommands: [
             Park.self, Forget.self, Parked.self,
             Link.self, Unlink.self, Links.self,
-            Secure.self, Unsecure.self,
+            Secure.self, Unsecure.self, Trust.self,
             Isolate.self, Unisolate.self, Use.self,
             Start.self, Stop.self, Restart.self, Status.self,
             Open.self, Logs.self,

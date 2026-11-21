@@ -24,8 +24,9 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "PaddockApp", dependencies: ["PaddockCore"]),
-        .testTarget(name: "PaddockCoreTests", dependencies: ["PaddockCore"]),
-        .testTarget(name: "IntegrationTests", dependencies: ["PaddockCore"]),
+        .target(name: "PaddockTestSupport", dependencies: ["PaddockCore"], path: "Tests/PaddockTestSupport"),
+        .testTarget(name: "PaddockCoreTests", dependencies: ["PaddockCore", "PaddockTestSupport"]),
+        .testTarget(name: "IntegrationTests", dependencies: ["PaddockCore", "PaddockTestSupport"]),
     ],
     swiftLanguageModes: [.v5]
 )

@@ -81,8 +81,14 @@ struct Secure: ParsableCommand {
 
     func run() throws {
         let target = try CLI.site(named: site, in: try CLI.send(.status, timeout: 30))
-        try CLI.send(.secure(site: target.name))
-        print("\(target.host) is now served over HTTPS.")
+        switch try CLI.sendRaw(.secure(site: target.name)) {
+        case .ok:
+            print("\(target.host) is now served over HTTPS.")
+        case .error(ErrorCode.needsTrust, _):
+            throw CLI.failure(Messages.needsTrust(host: target.host))
+        case .error(_, let message):
+            throw CLI.failure(message)
+        }
     }
 }
 
@@ -116,5 +122,18 @@ struct Open: ParsableCommand {
         }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw CLI.failure("Couldn't open \(target.url).") }
+    }
+}
+
+struct Trust: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Make macOS trust Paddock's certificate for HTTPS sites.")
+
+    func run() throws {
+        switch try CLI.sendRaw(.trust) {
+        case .ok:
+            print(Messages.trusted)
+        case .error(_, let message):
+            throw CLI.failure(message)
+        }
     }
 }

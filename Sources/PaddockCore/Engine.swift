@@ -25,6 +25,8 @@ public final class Engine: @unchecked Sendable {
     public let settings: Settings
     public let store: StateStore
     public let installer: PHPInstaller
+    /// Makes macOS trust Caddy's local CA when a site is secured; nil leaves trust alone.
+    let trust: CertificateTrust?
 
     private let supervisor: Supervisor
     private let dns: DNSResponder
@@ -44,14 +46,16 @@ public final class Engine: @unchecked Sendable {
     private static let caddyName = "caddy"
     private static let readyTimeout: TimeInterval = 15
 
-    public convenience init(paths: Paths = .current, settings: Settings = .current) {
-        self.init(paths: paths, settings: settings, installAction: nil)
+    public convenience init(paths: Paths = .current, settings: Settings = .current,
+                            trust: CertificateTrust? = nil) {
+        self.init(paths: paths, settings: settings, installAction: nil, trust: trust)
     }
 
     /// `backoffScale` shortens the supervisor's restart delays (tests only).
     init(paths: Paths, settings: Settings, installAction: (@Sendable (PHPVersion) async throws -> Void)?,
-         backoffScale: TimeInterval = 1) {
+         trust: CertificateTrust? = nil, backoffScale: TimeInterval = 1) {
         self.installAction = installAction
+        self.trust = trust
         supervisor = Supervisor(backoffScale: backoffScale)
         self.paths = paths
         self.settings = settings
@@ -248,6 +252,20 @@ public final class Engine: @unchecked Sendable {
             }
         }
     }
+
+    /// Waits until Caddy has written its root certificate, which it does lazily after the first
+    /// secured site is loaded. False if it did not appear in time.
+    func waitForRootCertificate(_ trust: CertificateTrust, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !FileManager.default.fileExists(atPath: trust.rootCertificate.path) {
+            guard Date() < deadline else { return false }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return true
+    }
+
+    /// Whether Caddy is up, so a root certificate can be expected.
+    var isServing: Bool { flags.running && !caddyCrashed }
 
     private static func accepts(port: Int) -> Bool {
         let fd = socket(AF_INET, SOCK_STREAM, 0)

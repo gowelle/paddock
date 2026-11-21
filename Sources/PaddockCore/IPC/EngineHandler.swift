@@ -85,7 +85,9 @@ extension Engine {
 
         case .secure(let name):
             guard let site = knownSite(name) else { return unknownSite(name) }
-            return await change { $0.secured.insert(site) }
+            let changed = await change { $0.secured.insert(site) }
+            guard case .ok = changed else { return changed }
+            return await ensureTrusted(afterSecuring: site) ?? changed
         case .unsecure(let name):
             guard let site = knownSite(name, alsoIn: { $0.secured }) else { return unknownSite(name) }
             return await change { $0.secured.remove(site) }
@@ -96,6 +98,9 @@ extension Engine {
         case .unisolate(let name):
             guard let site = knownSite(name, alsoIn: { Set($0.phpPins.keys) }) else { return unknownSite(name) }
             return await change { $0.phpPins[site] = nil }
+
+        case .trust:
+            return await ensureTrusted(afterSecuring: nil) ?? .ok(status())
 
         case .use(let version):
             guard installer.isInstalled(version) else { return notInstalled(version) }
@@ -155,6 +160,22 @@ extension Engine {
             return self.error(ErrorCode.internal, "\(error.localizedDescription)")
         }
         return .ok(status())
+    }
+
+    /// Trusts Paddock's certificate authority if macOS does not yet. Nil when it is (or no trust
+    /// object is set); `needs_trust` when it still is not afterwards (declined, or the command failed).
+    private func ensureTrusted(afterSecuring site: String?) async -> Response? {
+        guard let trust else { return nil }
+        let trusted = (try? await blocking { () -> Bool in
+            // Caddy creates its CA lazily; with it down there is nothing to wait for.
+            if self.isServing { _ = self.waitForRootCertificate(trust) }
+            if trust.isTrusted() { return true }
+            try? trust.trust()
+            return trust.isTrusted()
+        }) ?? false
+        if trusted { return nil }
+        return error(ErrorCode.needsTrust, site.map { Messages.needsTrust(host: "\($0).\(settings.tld)") }
+            ?? Messages.stillNotTrusted)
     }
 
     private func install(_ version: PHPVersion) async -> Response {

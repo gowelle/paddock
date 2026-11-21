@@ -25,7 +25,12 @@ do {
     exit(1)
 }
 
-let engine = Engine(paths: paths, settings: settings)
+// Trusting Caddy's CA changes the owner's keychain, so a daemon running on a throwaway home
+// (PADDOCK_HOME set, as in tests) never does it unless PADDOCK_TRUST=1 asks for it.
+let env = ProcessInfo.processInfo.environment
+let trustsCertificate = env["PADDOCK_HOME"].map { $0.isEmpty } ?? true || env["PADDOCK_TRUST"] == "1"
+let engine = Engine(paths: paths, settings: settings,
+                    trust: trustsCertificate ? CertificateTrust(paths: paths, runner: SystemCommandRunner()) : nil)
 let server = IPCServer(socket: paths.daemonSocket) { await engine.handle($0) }
 
 /// Stops everything and exits; safe to reach more than once.

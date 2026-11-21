@@ -44,6 +44,9 @@ public enum Caddyfile {
 
         """
 
+        // {host} carries no port, so a non-default HTTPS port has to be spelled out in the redirect.
+        let httpsAuthority = settings.httpsPort == 443 ? "{host}" : "{host}:\(settings.httpsPort)"
+
         for site in sites.sorted(by: { $0.name < $1.name }) where site.secured || site.pinned {
             let socket = quote(paths.fpmSocket(site.php).path)
             if site.secured {
@@ -55,7 +58,7 @@ public enum Caddyfile {
                 }
 
                 http://\(site.host) {
-                    redir https://{host}{uri}
+                    redir https://\(httpsAuthority){uri}
                 }
 
                 """

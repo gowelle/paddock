@@ -58,6 +58,14 @@ final class CaddyfileTests: XCTestCase {
         let out = render([site("shop", secured: true, pinned: true, php: v83)])
         XCTAssertTrue(out.contains(
             "https://shop.test {\n    tls internal\n    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
+        XCTAssertTrue(out.contains("http://shop.test {\n    redir https://{host}:18443{uri}\n}"))
+    }
+
+    func testRedirectOmitsPortOnDefaultHttpsPort() {
+        var settings = Settings()
+        settings.httpsPort = 443
+        let out = Caddyfile.render(sites: [site("shop", secured: true)], defaultPHP: v84, paths: paths,
+                                   settings: settings)
         XCTAssertTrue(out.contains("http://shop.test {\n    redir https://{host}{uri}\n}"))
     }
 

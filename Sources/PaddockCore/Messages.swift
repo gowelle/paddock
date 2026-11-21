@@ -7,6 +7,15 @@ public enum Messages {
     public static let notASite =
         "This folder isn't a Paddock site. Run this inside a site folder, or link it first with: paddock link"
 
+    public static let trusted = "Paddock's certificate is trusted."
+
+    public static func needsTrust(host: String) -> String {
+        "\(host) is served over HTTPS, but macOS doesn't trust Paddock's certificate yet. Run: paddock trust"
+    }
+
+    public static let stillNotTrusted =
+        "macOS still doesn't trust Paddock's certificate. Run paddock trust again and approve the macOS prompt."
+
     public static func phpNotAvailable(_ version: PHPVersion) -> String {
         "PHP \(version) isn't available for Intel Macs yet."
     }
