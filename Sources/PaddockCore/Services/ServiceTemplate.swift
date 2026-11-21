@@ -84,6 +84,16 @@ public enum ServiceTemplate {
                                stdin: try command.stdin.map { try render($0, context: context) })
     }
 
+    /// Renders a config file. Without a usable socket (none, or its path too long for macOS) every line that
+    /// uses `{socket}` or `{socketDir}` is left out, as `.env` lines are, so a server is never handed an empty
+    /// socket setting (Valkey's `unixsocket ""` would fail). Lines end at `\n`.
+    public static func renderFile(_ template: String, context: ServiceTemplateContext) throws -> String {
+        guard context.socket == nil else { return try render(template, context: context) }
+        // By UTF-16 unit, so `\r\n` (one Character) ends a line too.
+        let kept = template.components(separatedBy: "\n").filter { !mentionsSocket($0) }
+        return try render(kept.joined(separator: "\n"), context: context)
+    }
+
     /// The placeholder names `template` uses (`port.main`, `data`…), whether known or not.
     static func placeholders(in template: String) -> [String] {
         var names: [String] = []

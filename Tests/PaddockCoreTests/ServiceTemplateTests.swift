@@ -89,6 +89,19 @@ final class ServiceTemplateTests: XCTestCase {
         XCTAssertEqual(try ServiceTemplate.render("{run}/.s.PGSQL.{port.main}", context: context), "/h/run/svc/sample/.s.PGSQL.4001")
     }
 
+    /// A config file's lines that use `{socket}` or `{socketDir}` are left out when the instance has no
+    /// usable socket, as `.env` lines are: a server is never handed an empty socket setting.
+    func testConfigFileLinesNamingTheSocketAreDroppedWithoutASocket() throws {
+        let file = "port {port.main}\nunixsocket \"{socket}\"\nsocket_dir={socketDir}\nunixsocketperm 700\n"
+        XCTAssertEqual(try ServiceTemplate.renderFile(file, context: context),
+                       "port 4001\nunixsocket \"/h/run/svc/sample/s.sock\"\nsocket_dir=/h/run/svc/sample\nunixsocketperm 700\n")
+        var bare = context
+        bare.socket = nil
+        XCTAssertEqual(try ServiceTemplate.renderFile(file, context: bare), "port 4001\nunixsocketperm 700\n")
+        XCTAssertEqual(try ServiceTemplate.renderFile("{socket}", context: bare), "")
+        XCTAssertEqual(try ServiceTemplate.renderFile("a\r\nb {socket}\r\nc", context: bare), "a\r\nc")
+    }
+
     /// An action's parameters render only where they are bound; anywhere else they are unknown.
     func testParametersRenderOnlyWhenBound() throws {
         XCTAssertThrowsError(try ServiceTemplate.render("{database}", context: context)) {

@@ -161,7 +161,8 @@ public struct RenderedCommand: Equatable, Sendable {
     public let stdin: String?
 }
 
-/// A file Paddock writes for a service (both templates): before initialise, and again on every start.
+/// A file Paddock writes for a service (both templates): before initialise, and again on every start. Its
+/// lines that use `{socket}` or `{socketDir}` are left out when the instance has no usable socket.
 public struct RecipeFile: Codable, Equatable, Sendable {
     /// Under `{config}/`.
     public let path: String

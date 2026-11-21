@@ -345,6 +345,18 @@ final class ServiceLifecycleTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: conf, encoding: .utf8), "port = \(home.fakePort)\n", "rewritten on start")
     }
 
+    /// A config file is written without its socket lines when the instance's socket path is too long.
+    func testConfigFileSocketLinesAreLeftOutWhenTheSocketIsTooLong() async throws {
+        home.cleanUp()
+        home = try ServiceHome(longFolder: true)
+        let recipe = FakeService.recipe(configFiles: [RecipeFile(path: "{config}/fake.conf",
+                                                                 contents: "port = {port.main}\nsocket = {socket}\n")])
+        let manager = makeManager([recipe])
+        _ = try await manager.add(kind: "fake", version: nil)
+        let conf = home.paths.serviceConfig("fake").appendingPathComponent("fake.conf")
+        XCTAssertEqual(try String(contentsOf: conf, encoding: .utf8), "port = \(home.fakePort)\n")
+    }
+
     /// A port that was free when chosen but is taken by the time the download is done is chosen again;
     /// nothing was saved before that point.
     func testPortsAreCheckedAgainAfterTheDownload() async throws {

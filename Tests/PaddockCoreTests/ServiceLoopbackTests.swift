@@ -29,7 +29,7 @@ final class ServiceLoopbackTests: XCTestCase {
         }
         texts.append(try ServiceTemplate.render(recipe.ready.template, context: context))
         for file in recipe.configFiles {
-            texts += try ServiceTemplate.render(file.contents, context: context).components(separatedBy: .newlines)
+            texts += try ServiceTemplate.renderFile(file.contents, context: context).components(separatedBy: .newlines)
         }
         return texts
     }

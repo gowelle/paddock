@@ -975,7 +975,7 @@ public final class ServiceManager: @unchecked Sendable {
             if let socket = context.socket, !Self.isUnder(socket, folder: paths.serviceRun(id)) {
                 throw ServiceError.unsafeRecipe(name: instance.name, reason: "its socket would be outside its run folder")
             }
-            let files = try recipe.configFiles.map { try ServiceTemplate.render($0.contents, context: context) }
+            let files = try recipe.configFiles.map { try ServiceTemplate.renderFile($0.contents, context: context) }
             let texts = [command.executable] + command.arguments + Array(command.environment.values)
                 + files.flatMap { $0.components(separatedBy: .newlines) }
             if let wildcard = texts.lazy.compactMap(ServiceLoopback.wildcard(in:)).first {
@@ -1397,7 +1397,8 @@ public final class ServiceManager: @unchecked Sendable {
         return lines
     }
 
-    /// Writes the recipe's config files (each only inside the instance's `config/`).
+    /// Writes the recipe's config files (each only inside the instance's `config/`), without the lines that
+    /// name the socket when it has none (`ServiceTemplate.renderFile`).
     private func writeConfigFiles(_ recipe: ServiceRecipe, context: ServiceTemplateContext, id: String) throws {
         let config = paths.serviceConfig(id).standardizedFileURL
         for file in recipe.configFiles {
@@ -1406,7 +1407,7 @@ public final class ServiceManager: @unchecked Sendable {
                 throw ServiceError.unsafeRecipe(name: context.name, reason: "its config file would be outside its config folder")
             }
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(try ServiceTemplate.render(file.contents, context: context).utf8).write(to: target, options: .atomic)
+            try Data(try ServiceTemplate.renderFile(file.contents, context: context).utf8).write(to: target, options: .atomic)
         }
     }
 
