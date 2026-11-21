@@ -141,6 +141,21 @@ for name in $POSTGIS_NAMES; do
   echo "PostGIS add-on $file verified."
 done
 
+# Valkey: Paddock's own build for the Redis (Valkey) service, made by Scripts/build-valkey.sh into
+# Vendor/builds/ and shipped in the app (a services-catalog.json paddock-builds:// asset). Checked only.
+url="$(lock_field valkey 2)"
+sha="$(lock_field valkey 3)"
+[ -n "$url" ] && [ -n "$sha" ] || fail "Scripts/versions.lock has no valkey line."
+case "$url" in
+  paddock-builds://*) file="${url#paddock-builds://}" ;;
+  *) fail "valkey in Scripts/versions.lock is $url; Valkey must come from Paddock's own builds (paddock-builds://)." ;;
+esac
+[ -f "$BUILDS/$file" ] || fail "Vendor/builds/$file is missing. Build it with: Scripts/build-valkey.sh" \
+  "(a few minutes), or copy the archive there."
+actual="$(sha256 "$BUILDS/$file")"
+[ "$actual" = "$sha" ] || fail "Vendor/builds/$file has checksum $actual; Scripts/versions.lock expects $sha."
+echo "Valkey build $file verified."
+
 # Router and manifest
 ln -sfn ../Resources/router "$VENDOR/router"
 cp "$MANIFEST" "$VENDOR/php-manifest.json"
