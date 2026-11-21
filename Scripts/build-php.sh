@@ -8,13 +8,15 @@
 #        Scripts/build-php.sh --tools-only                  only set up the build tools and run `spc doctor`
 #        Scripts/build-php.sh --verify-sources <patch> <dir> check an spc downloads folder against the manifest
 #
-# A series (8.4) builds the newest patch static-php-cli resolves and prints which; a patch (8.4.28) builds
-# exactly that release. An existing archive for the same patch is never replaced unless --force is given.
+# A series (8.4) builds the newest patch php.net lists for it and prints which; a patch (8.4.28) builds
+# exactly that release. An existing archive for the same patch is never replaced unless --force is given;
+# that is checked before anything is downloaded.
 #
 # A clean run takes about 15 minutes of tool setup plus about 15 minutes per series (a later series reuses
-# the libraries the first one built). Everything is built under /tmp/paddock-php-build (override with
-# PADDOCK_PHP_BUILD_DIR), a neutral path, so no user name ends up in the binaries; delete it to start from
-# scratch.
+# the libraries the first one built). Everything is built under /private/tmp/paddock-php-build-<uid>
+# (override with PADDOCK_PHP_BUILD_DIR), a neutral path, so no user name ends up in the binaries. The
+# folder must be a real directory (not a symlink) owned by you and writable by no one else; the script
+# creates it with mode 700 and refuses any other. Delete it to start from scratch.
 #
 # What is pinned:
 #   - The build tools (cmake, xz, m4, autoconf, automake, libtool, re2c, bison) and the static-php-cli
@@ -22,13 +24,20 @@
 #   - Every source and package static-php-cli downloads (the PHP source, each library's source, its
 #     prebuilt static library packages for openssl, icu, zlib, libiconv, gmp, ncurses, libsodium, libpng,
 #     libwebp and bzip2, the PECL extensions, its pkg-config package; the git checkout it makes, by commit):
-#     by the committed manifest Scripts/php-sources/<patch>.sha256. A build whose downloads differ in any
-#     way (changed, missing or extra file) stops before building. PADDOCK_PHP_ACCEPT_NEW_SOURCES=1
+#     by the committed manifest Scripts/php-sources/<patch>.sha256, which lists every file in spc's
+#     downloads folder, hidden ones included, except spc's own bookkeeping file .lock.json (it records
+#     the order and history of downloads, so it differs between identical sets of files); a git checkout
+#     is recorded by commit and must have a clean working tree. A build whose downloads differ in any
+#     way (changed, missing or extra file) stops before building. Sources extracted by an earlier run are
+#     reused only when a marker written after a verified build says they came from the same library set;
+#     otherwise they are deleted and re-extracted from the verified downloads.
+#   - The tool tarballs and the spc tarball are re-verified on every run before anything built or
+#     extracted from them is used. PADDOCK_PHP_ACCEPT_NEW_SOURCES=1
 #     accepts the new downloads and rewrites that manifest (review and commit it). A patch with no
 #     committed manifest records one. Each build also writes Vendor/builds/sources-<patch>.sha256.
 #
-# Every build is checked to contain no user name, host name or /Users/ path (PHP_UNAME and
-# PHP_BUILD_SYSTEM are set to a neutral string). The archives shipped today (8.4.28 and 8.5.13) predate
+# Every build is checked to contain no user name, host name (hostname -s, LocalHostName, ComputerName)
+# or /Users/ path (PHP_UNAME and PHP_BUILD_SYSTEM are set to a neutral string). The archives shipped today (8.4.28 and 8.5.13) predate
 # that: they embed the original build machine's host name and scratch paths with its user name, and must
 # be rebuilt with this script before the app is given to anyone else.
 #
@@ -41,10 +50,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-W="${PADDOCK_PHP_BUILD_DIR:-/tmp/paddock-php-build}"
+W="${PADDOCK_PHP_BUILD_DIR:-/private/tmp/paddock-php-build-$(id -u)}"
 OUT="$ROOT/Vendor/builds"
 SOURCES="$ROOT/Scripts/php-sources"
 BUILD_USER="$(id -un)"
+[ "${#BUILD_USER}" -ge 3 ] || fail "user name '$BUILD_USER' is shorter than 3 characters; the privacy check cannot work."
 
 # static-php-cli publishes its macOS binary only as a moving "nightly"; this is the 2.8.6 tarball the
 # current builds were made with. If the nightly has moved on, review it and pass its checksum in
@@ -67,19 +77,25 @@ usage() {
   exit 2
 }
 
-# source_manifest DIR: "sha256  name" for every file in an spc downloads folder (a git checkout as
-# "git:<commit>  name/"), sorted by name. Hidden files (spc's .lock.json) are left out.
+# source_manifest DIR: "sha256  name" for every file in an spc downloads folder, hidden ones included
+# except spc's own .lock.json (see the header), and "git:<commit>  name/" for a git checkout (with
+# "-dirty" after the commit when its working tree has changes), sorted by name.
 source_manifest() {
-  local dir="$1" f
+  local dir="$1" f commit
   (
     cd "$dir"
-    for f in *; do
-      [ -e "$f" ] || continue
-      if [ -d "$f" ]; then
+    for f in * .[!.]* ..?*; do
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      [ "$f" = .lock.json ] && continue
+      if [ -L "$f" ]; then
+        fail "unexpected symlink in $dir: $f"
+      elif [ -d "$f" ]; then
         [ -d "$f/.git" ] || fail "unexpected directory in $dir: $f"
-        printf 'git:%s  %s/\n' "$(git -C "$f" rev-parse HEAD)" "$f"
+        commit="$(git -C "$f" rev-parse HEAD)"
+        [ -z "$(git -C "$f" status --porcelain)" ] || commit="$commit-dirty"
+        printf 'git:%s  %s/\n' "$commit" "$f"
       else
-        printf '%s  %s\n' "$(shasum -a 256 "$f" | awk '{print $1}')" "$f"
+        printf '%s  %s\n' "$(shasum -a 256 -- "$f" | awk '{print $1}')" "$f"
       fi
     done
   ) | LC_ALL=C sort -k2
@@ -117,6 +133,55 @@ check_sources() {
   fail "refusing to build from sources that differ from the pinned ones (set PADDOCK_PHP_ACCEPT_NEW_SOURCES=1 to accept them)."
 }
 
+# require_private_dir DIR: create DIR (mode 700) if missing; then require a real directory, not a
+# symlink, owned by this user and writable by no one else. Anything else may have been planted.
+require_private_dir() {
+  local d="$1" mode
+  if [ ! -e "$d" ] && [ ! -L "$d" ]; then
+    mkdir -m 700 "$d" || fail "cannot create $d"
+  fi
+  [ ! -L "$d" ] || fail "$d is a symlink; refusing to build there."
+  [ -d "$d" ] || fail "$d is not a directory."
+  [ "$(stat -f %u "$d")" = "$(id -u)" ] || fail "$d is not owned by you; refusing to build there."
+  mode="$(stat -f %Lp "$d")"
+  [ $(( 8#$mode & 8#022 )) = 0 ] || fail "$d is writable by others (mode $mode); refusing to build there."
+  [ "$(cd "$d" && pwd -P)" = "$(cd "$(dirname "$d")" && pwd -P)/$(basename "$d")" ] \
+    || fail "$d does not resolve to itself; refusing to build there."
+}
+
+# resolve_patch SERIES: the newest release php.net lists for a series, e.g. 8.4 -> 8.4.28.
+resolve_patch() {
+  local json version
+  json="$(mktemp "$W/release.XXXXXX")"
+  curl -fsSL --retry 3 -o "$json" "https://www.php.net/releases/?json&version=$1" \
+    || fail "could not ask php.net for the newest PHP $1"
+  version="$(plutil -extract version raw -o - "$json" 2>/dev/null)" || version=""
+  rm -f "$json"
+  case "$version" in
+    "$1".[0-9]*) echo "$version" ;;
+    *) fail "php.net did not name a PHP $1 release (got: ${version:-nothing})" ;;
+  esac
+}
+
+# privacy_check FILE: fail when FILE contains this Mac's user name, host names (hostname -s,
+# LocalHostName, ComputerName) or a /Users/ path. grep reads the binary itself (byte-wise, so a
+# ComputerName with non-ASCII letters is found too, which `strings` would split) and counts matches; no
+# `grep -q` in a pipeline, which under pipefail lets the writer die of SIGPIPE and turns a match into a
+# pass.
+privacy_check() {
+  local file="$1" name patterns=(-e "/Users/") count
+  for name in "$BUILD_USER" "$(hostname -s 2>/dev/null || true)" \
+              "$(scutil --get LocalHostName 2>/dev/null || true)" "$(scutil --get ComputerName 2>/dev/null || true)"; do
+    [ -n "$name" ] || continue
+    [ "${#name}" -ge 3 ] || fail "cannot check $file for '$name': names shorter than 3 characters match too much."
+    patterns+=(-e "$name")
+  done
+  [ -r "$file" ] || fail "cannot read $file"
+  count="$(LC_ALL=C grep -a -c -iF "${patterns[@]}" -- "$file" || true)"
+  [ -n "$count" ] || fail "grep failed on $file"
+  [ "$count" = 0 ] || fail "$file contains the build machine's user name, host name or a /Users/ path:"$'\n'"$(LC_ALL=C grep -a -o -iF "${patterns[@]}" -- "$file" | sort -u | head -n 5 || true)"
+}
+
 TOOLS_ONLY=0
 FORCE=0
 TARGETS=()
@@ -141,7 +206,28 @@ done
 [ "$(uname -s)" = Darwin ] || fail "builds for macOS only."
 [ "$(uname -m)" = x86_64 ] || fail "run this on an Intel Mac: Paddock's builds are x86_64."
 
+require_private_dir "$W"
 mkdir -p "$W"/{tool,tools/bin,tsrc,bin,work,out,logs,licenses} "$OUT"
+
+# Resolve every target to a patch, and refuse to replace existing archives, before downloading anything.
+PATCHES=()
+for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
+  case "$target" in
+    *.*.*) patch="$target" ;;
+    *) patch="$(resolve_patch "$target")"; say "PHP $target resolves to PHP $patch" ;;
+  esac
+  existing=0
+  for kind in cli fpm; do
+    archive="$OUT/php-$patch-$kind-macos-x86_64.tar.gz"
+    if [ -f "$archive" ]; then
+      echo "  existing $(shasum -a 256 -- "$archive")"
+      existing=1
+    fi
+  done
+  [ "$existing" = 0 ] || [ "$FORCE" = 1 ] || fail "Vendor/builds already holds PHP $patch archives (above);" \
+    "installed copies and Scripts/versions.lock refer to them. Pass --force to replace them."
+  PATCHES+=("$patch")
+done
 
 # Only Xcode's and our own tools: never Homebrew (/usr/local, /opt/homebrew) or MacPorts (/opt/local).
 export PATH="$W/tools/bin:$W/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -160,49 +246,52 @@ export COPYFILE_DISABLE=1
 printf '#!/bin/sh\necho "build-php.sh: spc wanted brew ($*); not used" >&2\nexit 1\n' > "$W/bin/brew"
 chmod +x "$W/bin/brew"
 
-# fetch URL SHA256 FILE: download into $W/tsrc (once) and verify.
+# fetch URL SHA256 FILE: download into $W/tsrc (once) and verify it, on every run.
 fetch() {
   local url="$1" sha="$2" file="$W/tsrc/$3" actual
   if [ ! -f "$file" ]; then
     curl -fL --retry 3 -sS -o "$file.part" "$url"
     mv "$file.part" "$file"
   fi
-  actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  actual="$(shasum -a 256 -- "$file" | awk '{print $1}')"
   if [ "$actual" != "$sha" ]; then
     rm -f "$file"
     fail "checksum mismatch for $url: expected $sha, got $actual"
   fi
 }
 
-# autotools NAME VERSION URL SHA256 [configure flags...]: build from source into $W/tools, once.
+# autotools NAME VERSION URL SHA256 [configure flags...]: build from source into $W/tools, once per
+# verified tarball (the tarball is re-verified every run before its marker is trusted).
 autotools() {
   local name="$1" version="$2" url="$3" sha="$4"
   shift 4
   local file="${url##*/}"
-  if [ -f "$W/tools/.built-$name-$version" ]; then return; fi
-  say "building $name $version"
   fetch "$url" "$sha" "$file"
+  if [ -f "$W/tools/.built-$name-$version-$sha" ]; then return; fi
+  say "building $name $version"
   rm -rf "$W/tsrc/$name-$version"
   tar -xf "$W/tsrc/$file" -C "$W/tsrc"
   (cd "$W/tsrc/$name-$version" && ./configure --prefix="$W/tools" "$@" && make -j"$(sysctl -n hw.ncpu)" && make install) \
     > "$W/logs/tool-$name.log" 2>&1 || fail "building $name failed; see $W/logs/tool-$name.log"
-  touch "$W/tools/.built-$name-$version"
+  touch "$W/tools/.built-$name-$version-$sha"
 }
 
 setup_tools() {
-  if [ ! -x "$W/tool/spc" ]; then
-    say "fetching static-php-cli"
-    fetch "$SPC_URL" "$SPC_SHA256" spc-macos-x86_64.tar.gz
-    tar -xzf "$W/tsrc/spc-macos-x86_64.tar.gz" -C "$W/tool"
-  fi
-  if [ ! -x "$W/tools/bin/cmake" ]; then
-    say "fetching cmake 3.31.8"
-    fetch https://github.com/Kitware/CMake/releases/download/v3.31.8/cmake-3.31.8-macos-universal.tar.gz \
-      d1449f969c54d5c00886d5b643340d493dfb3c81cb39ee29b35453395c11ebf7 cmake-3.31.8-macos-universal.tar.gz
+  local cmake_sha=d1449f969c54d5c00886d5b643340d493dfb3c81cb39ee29b35453395c11ebf7
+  # spc: the pinned tarball is verified and spc re-extracted from it on every run.
+  fetch "$SPC_URL" "$SPC_SHA256" spc-macos-x86_64.tar.gz
+  rm -f "$W/tool/spc"
+  tar -xzf "$W/tsrc/spc-macos-x86_64.tar.gz" -C "$W/tool" spc
+  fetch https://github.com/Kitware/CMake/releases/download/v3.31.8/cmake-3.31.8-macos-universal.tar.gz \
+    "$cmake_sha" cmake-3.31.8-macos-universal.tar.gz
+  if [ ! -f "$W/tools/.extracted-cmake-$cmake_sha" ]; then
+    say "unpacking cmake 3.31.8"
+    rm -rf "$W/tsrc/cmake-3.31.8-macos-universal"
     tar -xzf "$W/tsrc/cmake-3.31.8-macos-universal.tar.gz" -C "$W/tsrc"
     for b in cmake ctest cpack; do
       ln -sf "$W/tsrc/cmake-3.31.8-macos-universal/CMake.app/Contents/bin/$b" "$W/tools/bin/$b"
     done
+    touch "$W/tools/.extracted-cmake-$cmake_sha"
   fi
   autotools xz 5.8.1 https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz \
     507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543 --disable-doc --disable-nls --disable-shared
@@ -231,9 +320,10 @@ say "spc doctor"
 
 # accept DIR SERIES: the checks every archive must pass before it is written.
 accept() {
-  local dir="$1" series="$2" b mods missing="" e host
+  local dir="$1" series="$2" b mods missing="" e out
   for b in php php-fpm; do
-    file "$dir/$b" | grep -q x86_64 || fail "$b is not x86_64"
+    out="$(file "$dir/$b")"
+    grep -q x86_64 <<< "$out" || fail "$b is not x86_64"
     if otool -L "$dir/$b" | tail -n +2 | grep -vE '^[[:space:]]*(/usr/lib/|/System/)'; then
       fail "$b links a library outside /usr/lib and /System"
     fi
@@ -252,60 +342,53 @@ accept() {
   [ "$("$dir/php" -n -r 'echo implode(",", PDO::getAvailableDrivers());')" = "mysql,pgsql,sqlite" ] \
     || fail "PDO drivers are not mysql, pgsql, sqlite"
   [ "$("$dir/php" -n -r 'echo mb_ereg("b+", "abbc", $m) ? $m[0] : "none";')" = bb ] || fail "mb_ereg does not work"
-  "$dir/php" -n -r 'echo PHP_VERSION;' | grep -q "^$series\." || fail "php is not PHP $series"
+  out="$("$dir/php" -n -r 'echo PHP_VERSION;')"
+  grep -q "^$series\." <<< "$out" || fail "php is not PHP $series"
   "$dir/php-fpm" -n -v >/dev/null || fail "php-fpm -v failed"
   # Nothing about the machine that built it: no user name, host name or home folder path.
-  host="$(hostname -s)"
-  for b in php php-fpm; do
-    if strings -a "$dir/$b" | grep -qiF -e "/Users/" -e "$BUILD_USER" -e "$host"; then
-      fail "$b contains the build machine's user name, host name or a /Users/ path:" \
-        "$(strings -a "$dir/$b" | grep -iF -e "/Users/" -e "$BUILD_USER" -e "$host" | head -n 3)"
-    fi
-  done
+  for b in php php-fpm; do privacy_check "$dir/$b"; done
 }
 
 DOWNLOADS="$W/work/downloads"
 cd "$W/work"
 FIRST=1
 [ -d "$W/work/source/php-src" ] && FIRST=0
-for target in "${TARGETS[@]}"; do
-  series="$(echo "$target" | cut -d. -f1,2)"
-  wanted=""
-  custom=()
-  if [ "$target" != "$series" ]; then
-    wanted="$target"
-    custom=(--custom-url="php-src:https://www.php.net/distributions/php-$wanted.tar.xz")
-  fi
+for patch in "${PATCHES[@]}"; do
+  series="$(echo "$patch" | cut -d. -f1,2)"
+  custom=(--custom-url="php-src:https://www.php.net/distributions/php-$patch.tar.xz")
   if [ "$FIRST" = 1 ]; then
-    say "downloading sources for PHP $target"
+    say "downloading sources for PHP $patch"
     "$SPC" download --with-php="$series" --for-extensions="$EXTS" --for-libs="$WITH_LIBS" \
-      --without-suggestions --prefer-pre-built --retry=3 ${custom[@]+"${custom[@]}"}
+      --without-suggestions --prefer-pre-built --retry=3 "${custom[@]}"
     # The pre-built sqlite lacks SQLITE_ENABLE_COLUMN_METADATA and fails spc's sanity check: use the source.
     "$SPC" del-download sqlite
     "$SPC" download sqlite --retry=3
     FIRST=0
   else
-    say "switching the sources to PHP $target (the built libraries are reused)"
+    say "switching the sources to PHP $patch (the built libraries are reused if still verified)"
     "$SPC" switch-php-version "$series" --retry=3
-    if [ -n "$wanted" ] && [ "$(downloaded_patch "$DOWNLOADS")" != "$wanted" ]; then
+    if [ "$(downloaded_patch "$DOWNLOADS")" != "$patch" ]; then
       "$SPC" del-download php-src
       "$SPC" download php-src --with-php="$series" --retry=3 "${custom[@]}"
     fi
   fi
-  patch="$(downloaded_patch "$DOWNLOADS")"
-  [ -z "$wanted" ] || [ "$patch" = "$wanted" ] || fail "asked for PHP $wanted, but the downloaded source is $patch"
-  say "PHP $target resolves to PHP $patch"
+  [ "$(downloaded_patch "$DOWNLOADS")" = "$patch" ] || fail "asked for PHP $patch, but the downloaded source is $(downloaded_patch "$DOWNLOADS")"
   check_sources "$patch" "$DOWNLOADS"
-  source_manifest "$DOWNLOADS" > "$OUT/sources-$patch.sha256"
+  manifest="$(source_manifest "$DOWNLOADS")"
+  printf '%s\n' "$manifest" > "$OUT/sources-$patch.sha256"
 
-  existing=()
-  for kind in cli fpm; do
-    [ -f "$OUT/php-$patch-$kind-macos-x86_64.tar.gz" ] && existing+=("php-$patch-$kind-macos-x86_64.tar.gz")
-  done
-  if [ "${#existing[@]}" -gt 0 ]; then
-    for a in "${existing[@]}"; do echo "  existing $(shasum -a 256 "$OUT/$a")"; done
-    [ "$FORCE" = 1 ] || fail "Vendor/builds already holds PHP $patch archives (above); installed copies and" \
-      "Scripts/versions.lock refer to them. Pass --force to replace them."
+  # Extracted sources and built libraries from an earlier run are kept only when a marker written after a
+  # verified build says they came from these same library downloads (everything but the PHP source).
+  libraries="$(grep -vE '  php-[0-9]+\.[0-9]+\.[0-9]+\.tar\.' <<< "$manifest" || true)"
+  marker="$W/work/.verified-libraries"
+  if [ -e "$W/work/source" ] || [ -e "$W/work/buildroot" ]; then
+    if [ ! -f "$marker" ] || [ "$(cat "$marker")" != "$libraries" ]; then
+      say "earlier extracted sources are not known to come from these downloads: deleting them"
+      rm -f "$marker"
+      rm -rf "$W/work/source" "$W/work/buildroot"
+    else
+      rm -rf "$W/work/source/php-src"
+    fi
   fi
 
   log="$W/logs/build-$patch.log"
@@ -318,15 +401,16 @@ for target in "${TARGETS[@]}"; do
   cp buildroot/bin/php buildroot/bin/php-fpm "$dir/"
   accept "$dir" "$series"
   [ "$("$dir/php" -n -r 'echo PHP_VERSION;')" = "$patch" ] || fail "the built php is not PHP $patch"
+  printf '%s\n' "$libraries" > "$marker"
 
   for kind in cli fpm; do
     bin=php; [ "$kind" = fpm ] && bin=php-fpm
     archive="php-$patch-$kind-macos-x86_64.tar.gz"
     old=""
-    [ -f "$OUT/$archive" ] && old="$(shasum -a 256 "$OUT/$archive" | awk '{print $1}')"
+    [ -f "$OUT/$archive" ] && old="$(shasum -a 256 -- "$OUT/$archive" | awk '{print $1}')"
     tar -czf "$OUT/$archive.part" -C "$dir" "$bin"
     mv "$OUT/$archive.part" "$OUT/$archive"
-    new="$(shasum -a 256 "$OUT/$archive" | awk '{print $1}')"
+    new="$(shasum -a 256 -- "$OUT/$archive" | awk '{print $1}')"
     if [ -n "$old" ]; then echo "  replaced $archive: $old -> $new"; else echo "  wrote $archive: $new"; fi
   done
   "$SPC" dump-license --for-extensions="$EXTS" --for-libs="$WITH_LIBS" --dump-dir="$W/licenses/$patch" \
@@ -334,7 +418,7 @@ for target in "${TARGETS[@]}"; do
   say "PHP $patch: Vendor/builds/php-$patch-{cli,fpm}-macos-x86_64.tar.gz"
 done
 
-(cd "$OUT" && shasum -a 256 php-*-macos-x86_64.tar.gz > SHA256SUMS)
+(cd "$OUT" && shasum -a 256 -- php-*-macos-x86_64.tar.gz > SHA256SUMS)
 say "Checksums (Vendor/builds/SHA256SUMS):"
 cat "$OUT/SHA256SUMS"
 echo "Put the new names and checksums into Scripts/versions.lock and Resources/php-manifest.json, commit Scripts/php-sources/, then run Scripts/fetch-vendor.sh."
