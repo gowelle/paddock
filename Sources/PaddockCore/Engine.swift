@@ -26,7 +26,7 @@ public final class Engine: @unchecked Sendable {
     public let store: StateStore
     public let installer: PHPInstaller
 
-    private let supervisor = Supervisor()
+    private let supervisor: Supervisor
     private let dns: DNSResponder
     /// Held for the whole of `start`, `stop` and `reload`, including slow waits. Never taken by `status`.
     private let operationLock = NSLock()
@@ -48,8 +48,11 @@ public final class Engine: @unchecked Sendable {
         self.init(paths: paths, settings: settings, installAction: nil)
     }
 
-    init(paths: Paths, settings: Settings, installAction: (@Sendable (PHPVersion) async throws -> Void)?) {
+    /// `backoffScale` shortens the supervisor's restart delays (tests only).
+    init(paths: Paths, settings: Settings, installAction: (@Sendable (PHPVersion) async throws -> Void)?,
+         backoffScale: TimeInterval = 1) {
         self.installAction = installAction
+        supervisor = Supervisor(backoffScale: backoffScale)
         self.paths = paths
         self.settings = settings
         store = StateStore(paths: paths)
@@ -64,7 +67,11 @@ public final class Engine: @unchecked Sendable {
     public func start() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
-        guard !flags.running else { return }
+        if flags.running {
+            // Caddy crashed and was given up on: tear down what is left and start afresh.
+            guard caddyCrashed else { return }
+            stopLocked()
+        }
 
         try paths.ensureDirectories()
         let state = try prepareState()
@@ -110,6 +117,9 @@ public final class Engine: @unchecked Sendable {
             fpmVersions.remove(v)
         }
         for v in wanted.sorted() where !isFPMRunning(v) { try startFPM(v) }
+        // With Caddy down there is nothing to wait for or reload; the supervisor (or `start`)
+        // brings it up from the Caddyfile written above.
+        guard !caddyCrashed else { return }
         try waitUntilReady()
         try reloadCaddy()
     }
@@ -124,8 +134,6 @@ public final class Engine: @unchecked Sendable {
         } ?? []
         var processes: [String: String] = [:]
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
-        var caddyCrashed = false
-        if case .crashed = supervisor.status(Self.caddyName) { caddyCrashed = true }
         return EngineStatus(running: started && !caddyCrashed, blockedBy: blocked, sites: sites,
                             installedPHP: installer.installed(), defaultPHP: state.defaultPHP,
                             processes: processes,
@@ -262,6 +270,11 @@ public final class Engine: @unchecked Sendable {
         dns.stop()
         fpmVersions = []
         setFlags(running: false)
+    }
+
+    private var caddyCrashed: Bool {
+        if case .crashed = supervisor.status(Self.caddyName) { return true }
+        return false
     }
 
     private var flags: (running: Bool, blockedBy: [PortHolder]) {

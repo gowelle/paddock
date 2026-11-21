@@ -270,4 +270,48 @@ final class EngineHandleTests: XCTestCase {
         }
         XCTAssertFalse(engine.status().running, "\(engine.status().processes)")
     }
+
+    /// Kills only the Caddy this engine started until the supervisor gives up (stays crashed).
+    private func driveCaddyToGivenUp(_ engine: Engine) async throws {
+        var crashedSince: Date?
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            let description = engine.status().processes["caddy"] ?? ""
+            if description.hasPrefix("crashed") {
+                if let since = crashedSince, Date().timeIntervalSince(since) > 0.5 { return }
+                crashedSince = crashedSince ?? Date()
+            } else {
+                crashedSince = nil
+                if let pid = TestSupport.pid(from: description) { kill(pid, SIGKILL) }
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("Caddy was never given up on")
+    }
+
+    func testStartRecoversAfterCaddyIsGivenUpOn() async throws {
+        let fast = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.01)
+        defer { fast.stop() }
+        _ = await fast.handle(.start)
+        try await driveCaddyToGivenUp(fast)
+        XCTAssertFalse(fast.status().running)
+
+        guard case .ok(let status) = await fast.handle(.start) else { return XCTFail("start should recover") }
+        XCTAssertTrue(status.running)
+        XCTAssertTrue(status.processes["caddy"]?.hasPrefix("running") == true, "\(status.processes)")
+    }
+
+    func testStateChangesStillSucceedWhileCaddyIsGivenUpOn() async throws {
+        let fast = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.01)
+        defer { fast.stop() }
+        _ = await fast.handle(.start)
+        try await driveCaddyToGivenUp(fast)
+
+        let extra = try home.makeDirectory("while-down")
+        guard case .ok(let status) = await fast.handle(.park(path: extra.path)) else {
+            return XCTFail("park should be ok while Caddy is down")
+        }
+        XCTAssertFalse(status.running)
+        XCTAssertTrue(fast.store.load().parked.contains(extra.path))
+    }
 }
