@@ -101,7 +101,7 @@ struct ServiceAdd: ParsableCommand {
         print(CLI.runningLine(added))
         if !added.env.isEmpty {
             print("")
-            print(added.env.joined(separator: "\n"))
+            print(Messages.addedEnvLines(added).joined(separator: "\n"))
         }
     }
 }

@@ -350,6 +350,50 @@ final class ServiceCatalogValidationTests: XCTestCase {
         }
     }
 
+    /// A secret may be used only in a command's environment and in the .env lines: never where ps, a path, a
+    /// config file or a URL would carry it.
+    func testSecretsOnlyInEnvironmentsAndEnvLines() {
+        let key = [RecipeSecret(name: "master_key", bytes: 32)]
+        func secret(start: RecipeCommand = RecipeCommand(executable: "{bin}/s", environment: ["KEY": "{secret.master_key}"]),
+                    env: [String] = ["KEY={secret.master_key}"], configFiles: [RecipeFile] = [],
+                    socket: String? = nil, openURL: String? = nil, lockFiles: [String] = [],
+                    ready: Readiness = .tcp(port: "{port.main}"), actions: [String: RecipeAction] = [:],
+                    secrets: [RecipeSecret] = key) -> ServiceRecipe {
+            ServiceRecipe(kind: "sample", displayName: "Sample", version: "1.0", licence: "MIT", assets: [], start: start,
+                          ready: ready, ports: [RecipePort(name: "main", preferred: 4000)], socket: socket, env: env,
+                          openURL: openURL, configFiles: configFiles, actions: actions, lockFiles: lockFiles,
+                          secrets: secrets)
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([secret()]))
+        XCTAssertNoThrow(try ServiceCatalog.validate([secret(actions: [RecipeAction.createDatabase: RecipeAction(
+            command: RecipeCommand(executable: "{bin}/c", arguments: ["{database}"], environment: ["KEY": "{secret.master_key}"]),
+            parameters: [RecipeParameter(name: "database", pattern: "^[a-z]+$")])])]))
+        let place = "may only be in a command's environment or the .env lines"
+        assertRejected([secret(start: RecipeCommand(executable: "{bin}/s", arguments: ["--key", "{secret.master_key}"]))], place)
+        assertRejected([secret(start: RecipeCommand(executable: "{bin}/s", arguments: [.ifSocket(["{secret.master_key}"])]))],
+                       place)
+        assertRejected([secret(start: RecipeCommand(executable: "{bin}/{secret.master_key}"))], "must be a program under")
+        assertRejected([secret(configFiles: [RecipeFile(path: "{config}/s.conf", contents: "key {secret.master_key}")])], place)
+        assertRejected([secret(openURL: "http://127.0.0.1:{port.main}/?key={secret.master_key}")], place)
+        assertRejected([secret(ready: .http(url: "http://127.0.0.1:{port.main}/{secret.master_key}", expectStatus: 200))],
+                       place)
+        assertRejected([secret(ready: .command(RecipeCommand(executable: "{bin}/s", arguments: ["{secret.master_key}"])))],
+                       place)
+        assertRejected([secret(lockFiles: ["{run}/{secret.master_key}"])], "lock file")
+        assertRejected([secret(start: RecipeCommand(executable: "{bin}/s", environment: ["HOME": "{secret.master_key}"]))],
+                       "HOME")
+        assertRejected([secret(actions: [RecipeAction.createDatabase: RecipeAction(
+            command: RecipeCommand(executable: "{bin}/c", arguments: ["{secret.master_key}"]))])], place)
+        assertRejected([secret(actions: [RecipeAction.createDatabase: RecipeAction(
+            command: RecipeCommand(executable: "{bin}/c"), alreadyDone: "{secret.master_key}")])], place)
+        // Declared, sensible, once.
+        assertRejected([secret(secrets: [])], "{secret.master_key} is not a placeholder Paddock knows")
+        assertRejected([secret(secrets: [RecipeSecret(name: "master_key", bytes: 8)])], "16 to 64")
+        assertRejected([secret(secrets: [RecipeSecret(name: "master_key", bytes: 65)])], "16 to 64")
+        assertRejected([secret(secrets: key + key)], "must be unique")
+        assertRejected([secret(secrets: key + [RecipeSecret(name: "Bad-Name", bytes: 32)])], "must be unique")
+    }
+
     /// Decoding a catalog validates it, so a bad bundled, hosted or development catalog never loads.
     func testDecodingValidates() throws {
         let bad = ServiceCatalog(recipes: [valid(stopSignal: "KILL")])

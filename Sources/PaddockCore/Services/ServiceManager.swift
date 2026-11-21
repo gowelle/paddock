@@ -513,6 +513,7 @@ public final class ServiceManager: @unchecked Sendable {
             }
             try ensureRunFolder(instance.id)
             try fm.createDirectory(at: paths.log, withIntermediateDirectories: true)
+            try ensureSecrets(instance, recipe)
             let context = try self.context(instance, recipe: recipe)
             try writeConfigFiles(recipe, context: context, id: instance.id)
             if dataExisted {
@@ -829,7 +830,7 @@ public final class ServiceManager: @unchecked Sendable {
         stopLocked(instance.id)
         try store.update { $0.services.removeAll { $0.id == instance.id } }
         let fm = FileManager.default
-        try? fm.removeItem(at: paths.serviceConfig(instance.id))
+        removeConfig(instance.id, keepingSecrets: !deleteData)
         try? fm.removeItem(at: paths.serviceRun(instance.id))
         if deleteData, fm.fileExists(atPath: paths.serviceHome(instance.id).path) {
             try fm.removeItem(at: paths.serviceHome(instance.id))
@@ -969,6 +970,7 @@ public final class ServiceManager: @unchecked Sendable {
             return .portInUse(name: instance.name, port: port, holder: holder)
         }
         do {
+            try ensureSecrets(instance, recipe)
             let context = try self.context(instance, recipe: recipe)
             let command = try ServiceTemplate.render(recipe.start, context: context)
             try checkRendered(command, template: recipe.start, instance: instance, recipe: recipe)
@@ -1373,7 +1375,8 @@ public final class ServiceManager: @unchecked Sendable {
             displayName: recipe?.displayName ?? instance.kind, state: state, ports: instance.ports, env: env,
             openURL: openURL, dataPath: paths.serviceData(instance.id).path, autostart: instance.autostart,
             mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: notice ?? skipped,
-            updateAvailable: update, series: instance.series, notes: recipe?.notes)
+            updateAvailable: update, series: instance.series, notes: recipe?.notes,
+            secretEnvNames: recipe.map(Self.secretEnvNames).flatMap { $0.isEmpty ? nil : $0 })
     }
 
     // MARK: - Templates and folders
@@ -1399,7 +1402,47 @@ public final class ServiceManager: @unchecked Sendable {
             let path = try ServiceTemplate.render(template, context: context)
             if !path.isEmpty, path.utf8.count <= Self.maximumSocketPath { context.socket = path }
         }
+        if !recipe.secrets.isEmpty {
+            context.secrets = (try? ServiceSecrets.load(from: paths.serviceConfig(instance.id))) ?? [:]
+        }
         return context
+    }
+
+    /// Makes the recipe's secrets the instance doesn't have yet (the caller holds the change lock). A secrets
+    /// file Paddock can't use makes the service unavailable rather than being replaced: its data may be
+    /// protected by the values in it.
+    private func ensureSecrets(_ instance: ServiceInstance, _ recipe: ServiceRecipe) throws {
+        guard !recipe.secrets.isEmpty else { return }
+        do {
+            _ = try ServiceSecrets.ensure(recipe.secrets, in: paths.serviceConfig(instance.id))
+        } catch ServiceSecretsError.damaged(let path) {
+            throw ServiceError.unavailable(name: instance.name, reason: "its secrets file \(path) isn't one Paddock "
+                                           + "can use; Paddock left it alone")
+        } catch {
+            throw ServiceError.unavailable(name: instance.name, reason: "Paddock couldn't make its secrets "
+                                           + "(\(error.localizedDescription))")
+        }
+    }
+
+    /// Deletes the instance's config folder, all but its secrets when `keepingSecrets` (data that is kept
+    /// may be protected by them; adding the service again uses them).
+    private func removeConfig(_ id: String, keepingSecrets: Bool) {
+        let fm = FileManager.default
+        let config = paths.serviceConfig(id)
+        guard keepingSecrets, fm.fileExists(atPath: ServiceSecrets.file(in: config).path) else {
+            try? fm.removeItem(at: config)
+            return
+        }
+        for item in (try? fm.contentsOfDirectory(atPath: config.path)) ?? [] where item != ServiceSecrets.fileName {
+            try? fm.removeItem(at: config.appendingPathComponent(item))
+        }
+    }
+
+    /// The `.env` variables whose values are secrets (`MEILISEARCH_KEY`): `paddock service add` doesn't print
+    /// them; `paddock service env` does.
+    static func secretEnvNames(_ recipe: ServiceRecipe) -> [String] {
+        recipe.env.filter { line in ServiceTemplate.placeholders(in: line).contains { $0.hasPrefix("secret.") } }
+            .compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) }
     }
 
     /// No `"`, `'`, `\\` or control character (a path config files can quote as it is).

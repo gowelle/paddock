@@ -345,6 +345,92 @@ final class ServiceLifecycleTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: conf, encoding: .utf8), "port = \(home.fakePort)\n", "rewritten on start")
     }
 
+    /// The fake with a secret in its environment and its .env lines.
+    private func keyedRecipe() -> ServiceRecipe {
+        let base = FakeService.recipe()
+        return ServiceRecipe(
+            kind: base.kind, displayName: base.displayName, version: base.version, series: base.series,
+            seriesInID: base.seriesInID, licence: base.licence, assets: base.assets, initialise: base.initialise,
+            start: RecipeCommand(executable: base.start.executable, arguments: base.start.arguments,
+                                 environment: ["FAKE_KEY": "{secret.master_key}"]),
+            ready: base.ready, stopGraceSeconds: base.stopGraceSeconds, ports: base.ports, socket: base.socket,
+            env: base.env + ["FAKE_SECRET={secret.master_key}"], openURL: base.openURL,
+            secrets: [RecipeSecret(name: "master_key", bytes: 32)])
+    }
+
+    /// A secret is made once, owner-only, reaches the program only through its environment and the .env
+    /// lines, never its arguments or any log; it is the same after a restart and after a remove that keeps
+    /// the data, and a new one after the data is deleted.
+    func testSecretsAreMadeOnceKeptWithTheDataAndOnlyInTheEnvironment() async throws {
+        let lines = LockedBox<[String]>([])
+        let manager = makeManager([keyedRecipe()], log: { line in lines.value.append(line) })
+        _ = try await manager.add(kind: "fake", version: nil)
+        let config = home.paths.serviceConfig("fake")
+        let secretsFile = ServiceSecrets.file(in: config)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: secretsFile.path)[.posixPermissions] as? Int, 0o600)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: config.path)[.posixPermissions] as? Int, 0o700)
+        let key = try XCTUnwrap(try ServiceSecrets.load(from: config)["master_key"])
+        XCTAssertEqual(key.count, 43)
+        XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake").contains("FAKE_KEY=\(key)"))
+        XCTAssertFalse(FakeService.arguments(paths: home.paths, id: "fake").contains { $0.contains(key) }, "never in ps")
+        let running = try XCTUnwrap(status(manager))
+        XCTAssertTrue(running.env.contains("FAKE_SECRET=\(key)"), "\(running.env)")
+        XCTAssertEqual(running.secretEnvNames, ["FAKE_SECRET"])
+        XCTAssertEqual(try manager.env("fake").last, "FAKE_SECRET=\(key)")
+        XCTAssertFalse(Messages.addedEnvLines(running).joined().contains(key))
+        XCTAssertFalse(Messages.serviceTable(manager.statuses()).contains(key))
+
+        try manager.restart("fake")
+        XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake").contains("FAKE_KEY=\(key)"), "the same")
+
+        // Removing keeps the data and the key that protects it; adding again uses both.
+        _ = try manager.remove("fake", deleteData: false)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: config.path), [ServiceSecrets.fileName])
+        _ = try await manager.add(kind: "fake", version: nil)
+        XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake").contains("FAKE_KEY=\(key)"), "reused")
+
+        // Deleting the data deletes the key.
+        _ = try manager.remove("fake", deleteData: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secretsFile.path))
+        _ = try await manager.add(kind: "fake", version: nil)
+        let fresh = try XCTUnwrap(try ServiceSecrets.load(from: config)["master_key"])
+        XCTAssertNotEqual(fresh, key)
+        XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake").contains("FAKE_KEY=\(fresh)"))
+
+        for secret in [key, fresh] {
+            XCTAssertFalse(manager.logTail("fake").contains(secret), "not in the service's log")
+            XCTAssertFalse(lines.value.joined(separator: "\n").contains(secret), "not in Paddock's log")
+        }
+    }
+
+    /// An instance made before its recipe declared a secret gets it at its next start.
+    func testASecretAddedToTheRecipeIsMadeAtTheNextStart() async throws {
+        let before = makeManager([FakeService.recipe()])
+        _ = try await before.add(kind: "fake", version: nil)
+        before.stopAll()
+        let config = home.paths.serviceConfig("fake")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ServiceSecrets.file(in: config).path))
+        let after = makeManager([keyedRecipe()])
+        try after.start("fake")
+        let key = try XCTUnwrap(try ServiceSecrets.load(from: config)["master_key"])
+        XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake").contains("FAKE_KEY=\(key)"))
+        XCTAssertEqual(try after.env("fake").last, "FAKE_SECRET=\(key)")
+    }
+
+    /// A secrets file Paddock can't use is left alone and the service doesn't start.
+    func testADamagedSecretsFileIsLeftAlone() async throws {
+        let manager = makeManager([keyedRecipe()])
+        _ = try await manager.add(kind: "fake", version: nil)
+        manager.stop("fake")
+        let file = ServiceSecrets.file(in: home.paths.serviceConfig("fake"))
+        try Data("not json".utf8).write(to: file)
+        XCTAssertThrowsError(try manager.start("fake")) { error in
+            guard case .unavailable(_, let reason)? = error as? ServiceError else { return XCTFail("\(error)") }
+            XCTAssertTrue(reason.contains("its secrets file"), reason)
+        }
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "not json")
+    }
+
     /// Config files quote paths (`dir "…"`, `'…'`): a home whose path holds a quote, a backslash or a control
     /// character could break or add a setting, so services refuse it before anything is written or run.
     func testAHomePathWithAQuoteOrControlCharacterIsRefused() async throws {

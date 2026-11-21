@@ -162,11 +162,14 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
     public let series: String?
     /// Its recipe's notes (`Includes PostGIS 3.6.4 (no raster or topology).`); nil from an older daemon.
     public let notes: [String]?
+    /// The `.env` variables in `env` whose values are secrets (`MEILISEARCH_KEY`); nil when none. Clients
+    /// print them only when asked for the `.env` lines (`paddock service env`).
+    public let secretEnvNames: [String]?
 
     public init(id: String, name: String, kind: String, version: String, displayName: String, state: ServiceState,
                 ports: [String: Int], env: [String], openURL: String?, dataPath: String, autostart: Bool,
                 mainPort: Int?, notice: String? = nil, updateAvailable: String? = nil, series: String? = nil,
-                notes: [String]? = nil) {
+                notes: [String]? = nil, secretEnvNames: [String]? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -183,6 +186,7 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
         self.updateAvailable = updateAvailable
         self.series = series
         self.notes = notes
+        self.secretEnvNames = secretEnvNames
     }
 }
 

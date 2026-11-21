@@ -145,21 +145,50 @@ extension ServiceCatalog {
             }
         }
 
-        // Placeholders.
+        // Secrets: named once each, a sensible size.
+        guard recipe.secrets.count <= 4 else { throw fail("a recipe may declare at most 4 secrets") }
+        var secretNames: Set<String> = []
+        for secret in recipe.secrets {
+            guard secret.name.range(of: "^[a-z][a-z0-9_]*$", options: .regularExpression) != nil,
+                  secret.name.count <= 32, secretNames.insert(secret.name).inserted else {
+                throw fail("the secret \"\(secret.name)\" must be unique, lowercase letters, digits and underscores")
+            }
+            guard (16...64).contains(secret.bytes) else {
+                throw fail("the secret \(secret.name) must be 16 to 64 random bytes")
+            }
+        }
+        let secrets = Set(secretNames.map { "secret.\($0)" })
+        /// The first placeholder of `template` that isn't in `allowed`, as the problem it is.
+        func check(_ template: String, allowed: Set<String>, actionParameters: Set<String> = [],
+                   action: String? = nil) throws {
+            for placeholder in ServiceTemplate.placeholders(in: template) where !allowed.contains(placeholder) {
+                if secrets.contains(placeholder) {
+                    throw fail("{\(placeholder)} may only be in a command's environment or the .env lines, where "
+                               + "ps can't show it")
+                }
+                if let action, actionParameters.contains(placeholder) {
+                    throw fail("{\(placeholder)} may only be an argument of \(action), never its program, environment "
+                               + "or input")
+                }
+                throw fail("{\(placeholder)} is not a placeholder Paddock knows")
+            }
+        }
+
+        // Placeholders. Secrets only in an environment and the .env lines.
         let known = knownPlaceholders.union(recipe.ports.map { "port.\($0.name)" })
-        var templates = recipe.env + [recipe.socket, recipe.openURL].compactMap { $0 } + recipe.lockFiles
+        let withSecrets = known.union(secrets)
+        var templates = [recipe.socket, recipe.openURL].compactMap { $0 } + recipe.lockFiles
+        var secretTemplates = recipe.env
         if recipe.ready.command == nil { templates.append(recipe.ready.template) }
         // (Actions below: their arguments may also use their parameters.)
         for command in [recipe.start] + recipe.initialise + [recipe.ready.command].compactMap({ $0 }) {
-            templates += [command.executable] + command.arguments.flatMap(\.templates) + Array(command.environment.values)
+            templates += [command.executable] + command.arguments.flatMap(\.templates)
             templates += [command.stdin].compactMap { $0 }
+            secretTemplates += Array(command.environment.values)
         }
         templates += recipe.configFiles.flatMap { [$0.path, $0.contents] }
-        for template in templates {
-            if let unknown = ServiceTemplate.placeholders(in: template).first(where: { !known.contains($0) }) {
-                throw fail("{\(unknown)} is not a placeholder Paddock knows")
-            }
-        }
+        for template in templates { try check(template, allowed: known) }
+        for template in secretTemplates { try check(template, allowed: withSecrets) }
 
         // An action's parameters: declared once each, with a whole-value pattern, and only ever arguments.
         for (name, action) in recipe.actions.sorted(by: { $0.key < $1.key }) {
@@ -178,20 +207,14 @@ extension ServiceCatalog {
                 }
             }
             let command = action.command
-            for template in [command.executable] + Array(command.environment.values) + [command.stdin].compactMap({ $0 }) {
-                for placeholder in ServiceTemplate.placeholders(in: template) where !known.contains(placeholder) {
-                    if parameters.contains(placeholder) {
-                        throw fail("{\(placeholder)} may only be an argument of \(name), never its program, environment "
-                                   + "or input")
-                    }
-                    throw fail("{\(placeholder)} is not a placeholder Paddock knows")
-                }
+            for template in [command.executable] + [command.stdin].compactMap({ $0 }) {
+                try check(template, allowed: known, actionParameters: parameters, action: name)
             }
-            let withParameters = known.union(parameters)
+            for template in command.environment.values {
+                try check(template, allowed: withSecrets, actionParameters: parameters, action: name)
+            }
             for template in command.arguments.flatMap(\.templates) + [action.alreadyDone].compactMap({ $0 }) {
-                if let unknown = ServiceTemplate.placeholders(in: template).first(where: { !withParameters.contains($0) }) {
-                    throw fail("{\(unknown)} is not a placeholder Paddock knows")
-                }
+                try check(template, allowed: known.union(parameters))
             }
         }
     }

@@ -174,6 +174,21 @@ public struct RecipeFile: Codable, Equatable, Sendable {
     }
 }
 
+/// A random value Paddock makes for each instance (a master key) the first time it needs it, and keeps with
+/// the instance (`config/secrets.json`). Recipes use it as `{secret.<name>}`, only in a command's environment
+/// and in the `.env` lines: never in arguments (anyone can see those in `ps`), paths, config files or URLs.
+public struct RecipeSecret: Codable, Equatable, Sendable {
+    /// Lowercase letters, digits and underscores (`master_key`).
+    public let name: String
+    /// How many random bytes (16 to 64); stored URL-safe base64 without padding.
+    public let bytes: Int
+
+    public init(name: String, bytes: Int) {
+        self.name = name
+        self.bytes = bytes
+    }
+}
+
 /// A sentence Paddock adds to a failed start when the log shows a known cause (Valkey's "Can't handle RDB
 /// format version": data from a newer version). Plain text, not templates.
 public struct RecipeLogHint: Codable, Equatable, Sendable {
@@ -325,6 +340,8 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     public let notes: [String]
     /// Sentences added to a failed start whose log shows a known cause.
     public let logHints: [RecipeLogHint]
+    /// Random values made once per instance (`{secret.<name>}`).
+    public let secrets: [RecipeSecret]
 
     public static let defaultInitialiseTimeout: TimeInterval = 120
 
@@ -334,7 +351,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                 ports: [RecipePort], socket: String? = nil, env: [String] = [], openURL: String? = nil,
                 needsPHP: Bool = false, configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
                 initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:], lockFiles: [String] = [],
-                notes: [String] = [], logHints: [RecipeLogHint] = []) {
+                notes: [String] = [], logHints: [RecipeLogHint] = [], secrets: [RecipeSecret] = []) {
         self.kind = kind
         self.displayName = displayName
         self.version = version
@@ -360,12 +377,13 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         self.lockFiles = lockFiles
         self.notes = notes
         self.logHints = logHints
+        self.secrets = secrets
     }
 
     private enum CodingKeys: String, CodingKey {
         case kind, displayName, version, series, seriesInID, licence, minimumMacOS, assets, initialise, start, ready
         case stopSignal, stopGraceSeconds, ports, socket, env, openURL, needsPHP, configFiles, readyTimeoutSeconds
-        case initialiseTimeoutSeconds, actions, lockFiles, notes, logHints
+        case initialiseTimeoutSeconds, actions, lockFiles, notes, logHints, secrets
     }
 
     public init(from decoder: Decoder) throws {
@@ -395,6 +413,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         lockFiles = try c.decodeIfPresent([String].self, forKey: .lockFiles) ?? []
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
         logHints = try c.decodeIfPresent([RecipeLogHint].self, forKey: .logHints) ?? []
+        secrets = try c.decodeIfPresent([RecipeSecret].self, forKey: .secrets) ?? []
     }
 
     /// The signal `stopSignal` names; SIGTERM for anything else.
@@ -433,6 +452,6 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                       ports: ports, socket: socket, env: env, openURL: openURL, needsPHP: needsPHP,
                       configFiles: configFiles, readyTimeoutSeconds: readyTimeoutSeconds,
                       initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions, lockFiles: lockFiles, notes: notes,
-                      logHints: logHints)
+                      logHints: logHints, secrets: secrets)
     }
 }

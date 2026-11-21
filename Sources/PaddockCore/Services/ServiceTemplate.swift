@@ -19,6 +19,8 @@ public struct ServiceTemplateContext: Equatable, Sendable {
     public var resources: String
     /// An action's bound parameters (`database` -> `shop`); empty everywhere else.
     public var parameters: [String: String] = [:]
+    /// The instance's secrets by name (`master_key`), for `{secret.<name>}`; empty when it has none.
+    public var secrets: [String: String] = [:]
 
     public init(bin: String, data: String, config: String, run: String, log: String, name: String, id: String,
                 ports: [String: Int], socket: String?, php: String?, resources: String) {
@@ -44,7 +46,8 @@ public enum TemplateError: Error, Equatable {
 }
 
 /// Renders recipe templates: `{bin}`, `{data}`, `{config}`, `{run}`, `{log}`, `{name}`, `{id}`,
-/// `{port.<name>}`, `{socket}`, `{socketDir}`, `{php}`, `{resources}`, and in an action its bound parameters
+/// `{port.<name>}`, `{socket}`, `{socketDir}`, `{php}`, `{resources}`, `{secret.<name>}` (only where validation
+/// allows it: a command's environment and the `.env` lines), and in an action its bound parameters
 /// (`{database}`). Only `{` + a name starting with a lowercase letter + `}` is a placeholder; any other brace
 /// (`${APP_NAME}`, JSON) is plain text. A bound value is inserted as it is, never rendered again.
 public enum ServiceTemplate {
@@ -142,6 +145,12 @@ public enum ServiceTemplate {
         default:
             if name.hasPrefix("port."), let port = context.ports[String(name.dropFirst("port.".count))] {
                 return String(port)
+            }
+            if name.hasPrefix("secret.") {
+                guard let secret = context.secrets[String(name.dropFirst("secret.".count))] else {
+                    throw TemplateError.unavailable(name)
+                }
+                return secret
             }
             if let value = context.parameters[name] { return value }
             throw TemplateError.unknown(name)

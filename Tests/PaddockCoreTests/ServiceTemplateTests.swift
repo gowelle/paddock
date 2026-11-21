@@ -102,6 +102,17 @@ final class ServiceTemplateTests: XCTestCase {
         XCTAssertEqual(try ServiceTemplate.renderFile("a\r\nb {socket}\r\nc", context: bare), "a\r\nc")
     }
 
+    /// `{secret.<name>}` is the instance's saved secret; one it doesn't have yet is unavailable.
+    func testSecretsRenderFromTheContext() throws {
+        var keyed = context
+        keyed.secrets = ["master_key": "abc_DEF-123"]
+        XCTAssertEqual(try ServiceTemplate.render("MEILI_MASTER_KEY={secret.master_key}", context: keyed),
+                       "MEILI_MASTER_KEY=abc_DEF-123")
+        XCTAssertThrowsError(try ServiceTemplate.render("{secret.master_key}", context: context)) {
+            XCTAssertEqual($0 as? TemplateError, .unavailable("secret.master_key"))
+        }
+    }
+
     /// An action's parameters render only where they are bound; anywhere else they are unknown.
     func testParametersRenderOnlyWhenBound() throws {
         XCTAssertThrowsError(try ServiceTemplate.render("{database}", context: context)) {
