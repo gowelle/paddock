@@ -10,6 +10,7 @@ struct SitesTab: View {
             Table(model.sites) {
                 TableColumn("Site") { site in
                     Link(site.host, destination: URL(string: site.url) ?? URL(fileURLWithPath: site.path))
+                        .foregroundStyle(Theme.honeyText)
                 }
                 TableColumn("Secure") { site in
                     Toggle("", isOn: Binding(
@@ -26,6 +27,7 @@ struct SitesTab: View {
                 TableColumn("PHP") { site in phpPicker(site) }
                     .width(140)
             }
+            .tableSurface()
 
             if model.sites.isEmpty {
                 Caption("No sites yet. Put a project folder in your sites folder and it appears here.")

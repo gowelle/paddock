@@ -3,7 +3,7 @@
 #   Contents/MacOS/{PaddockApp,paddockd,paddock}
 # (The app's executable is not called "Paddock": on a case-insensitive disk it would be the same file
 # as the "paddock" command.)
-#   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,php-manifest.json,THIRD-PARTY-NOTICES}
+#   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,php-manifest.json,THIRD-PARTY-NOTICES,AppIcon.icns}
 # then signs it ad hoc and verifies the signature.
 set -euo pipefail
 
@@ -22,6 +22,7 @@ for item in caddy composer.phar php-manifest.json router/server.php "php/$PHP_SE
   [ -e "$VENDOR/$item" ] || fail "Vendor/$item is missing. Run Scripts/fetch-vendor.sh first."
 done
 [ -f "$ROOT/VERSION" ] || fail "VERSION is missing at the repository root."
+[ -f "$ROOT/Resources/AppIcon.icns" ] || fail "Resources/AppIcon.icns is missing. Run: swift Scripts/make-icon.swift"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 
 echo "Building release binaries for x86_64…"
@@ -41,6 +42,8 @@ install -m 755 "$VENDOR/caddy" "$RES/caddy"
 install -m 644 "$VENDOR/composer.phar" "$RES/composer.phar"
 install -m 644 "$VENDOR/php-manifest.json" "$RES/php-manifest.json"
 install -m 644 "$ROOT/THIRD-PARTY-NOTICES" "$RES/THIRD-PARTY-NOTICES"
+# Built from Resources/AppIcon.svg by Scripts/make-icon.swift.
+install -m 644 "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
 # Vendor/router is a symlink into Resources/; copy real files.
 cp -RL "$VENDOR/router" "$RES/router"
 # Only the bundled series: Vendor/php may hold other versions cached for tests.

@@ -21,6 +21,7 @@ struct PHPTab: View {
                 TableColumn("") { row in action(row.version) }
                     .width(90)
             }
+            .tableSurface()
 
             HStack {
                 Picker("Default", selection: Binding(

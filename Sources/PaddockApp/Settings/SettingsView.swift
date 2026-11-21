@@ -30,6 +30,16 @@ extension View {
     }
 }
 
+extension View {
+    /// A table drawn on the design system's surface, with a hairline edge, instead of the system's white.
+    func tableSurface() -> some View {
+        scrollContentBackground(.hidden)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
+    }
+}
+
 /// The error line at the foot of a settings tab.
 struct SettingsFooter: View {
     @EnvironmentObject private var model: AppModel
