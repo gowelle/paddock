@@ -97,6 +97,41 @@ three stages live on, and owning it is what keeps the app simple.
   version mismatch, but Zend-extension loading (which Xdebug needs) is **not
   yet proven**.
 
+### Follow-up check after the build (2026-11-21)
+
+- **Zend-extension loading is proven.** Xdebug 3.5.0, built from source
+  with `phpize` against PHP 8.4 headers (MacPorts 8.4.27, used only as a
+  build tool for this check), loaded into the static PHP 8.4.23 CLI and
+  PHP-FPM binaries: `php -v` reports "with Xdebug v3.5.0" and
+  `extension_loaded("xdebug")` is true. The resulting `xdebug.so` links
+  only against the system library.
+- So stage 3's Xdebug toggle can be a loadable `xdebug.so` per PHP minor
+  version; a separate debug variant of PHP is not needed. Paddock still has
+  to produce those `xdebug.so` files itself (one per supported minor, built
+  against matching headers), since nobody publishes them for Intel macOS.
+- The earlier `opcache.so` failure was a patch-version mismatch specific to
+  OPcache, which is tied to its exact PHP build. It does not matter: the
+  "bulk" builds Paddock uses have OPcache compiled in.
+- The "bulk" builds also already include `intl`, `sodium`, `imagick`,
+  `redis`, and PDO drivers for MySQL, PostgreSQL and SQLite, so the
+  extension gap noted above for "common" does not apply to what ships.
+- Cost of "bulk": each PHP binary is about 108 MB (about 216 MB per
+  version on disk, 277 MB for the app). It also statically links LGPL
+  libraries and one GPL library (JBIG-KIT, via ImageMagick). Fine for
+  personal use; Paddock's own slimmer builds are needed before sharing.
+
+### Corrections made during the build
+
+- PHP builds live in `bin/php-versions/<version>/<variant>/`, not
+  `bin/php/…`, because `bin/php` is the `php` command itself.
+- The app's executable is `Contents/MacOS/PaddockApp`. `Paddock` and
+  `paddock` would be the same file on a case-insensitive disk.
+- Uninstall restores the `.test` DNS setting first and only then stops
+  Paddock, so a cancelled password prompt never leaves `.test` domains
+  resolving nowhere.
+- The menu bar and settings UI in stage 1 is a stock placeholder. The owner
+  is producing a fuller design separately.
+
 ## Design
 
 ### Shape
@@ -157,7 +192,7 @@ sites with a pinned PHP version get their own generated site block.
   written by the builder with checksums computed from the downloaded
   files. The loader also accepts a remote manifest URL so a hosted one can
   replace it later without redesign; hosting is not a stage 1 task.
-- Layout is `bin/php/<version>/<variant>/` so a second variant of a version
+- Layout is `bin/php-versions/<version>/<variant>/` so a second variant of a version
   (for example a debug build with Xdebug compiled in) can be added later
   without moving anything. Stage 1 ships one variant.
 - Stage 1 starts with static-php.dev's "bulk" Intel builds so work is not
