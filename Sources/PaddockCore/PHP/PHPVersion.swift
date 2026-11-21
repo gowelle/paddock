@@ -1,7 +1,7 @@
 import Foundation
 
 /// A PHP major.minor version such as "8.4". Encodes as that string.
-/// Parsing is extended in a later task.
+/// Accepts "8.4", "8.4.8", "php@8.4" and "84"; only 8.1 and later are valid.
 public struct PHPVersion: Codable, Hashable, Comparable, CustomStringConvertible, Sendable {
     public let major: Int
     public let minor: Int
@@ -12,9 +12,24 @@ public struct PHPVersion: Codable, Hashable, Comparable, CustomStringConvertible
     }
 
     public init?(_ s: String) {
-        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 2, let major = Int(parts[0]), let minor = Int(parts[1]),
-              major >= 0, minor >= 0 else { return nil }
+        var text = s.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("php@") { text.removeFirst(4) }
+        let major: Int
+        let minor: Int
+        if text.contains(".") {
+            let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 2 || parts.count == 3,
+                  parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }),
+                  let ma = Int(parts[0]), let mi = Int(parts[1]) else { return nil }
+            major = ma
+            minor = mi
+        } else {
+            guard text.count == 2, text.allSatisfy(\.isASCII), text.allSatisfy(\.isNumber),
+                  let n = Int(text) else { return nil }
+            major = n / 10
+            minor = n % 10
+        }
+        guard (major, minor) >= (8, 1) else { return nil }
         self.init(major: major, minor: minor)
     }
 
