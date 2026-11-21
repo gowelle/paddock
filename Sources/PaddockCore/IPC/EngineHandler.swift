@@ -1,0 +1,245 @@
+import Foundation
+
+/// A first-in-first-out async lock. Requests that change state take it so they run one at a time.
+final class AsyncMutex: @unchecked Sendable {
+    private let lock = NSLock()
+    private var locked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func withLock<T>(_ body: () async -> T) async -> T {
+        await acquire()
+        defer { release() }
+        return await body()
+    }
+
+    private func acquire() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if locked {
+                waiters.append(continuation)
+                lock.unlock()
+            } else {
+                locked = true
+                lock.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    private func release() {
+        lock.lock()
+        if waiters.isEmpty {
+            locked = false
+            lock.unlock()
+        } else {
+            let next = waiters.removeFirst()
+            lock.unlock()
+            next.resume() // The lock passes straight to the next waiter.
+        }
+    }
+}
+
+extension Engine {
+    /// Applies one request. `status` is answered at once; everything else runs one at a time, in
+    /// arrival order, and returns the fresh status (or an error with a stable code).
+    public func handle(_ request: Request) async -> Response {
+        if case .status = request { return .ok(status()) }
+        return await mutations.withLock { await perform(request) }
+    }
+
+    private func perform(_ request: Request) async -> Response {
+        switch request {
+        case .status:
+            return .ok(status())
+        case .start:
+            return await startReply()
+        case .stop:
+            await blocking { self.stop() }
+            return .ok(status())
+        case .restart:
+            await blocking { self.stop() }
+            return await startReply()
+        case .shutdown:
+            // The daemon exits after this reply has been written.
+            await blocking { self.stop() }
+            return .ok(status())
+
+        case .park(let path):
+            guard let dir = Self.standardizedDirectory(path) else { return notADirectory(path) }
+            return await change { state in
+                if !state.parked.contains(dir) { state.parked.append(dir) }
+            }
+        case .forget(let path):
+            let dir = Self.standardizedPath(path)
+            return await change { $0.parked.removeAll { $0 == dir || $0 == path } }
+        case .link(let name, let path):
+            guard let site = SiteName.normalize(name) else {
+                return error(ErrorCode.internal, "\"\(name)\" cannot be turned into a site name; use letters or digits")
+            }
+            guard let dir = Self.standardizedDirectory(path) else { return notADirectory(path) }
+            return await change { $0.links[site] = dir }
+        case .unlink(let name):
+            return await change { state in
+                state.links = state.links.filter { SiteName.normalize($0.key) != SiteName.normalize(name) }
+            }
+
+        case .secure(let name):
+            guard let site = knownSite(name) else { return unknownSite(name) }
+            return await change { $0.secured.insert(site) }
+        case .unsecure(let name):
+            guard let site = knownSite(name, alsoIn: { $0.secured }) else { return unknownSite(name) }
+            return await change { $0.secured.remove(site) }
+        case .isolate(let name, let version):
+            guard let site = knownSite(name) else { return unknownSite(name) }
+            guard installer.isInstalled(version) else { return notInstalled(version) }
+            return await change { $0.phpPins[site] = version }
+        case .unisolate(let name):
+            guard let site = knownSite(name, alsoIn: { Set($0.phpPins.keys) }) else { return unknownSite(name) }
+            return await change { $0.phpPins[site] = nil }
+
+        case .use(let version):
+            guard installer.isInstalled(version) else { return notInstalled(version) }
+            return await change { $0.defaultPHP = version }
+        case .installPHP(let version):
+            return await install(version)
+        case .removePHP(let version):
+            let state = store.load()
+            // Before the first start there is no stored default yet: the newest installed one will be.
+            let effectiveDefault = state.defaultPHP ?? installer.installed().max()
+            if effectiveDefault == version || state.phpPins.values.contains(version) {
+                return error(ErrorCode.phpInUse, "PHP \(version) is the default or pinned by a site; switch those first")
+            }
+            do {
+                try installer.remove(version)
+            } catch {
+                return self.error(ErrorCode.internal, "Could not remove PHP \(version): \(error.localizedDescription)")
+            }
+            return .ok(status())
+        }
+    }
+
+    // MARK: - Pieces
+
+    /// Starts the engine; blocked ports are an error naming the first holder.
+    private func startReply() async -> Response {
+        do {
+            try await blocking { try self.start() }
+        } catch EngineError.notReady(let process, let log) {
+            return error(ErrorCode.internal, "\(process) did not become ready; see \(log)")
+        } catch EngineError.caddyReloadFailed(let output) {
+            return error(ErrorCode.internal, "Caddy rejected the configuration: \(output)")
+        } catch {
+            return self.error(ErrorCode.internal, "Could not start: \(error.localizedDescription)")
+        }
+        let current = status()
+        if let holder = current.blockedBy.first {
+            let who = holder.command.map { "\($0) (pid \(holder.pid.map(String.init) ?? "unknown"))" }
+                ?? holder.pid.map { "pid \($0)" } ?? "an unknown process"
+            return error(ErrorCode.portsBlocked, "Port \(holder.port) is in use by \(who)")
+        }
+        return .ok(current)
+    }
+
+    /// Updates state, regenerates configs and reloads, then returns the fresh status.
+    private func change(_ body: @escaping @Sendable (inout State) -> Void) async -> Response {
+        do {
+            try await blocking {
+                try self.store.update(body)
+                try self.reload()
+            }
+        } catch EngineError.notReady(let process, let log) {
+            return error(ErrorCode.internal, "\(process) did not become ready; see \(log)")
+        } catch EngineError.caddyReloadFailed(let output) {
+            return error(ErrorCode.internal, "Caddy rejected the configuration: \(output)")
+        } catch {
+            return self.error(ErrorCode.internal, "\(error.localizedDescription)")
+        }
+        return .ok(status())
+    }
+
+    private func install(_ version: PHPVersion) async -> Response {
+        if installer.isInstalled(version) { return .ok(status()) }
+        guard installAction != nil || installer.isAvailable(version) else {
+            return error(ErrorCode.phpNotAvailable, "PHP \(version) is not in the build list")
+        }
+        do {
+            if let installAction {
+                try await installAction(version)
+            } else {
+                try await installer.install(version)
+            }
+        } catch PHPInstallError.notInManifest {
+            return error(ErrorCode.phpNotAvailable, "PHP \(version) is not in the build list")
+        } catch {
+            return self.error(ErrorCode.internal, "Could not install PHP \(version): \(describe(error))")
+        }
+        return .ok(status())
+    }
+
+    private func describe(_ error: Error) -> String {
+        switch error {
+        case PHPInstallError.checksumMismatch(_, let file): return "the downloaded \(file) failed its checksum"
+        case PHPInstallError.downloadFailed(_, let reason): return reason
+        default: return error.localizedDescription
+        }
+    }
+
+    /// The registry's name for `input` if such a site is served now (or, for removals, if state
+    /// still mentions it).
+    private func knownSite(_ input: String, alsoIn stale: ((State) -> Set<String>)? = nil) -> String? {
+        let name = SiteName.normalize(input) ?? input
+        let state = store.load()
+        let php = state.defaultPHP ?? installer.installed().max() ?? PHPVersion(major: 8, minor: 1)
+        if SiteRegistry(state: state, defaultPHP: php, settings: settings).site(named: name) != nil { return name }
+        if let stale, stale(state).contains(name) { return name }
+        return nil
+    }
+
+    /// Runs blocking engine work off the cooperative thread pool.
+    private func blocking<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global().async { continuation.resume(with: Result { try work() }) }
+        }
+    }
+
+    private func blocking(_ work: @escaping @Sendable () -> Void) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                work()
+                continuation.resume()
+            }
+        }
+    }
+
+    // MARK: - Errors and paths
+
+    private func error(_ code: String, _ message: String) -> Response {
+        .error(code: code, message: message)
+    }
+
+    private func notADirectory(_ path: String) -> Response {
+        error(ErrorCode.notADirectory, "\(path) is not a directory (use an absolute path)")
+    }
+
+    private func unknownSite(_ name: String) -> Response {
+        error(ErrorCode.unknownSite, "No site named \"\(name)\"")
+    }
+
+    private func notInstalled(_ version: PHPVersion) -> Response {
+        error(ErrorCode.phpNotInstalled, "PHP \(version) is not installed; install it first")
+    }
+
+    private static func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+    }
+
+    /// The standardized absolute path if `path` is absolute (after `~` expansion) and a directory.
+    private static func standardizedDirectory(_ path: String) -> String? {
+        guard (path as NSString).expandingTildeInPath.hasPrefix("/") else { return nil }
+        let standardized = standardizedPath(path)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: standardized, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return standardized
+    }
+}

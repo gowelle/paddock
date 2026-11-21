@@ -37,6 +37,11 @@ public final class PHPInstaller {
             && fm.isExecutableFile(atPath: fpmBinary(v).path)
     }
 
+    /// Whether the manifest lists a downloadable build of this version.
+    public func isAvailable(_ v: PHPVersion) -> Bool {
+        manifest.build(for: v) != nil
+    }
+
     /// Versions whose directory holds both binaries, ascending.
     public func installed() -> [PHPVersion] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: paths.phpRoot.path)) ?? []

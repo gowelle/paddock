@@ -28,15 +28,28 @@ public final class Engine: @unchecked Sendable {
 
     private let supervisor = Supervisor()
     private let dns: DNSResponder
-    private let lock = NSLock()
+    /// Held for the whole of `start`, `stop` and `reload`, including slow waits. Never taken by `status`.
+    private let operationLock = NSLock()
+    /// Guards only the two fields `status` reads; held for an instant, never across slow work.
+    private let flagsLock = NSLock()
     private var isRunning = false
     private var blockedBy: [PortHolder] = []
+    /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
+    /// Replaces the real download in `installPHP` requests; tests use it to make installs slow.
+    let installAction: (@Sendable (PHPVersion) async throws -> Void)?
+    /// Serializes requests that change state, so each one's update and reload finish before the next.
+    let mutations = AsyncMutex()
 
     private static let caddyName = "caddy"
     private static let readyTimeout: TimeInterval = 15
 
-    public init(paths: Paths = .current, settings: Settings = .current) {
+    public convenience init(paths: Paths = .current, settings: Settings = .current) {
+        self.init(paths: paths, settings: settings, installAction: nil)
+    }
+
+    init(paths: Paths, settings: Settings, installAction: (@Sendable (PHPVersion) async throws -> Void)?) {
+        self.installAction = installAction
         self.paths = paths
         self.settings = settings
         store = StateStore(paths: paths)
@@ -49,15 +62,16 @@ public final class Engine: @unchecked Sendable {
     /// Starts everything, unless the HTTP/HTTPS ports are held, in which case it starts nothing
     /// and reports the holders in `status().blockedBy`. Returns once Caddy accepts connections.
     public func start() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !isRunning else { return }
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard !flags.running else { return }
 
         try paths.ensureDirectories()
         let state = try prepareState()
 
-        blockedBy = PortCheck.holders(of: [settings.httpPort, settings.httpsPort])
-        guard blockedBy.isEmpty else { return }
+        let holders = PortCheck.holders(of: [settings.httpPort, settings.httpsPort])
+        setFlags(blockedBy: holders)
+        guard holders.isEmpty else { return }
 
         do {
             try writeConfigs(state)
@@ -65,7 +79,7 @@ public final class Engine: @unchecked Sendable {
             try startCaddy()
             try waitUntilReady()
             try dns.start()
-            isRunning = true
+            setFlags(running: true)
         } catch {
             stopLocked()
             throw error
@@ -74,21 +88,21 @@ public final class Engine: @unchecked Sendable {
 
     /// Stops Caddy, every PHP-FPM (with its workers) and the DNS responder.
     public func stop() {
-        lock.lock()
-        defer { lock.unlock() }
+        operationLock.lock()
+        defer { operationLock.unlock() }
         stopLocked()
-        blockedBy = []
+        setFlags(blockedBy: [])
     }
 
     /// Regenerates configs; when running, also starts/stops FPM pools to match the versions in use
     /// and has Caddy load the new Caddyfile.
     public func reload() throws {
-        lock.lock()
-        defer { lock.unlock() }
+        operationLock.lock()
+        defer { operationLock.unlock() }
         try paths.ensureDirectories()
         let state = try prepareState()
         try writeConfigs(state)
-        guard isRunning else { return }
+        guard flags.running else { return }
 
         let wanted = versionsInUse(state)
         for v in fpmVersions.subtracting(wanted) {
@@ -100,16 +114,19 @@ public final class Engine: @unchecked Sendable {
         try reloadCaddy()
     }
 
+    /// Answers promptly even while `start`, `reload` or a PHP install is in progress: it takes only
+    /// short-lived locks, never `operationLock`. `running` is false while Caddy is crashed.
     public func status() -> EngineStatus {
-        lock.lock()
-        defer { lock.unlock() }
+        let (started, blocked) = flags
         let state = store.load()
         let sites = state.defaultPHP.map {
             SiteRegistry(state: state, defaultPHP: $0, settings: settings).sites()
         } ?? []
         var processes: [String: String] = [:]
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
-        return EngineStatus(running: isRunning, blockedBy: blockedBy, sites: sites,
+        var caddyCrashed = false
+        if case .crashed = supervisor.status(Self.caddyName) { caddyCrashed = true }
+        return EngineStatus(running: started && !caddyCrashed, blockedBy: blocked, sites: sites,
                             installedPHP: installer.installed(), defaultPHP: state.defaultPHP,
                             processes: processes,
                             resolverInstalled: false) // Task 13: check /etc/resolver/<tld>.
@@ -244,6 +261,19 @@ public final class Engine: @unchecked Sendable {
         supervisor.stopAll()
         dns.stop()
         fpmVersions = []
-        isRunning = false
+        setFlags(running: false)
+    }
+
+    private var flags: (running: Bool, blockedBy: [PortHolder]) {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        return (isRunning, blockedBy)
+    }
+
+    private func setFlags(running: Bool? = nil, blockedBy: [PortHolder]? = nil) {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        if let running { isRunning = running }
+        if let blockedBy { self.blockedBy = blockedBy }
     }
 }

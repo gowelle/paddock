@@ -1,0 +1,273 @@
+import XCTest
+@testable import PaddockCore
+
+/// `Engine.handle` against a real (unstarted unless a test says so) engine in a throwaway home.
+final class EngineHandleTests: XCTestCase {
+    private var home: TestHome!
+    private var engine: Engine!
+    private let v85 = PHPVersion("8.5")!
+    private let v84 = PHPVersion("8.4")!
+
+    override func setUpWithError() throws {
+        try TestSupport.requireVendored()
+        home = try TestHome()
+        engine = Engine(paths: home.paths, settings: home.settings)
+        try engine.installer.installBundled()
+    }
+
+    override func tearDown() {
+        engine?.stop()
+        engine = nil
+        home?.cleanUp()
+    }
+
+    private func status(_ response: Response, file: StaticString = #filePath, line: UInt = #line) throws -> EngineStatus {
+        guard case .ok(let status) = response else {
+            XCTFail("expected ok, got \(response)", file: file, line: line)
+            throw XCTSkip("unexpected error response")
+        }
+        return status
+    }
+
+    private func st(_ request: Request, file: StaticString = #filePath, line: UInt = #line) async throws -> EngineStatus {
+        try status(await engine.handle(request), file: file, line: line)
+    }
+
+    private func expectError(_ request: Request, _ code: String, file: StaticString = #filePath, line: UInt = #line) async {
+        let response = await engine.handle(request)
+        XCTAssertEqual(errorCode(response), code, "\(request) -> \(response)", file: file, line: line)
+    }
+
+    private func errorCode(_ response: Response) -> String? {
+        if case .error(let code, _) = response { return code }
+        return nil
+    }
+
+    // MARK: - State requests
+
+    func testParkAndForgetStoreStandardizedPaths() async throws {
+        let extra = try home.makeDirectory("more-sites")
+        let messy = extra.path + "/../more-sites/"
+        let parked = try await st(.park(path: messy))
+        XCTAssertEqual(engine.store.load().parked.last, extra.standardizedFileURL.path)
+        XCTAssertNotNil(parked.defaultPHP)
+
+        _ = try await st(.park(path: extra.path))
+        XCTAssertEqual(engine.store.load().parked.filter { $0 == extra.path }.count, 1, "park is idempotent")
+
+        _ = try await st(.forget(path: messy))
+        XCTAssertFalse(engine.store.load().parked.contains(extra.path))
+        _ = try await st(.forget(path: "/never/parked"))
+    }
+
+    func testParkRejectsNonDirectoryAndRelativePaths() async throws {
+        let file = home.root.appendingPathComponent("a-file")
+        try Data().write(to: file)
+        await expectError(.park(path: file.path), "not_a_directory")
+        await expectError(.park(path: "/no/such/dir"), "not_a_directory")
+        await expectError(.park(path: "relative/dir"), "not_a_directory")
+        await expectError(.link(name: "x", path: file.path), "not_a_directory")
+    }
+
+    func testLinkNormalizesNameAndUnlinkIsIdempotent() async throws {
+        let app = try home.makeDirectory("my-app-dir")
+        let linked = try await st(.link(name: "My Shiny App!", path: app.path))
+        XCTAssertEqual(engine.store.load().links["my-shiny-app"], app.path)
+        XCTAssertEqual(linked.sites.first { $0.name == "my-shiny-app" }?.kind, .linked)
+
+        _ = try await st(.unlink(name: "my-shiny-app"))
+        XCTAssertNil(engine.store.load().links["my-shiny-app"])
+        _ = try await st(.unlink(name: "my-shiny-app"))
+    }
+
+    func testLinkWithUnusableNameIsInternalError() async throws {
+        let app = try home.makeDirectory("app")
+        guard case .error(let code, let message) = await engine.handle(.link(name: "!!!", path: app.path)) else {
+            return XCTFail("expected error")
+        }
+        XCTAssertEqual(code, "internal")
+        XCTAssertTrue(message.contains("!!!"), message)
+    }
+
+    func testSecureUnsecureAndUnknownSite() async throws {
+        let secured = try await st(.secure(site: "plain-php"))
+        XCTAssertTrue(secured.sites.first { $0.name == "plain-php" }?.secured == true)
+        XCTAssertEqual(engine.store.load().secured, ["plain-php"])
+
+        let unsecured = try await st(.unsecure(site: "plain-php"))
+        XCTAssertTrue(unsecured.sites.first { $0.name == "plain-php" }?.secured == false)
+        _ = try await st(.unsecure(site: "plain-php")) // not set: still ok
+
+        await expectError(.secure(site: "nope"), "unknown_site")
+        await expectError(.unsecure(site: "nope"), "unknown_site")
+    }
+
+    func testIsolateUnisolateAndUse() async throws {
+        let isolated = try await st(.isolate(site: "plain-php", version: v85))
+        XCTAssertTrue(isolated.sites.first { $0.name == "plain-php" }?.pinned == true)
+        XCTAssertEqual(engine.store.load().phpPins["plain-php"], v85)
+
+        await expectError(.isolate(site: "plain-php", version: v84), "php_not_installed")
+        await expectError(.isolate(site: "nope", version: v85), "unknown_site")
+
+        _ = try await st(.unisolate(site: "plain-php"))
+        XCTAssertNil(engine.store.load().phpPins["plain-php"])
+        _ = try await st(.unisolate(site: "plain-php"))
+        await expectError(.unisolate(site: "nope"), "unknown_site")
+
+        await expectError(.use(version: v84), "php_not_installed")
+        let r1 = try await st(.use(version: v85))
+        XCTAssertEqual(r1.defaultPHP, v85)
+    }
+
+    func testRemovePHPRefusesDefaultAndPinned() async throws {
+        await expectError(.removePHP(version: v85), "php_in_use")
+        // A pinned but non-default version is also in use.
+        try engine.store.update { $0.defaultPHP = self.v84; $0.phpPins["plain-php"] = self.v85 }
+        await expectError(.removePHP(version: v85), "php_in_use")
+        // Removing something not installed is fine.
+        _ = try await st(.removePHP(version: PHPVersion("8.2")!))
+    }
+
+    func testInstallPHPErrorsAndNoOps() async throws {
+        await expectError(.installPHP(version: PHPVersion("9.9")!), "php_not_available")
+        _ = try await st(.installPHP(version: v85)) // already installed
+    }
+
+    // MARK: - Running state
+
+    func testBlockedPortsStillAcceptStateChanges() async throws {
+        let holder = try TestSupport.listen(port: home.settings.httpPort)
+        defer { close(holder) }
+        guard case .error(let code, let message) = await engine.handle(.start) else {
+            return XCTFail("expected ports_blocked")
+        }
+        XCTAssertEqual(code, "ports_blocked")
+        XCTAssertTrue(message.contains("\(home.settings.httpPort)"), message)
+        XCTAssertTrue(message.contains("\(getpid())"), message)
+
+        let extra = try home.makeDirectory("later")
+        let parked = try await st(.park(path: extra.path))
+        XCTAssertFalse(parked.running)
+        XCTAssertEqual(parked.blockedBy.first?.port, home.settings.httpPort)
+        XCTAssertEqual(parked.blockedBy.first?.pid, getpid())
+    }
+
+    func testStartStopRestartAndSerializedParks() async throws {
+        let r2 = try await st(.start)
+        XCTAssertTrue(r2.running)
+        let r3 = try await st(.start)
+        XCTAssertTrue(r3.running, "start while running is ok")
+
+        // Concurrent parks must not lose each other's updates.
+        var dirs: [URL] = []
+        for i in 0..<8 { dirs.append(try home.makeDirectory("batch-\(i)")) }
+        await withTaskGroup(of: Void.self) { group in
+            for dir in dirs {
+                group.addTask { _ = await self.engine.handle(.park(path: dir.path)) }
+            }
+        }
+        let parked = Set(engine.store.load().parked)
+        for dir in dirs { XCTAssertTrue(parked.contains(dir.path), "lost \(dir.path)") }
+        XCTAssertTrue(engine.status().running)
+
+        let r4 = try await st(.stop)
+
+        XCTAssertFalse(r4.running)
+        let r5 = try await st(.restart)
+        XCTAssertTrue(r5.running)
+        let r6 = try await st(.restart)
+        XCTAssertTrue(r6.running)
+    }
+
+    // MARK: - Status never blocks behind slow work
+
+    func testStatusIsPromptWhileInstallPHPRuns() async throws {
+        let started = expectation(description: "install started")
+        let release = DispatchSemaphore(value: 0)
+        let slow = Engine(paths: home.paths, settings: home.settings, installAction: { _ in
+            started.fulfill()
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    _ = release.wait(timeout: .now() + 20)
+                    continuation.resume()
+                }
+            }
+        })
+        let install = Task { await slow.handle(.installPHP(version: v84)) }
+        await fulfillment(of: [started], timeout: 10)
+
+        for _ in 0..<5 {
+            let began = Date()
+            let response = await slow.handle(.status)
+            XCTAssertLessThan(Date().timeIntervalSince(began), 0.5, "status waited for the install")
+            if case .error = response { XCTFail("status errored") }
+        }
+        // Other mutations queue behind the install rather than interleaving with it.
+        let parkDir = try home.makeDirectory("queued")
+        let queuedPark = Task { await slow.handle(.park(path: parkDir.path)) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(slow.store.load().parked.contains(parkDir.path), "park ran during the install")
+
+        release.signal()
+        _ = await install.value
+        _ = await queuedPark.value
+        XCTAssertTrue(slow.store.load().parked.contains(parkDir.path))
+    }
+
+    func testStatusIsPromptWhileStartRuns() async throws {
+        let fresh = Engine(paths: home.paths, settings: home.settings)
+        let done = DispatchGroup()
+        done.enter()
+        let starter = Thread {
+            try? fresh.start()
+            done.leave()
+        }
+        var finished: Bool { done.wait(timeout: .now()) == .success }
+        starter.start()
+        defer { fresh.stop() }
+
+        var answeredDuringStart = 0
+        let deadline = Date().addingTimeInterval(30)
+        while !finished && Date() < deadline {
+            let began = Date()
+            let status = fresh.status()
+            XCTAssertLessThan(Date().timeIntervalSince(began), 0.5, "status waited for start()")
+            if !finished {
+                answeredDuringStart += 1
+                XCTAssertFalse(status.running)
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(finished, "start() did not finish")
+        XCTAssertGreaterThan(answeredDuringStart, 0, "start() finished before status was ever asked")
+        XCTAssertTrue(fresh.status().running)
+    }
+
+    func testStatusIsPromptWhileReloadRuns() async throws {
+        try engine.start()
+        XCTAssertTrue(engine.status().running)
+        let running = engine!
+        let reloading = Thread { try? running.reload() }
+        reloading.start()
+        for _ in 0..<20 {
+            let began = Date()
+            _ = engine.status()
+            XCTAssertLessThan(Date().timeIntervalSince(began), 0.5, "status waited for reload()")
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    func testRunningIsFalseWhenCaddyHasCrashed() async throws {
+        try engine.start()
+        XCTAssertTrue(engine.status().running)
+        // Kill only the Caddy process this engine started.
+        let pid = try XCTUnwrap(engine.status().processes["caddy"].flatMap(TestSupport.pid(from:)))
+        kill(pid, SIGKILL)
+        let deadline = Date().addingTimeInterval(5)
+        while engine.status().running && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertFalse(engine.status().running, "\(engine.status().processes)")
+    }
+}
