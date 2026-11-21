@@ -91,8 +91,6 @@ struct Status: ParsableCommand {
             print("Paddock is running.")
         } else if !status.blockedBy.isEmpty {
             print(Messages.portsBlocked(status.blockedBy))
-        } else if !status.portsNotPermitted.isEmpty {
-            print(Messages.portsNotPermitted(status.portsNotPermitted))
         } else {
             print("Paddock is stopped.")
         }

@@ -4,7 +4,7 @@ import Foundation
 /// Something listening on a TCP port Paddock needs.
 public struct PortHolder: Codable, Equatable, Sendable {
     public let port: Int
-    /// Nil when the holder is not visible to this user (e.g. a root process); only a failed bind showed it.
+    /// Nil when the holder is not visible to this user (e.g. a root process); only a connection showed it.
     public let pid: Int32?
     public let command: String?
     public let ownedByCurrentUser: Bool
@@ -40,54 +40,29 @@ public struct PortHolder: Codable, Equatable, Sendable {
     }
 }
 
-/// Why the HTTP/HTTPS ports could not be bound.
-public enum PortBindProblem: Equatable, Sendable {
-    /// Something else is listening on the port.
-    case inUse
-    /// macOS doesn't let this user listen on the port (ports below 1024 on a specific address).
-    case notPermitted
-}
-
-/// What stops Paddock from listening on its ports.
-public struct PortReport: Equatable, Sendable {
-    public var holders: [PortHolder]
-    /// Ports nobody holds but this user may not listen on.
-    public var notPermitted: [Int]
-
-    public var isClear: Bool { holders.isEmpty && notPermitted.isEmpty }
-}
-
 public enum PortCheck {
-    /// Listeners on each port, found with `lsof`; if `lsof` shows none, a failed bind of
-    /// 127.0.0.1 and ::1 reports either an unknown holder or a port this user may not use.
-    public static func report(ports: [Int]) -> PortReport {
-        report(ports: ports, listeners: lsofListeners(port:), bindProblem: bindError(port:))
-    }
+    /// How long a test connection may take before the port counts as free.
+    static let connectTimeout: TimeInterval = 0.2
 
-    static func report(ports: [Int], listeners: (Int) -> [PortHolder],
-                       bindProblem: (Int) -> PortBindProblem?) -> PortReport {
-        var result = PortReport(holders: [], notPermitted: [])
-        for port in ports {
-            let listed = listeners(port)
-            if !listed.isEmpty {
-                result.holders += listed
-                continue
-            }
-            switch bindProblem(port) {
-            case .inUse?:
-                result.holders.append(PortHolder(port: port, pid: nil, command: nil, ownedByCurrentUser: false))
-            case .notPermitted?:
-                result.notPermitted.append(port)
-            case nil:
-                break
-            }
-        }
-        return result
-    }
-
-    /// Only the holders; a port that is merely not permitted has none.
+    /// Who serves each port. A port is held iff a TCP connection to 127.0.0.1 or [::1] on it is
+    /// accepted (a normal user cannot test-bind ports below 1024, so binding would prove nothing);
+    /// `lsof` then names the listening processes where it can see them, else the holder is unknown.
     public static func holders(of ports: [Int]) -> [PortHolder] {
-        report(ports: ports).holders
+        holders(of: ports, accepts: accepts(port:), listeners: lsofListeners(port:))
+    }
+
+    static func holders(of ports: [Int], accepts: (Int) -> Bool,
+                        listeners: (Int) -> [PortHolder]) -> [PortHolder] {
+        ports.flatMap { port -> [PortHolder] in
+            guard accepts(port) else { return [] }
+            let listed = listeners(port)
+            return listed.isEmpty ? [PortHolder(port: port, pid: nil, command: nil, ownedByCurrentUser: false)] : listed
+        }
+    }
+
+    /// Whether 127.0.0.1:<port> or [::1]:<port> accepts a TCP connection within `connectTimeout`.
+    static func accepts(port: Int) -> Bool {
+        connects(port: port, ipv6: false) || connects(port: port, ipv6: true)
     }
 
     /// One holder per listening process, from `lsof -F pcu` output.
@@ -141,31 +116,13 @@ public enum PortCheck {
         return length > 0 ? String(cString: buffer) : nil
     }
 
-    /// Why 127.0.0.1:<port> or [::1]:<port> (both of which Caddy binds) can't be listened on, if either can't.
-    static func bindError(port: Int) -> PortBindProblem? {
-        classify([bindErrno(port: port, ipv6: false), bindErrno(port: port, ipv6: true)])
-    }
-
-    /// Reads bind results (0 for success, else errno) for the loopback addresses. "Address in use"
-    /// anywhere means a holder; "permission denied" means this user may not listen there; a missing
-    /// IPv6 loopback is no problem. Any other failure counts as a holder, as before.
-    static func classify(_ results: [Int32]) -> PortBindProblem? {
-        let failures = results.filter { $0 != 0 && $0 != EADDRNOTAVAIL && $0 != EAFNOSUPPORT && $0 != EPROTONOSUPPORT }
-        if failures.contains(EADDRINUSE) { return .inUse }
-        if failures.isEmpty { return nil }
-        if failures.allSatisfy({ $0 == EACCES || $0 == EPERM }) { return .notPermitted }
-        return .inUse
-    }
-
-    /// Binds (and, with `listen`, listens on) the loopback address on `port`, then closes the socket.
-    /// Returns 0 on success, else the errno. SO_REUSEADDR so that lingering TIME_WAIT connections from
-    /// a server we just stopped don't count as a holder.
-    static func bindErrno(port: Int, ipv6: Bool, listen shouldListen: Bool = true) -> Int32 {
+    private static func connects(port: Int, ipv6: Bool) -> Bool {
         let fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return errno }
+        guard fd >= 0 else { return false }
         defer { close(fd) }
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         var on: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         let rc: Int32
         if ipv6 {
             var addr = sockaddr_in6()
@@ -175,7 +132,7 @@ public enum PortCheck {
             addr.sin6_addr = in6addr_loopback
             rc = withUnsafePointer(to: &addr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
+                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
                 }
             }
         } else {
@@ -186,12 +143,16 @@ public enum PortCheck {
             addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
             rc = withUnsafePointer(to: &addr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
             }
         }
-        guard rc == 0 else { return errno }
-        guard shouldListen else { return 0 }
-        return Darwin.listen(fd, 1) == 0 ? 0 : errno
+        if rc == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
+        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        guard poll(&pfd, 1, Int32(connectTimeout * 1000)) == 1 else { return false }
+        var error: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        return getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 && error == 0
     }
 }

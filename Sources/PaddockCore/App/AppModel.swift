@@ -98,7 +98,6 @@ public final class AppModel: ObservableObject {
     public var statusLine: String {
         if isRunning { return "Running" }
         if let blocked = status?.blockedBy, !blocked.isEmpty { return Messages.cantStart(blocked) }
-        if let ports = status?.portsNotPermitted, !ports.isEmpty { return Messages.cantListen(ports) }
         return "Stopped"
     }
 
@@ -121,7 +120,6 @@ public final class AppModel: ObservableObject {
     public var blockedExplanation: String? {
         guard let status, !isRunning else { return nil }
         if !status.blockedBy.isEmpty { return canQuitBlockingHolder ? nil : Messages.portsBlocked(status.blockedBy) }
-        if !status.portsNotPermitted.isEmpty { return Messages.portsNotPermitted(status.portsNotPermitted) }
         return nil
     }
 
@@ -205,8 +203,8 @@ public final class AppModel: ObservableObject {
         case .success(.error(let code, let message)):
             if code == ErrorCode.needsTrust || code == ErrorCode.trustDisabled {
                 trustNotice = message
-            } else if code != ErrorCode.portsBlocked && code != ErrorCode.portsNotPermitted {
-                // (Those two the status line already says.)
+            } else if code != ErrorCode.portsBlocked {
+                // (The status line already says that.)
                 lastError = message
             }
         case .failure(ClientError.daemonNotRunning):

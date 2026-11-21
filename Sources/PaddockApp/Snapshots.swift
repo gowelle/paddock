@@ -92,9 +92,10 @@ enum Snapshots {
                 ? [80, 443].map { PortHolder(port: $0, pid: 123, command: "nginx", ownedByCurrentUser: true,
                                              executablePath: "/Applications/Other.app/Contents/Resources/nginx") }
                 : []
-            status = EngineStatus(running: sample == .running, blockedBy: blocked, portsNotPermitted: [],
+            status = EngineStatus(running: sample == .running, blockedBy: blocked,
                                   sites: sites, installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
-                                  resolverInstalled: true, trustEnabled: true, dnsRunning: true)
+                                  resolverInstalled: true, trustEnabled: true, dnsRunning: true,
+                                  portHelperInstalled: true)
         case .stopped:
             status = nil
         }

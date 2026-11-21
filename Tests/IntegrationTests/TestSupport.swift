@@ -110,10 +110,42 @@ enum TestSupport {
         return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
     }
 
+    /// The built `paddock-ports` helper, in the build products directory next to the test bundle.
+    static var portHelper: URL {
+        Bundle(for: TestHome.self).bundleURL.deletingLastPathComponent().appendingPathComponent("paddock-ports")
+    }
+
+    /// `lsof` lines for the TCP sockets `pid` is listening on (empty when there are none).
+    static func tcpListeners(pid: Int32) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        p.arguments = ["-nP", "-a", "-p", "\(pid)", "-iTCP", "-sTCP:LISTEN"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The pid in a `ProcessStatus` description such as "running (pid 123)".
     static func pid(from description: String) -> Int32? {
         guard let range = description.range(of: "pid ") else { return nil }
         return Int32(description[range.upperBound...].prefix { $0.isNumber })
+    }
+}
+
+extension Engine {
+    /// An engine for a development home, as `paddockd` runs one when PADDOCK_HOME is set: it runs the
+    /// built `paddock-ports` helper itself on the test's high ports.
+    static func development(paths: Paths, settings: Settings, trust: CertificateTrust? = nil,
+                            installAction: (@Sendable (PHPVersion) async throws -> Void)? = nil,
+                            backoffScale: TimeInterval = 1,
+                            log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) })
+        -> Engine {
+        Engine(paths: paths, settings: settings, installAction: installAction, trust: trust,
+               backoffScale: backoffScale, managesPortHelper: true, portHelper: TestSupport.portHelper, log: log)
     }
 }
 

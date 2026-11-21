@@ -66,15 +66,16 @@ final class EngineTests: XCTestCase {
     func testBlockedPortsReportedWhileDNSKeepsAnswering() throws {
         let holder = try TestSupport.listen(port: settings.httpPort)
         defer { close(holder) }
-        let engine = Engine(paths: paths, settings: settings)
+        let engine = Engine.development(paths: paths, settings: settings)
         self.engine = engine
         try engine.start()
         let status = engine.status()
         XCTAssertFalse(status.running)
         XCTAssertEqual(status.blockedBy.first?.port, settings.httpPort)
         XCTAssertEqual(status.blockedBy.first?.pid, getpid())
-        XCTAssertEqual(status.portsNotPermitted, [])
         XCTAssertTrue(status.processes.values.allSatisfy { $0 == "stopped" }, "\(status.processes)")
+        XCTAssertNil(status.processes["caddy"], "nothing of the web stack starts while the ports are held")
+        XCTAssertNil(status.processes["ports"])
         // The web server is blocked, but .test names still resolve.
         XCTAssertTrue(status.dnsRunning)
         XCTAssertEqual(try TestSupport.dig("blocked.test", port: settings.dnsPort), "127.0.0.1")
@@ -157,7 +158,7 @@ final class EngineTests: XCTestCase {
         let engine = try XCTUnwrap(self.engine)
         XCTAssertEqual(try get("plain-php.test", "/").status, 200) // spawns an FPM worker
         let groups = engine.status().processes.values.compactMap(TestSupport.pid(from:))
-        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(groups.count, 3, "Caddy, PHP-FPM and the port helper")
 
         engine.stop()
 
@@ -166,6 +167,7 @@ final class EngineTests: XCTestCase {
         }
         XCTAssertFalse(engine.status().running)
         XCTAssertEqual(PortCheck.holders(of: [settings.httpPort, settings.httpsPort]), [])
+        XCTAssertFalse(Self.acceptsUnix(paths.httpSocket.path), "Caddy's HTTP socket still answers")
         XCTAssertTrue(engine.status().dnsRunning, "DNS runs as long as the daemon does")
         engine.shutdown()
         XCTAssertTrue(try TestSupport.canBindUDP(port: settings.dnsPort), "DNS responder still bound")
@@ -182,6 +184,151 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(Self.userCaddySnapshot(), before)
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.caddyData.appendingPathComponent("pki").path),
                       "Caddy's local CA should live in the Paddock home")
+    }
+
+    // MARK: - Port helper and Unix sockets
+
+    func testServesThroughPortHelperOverUnixSockets() throws {
+        try startEngine()
+        let status = try XCTUnwrap(engine).status()
+        XCTAssertTrue(status.portHelperInstalled, "a development home runs its own helper")
+        let helperPid = try XCTUnwrap(status.processes["ports"].flatMap(TestSupport.pid(from:)), "\(status.processes)")
+        let caddyPid = try XCTUnwrap(status.processes["caddy"].flatMap(TestSupport.pid(from:)))
+
+        // The helper, not Caddy, holds both TCP ports.
+        let holders = PortCheck.holders(of: [settings.httpPort, settings.httpsPort])
+        XCTAssertEqual(holders.map(\.port), [settings.httpPort, settings.httpsPort])
+        XCTAssertTrue(holders.allSatisfy { $0.pid == helperPid }, "\(holders)")
+        XCTAssertFalse(holders.contains { $0.pid == caddyPid })
+
+        // Caddy itself answers on the owner-only Unix sockets.
+        let mode = try FileManager.default.attributesOfItem(atPath: paths.run.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o700)
+        let direct = try curlUnix(paths.httpSocket, "http://plain-php.test/")
+        XCTAssertEqual(direct.status, 200, direct.verbose)
+        XCTAssertTrue(direct.body.hasPrefix("plain:8.5"), direct.body)
+
+        let r = try get("plain-php.test", "/")
+        XCTAssertEqual(r.status, 200, r.body)
+        XCTAssertTrue(r.body.hasPrefix("plain:8.5"), r.body)
+    }
+
+    func testCaddyHasNoTCPListeners() throws {
+        let (trust, _) = fakeTrust()
+        try StateStore(paths: paths).update { $0.secured = ["plain-php"] }
+        try startEngine(trust: trust)
+        XCTAssertEqual(try curlHTTPS("plain-php.test", "/").status, 200)
+        let caddyPid = try XCTUnwrap(engine?.status().processes["caddy"].flatMap(TestSupport.pid(from:)))
+        XCTAssertEqual(try TestSupport.tcpListeners(pid: caddyPid), "")
+    }
+
+    func testHelperSurvivesCaddyRestart() throws {
+        let engine = Engine.development(paths: paths, settings: settings, backoffScale: 0.01)
+        self.engine = engine
+        try engine.start()
+        let before = engine.status().processes
+        let helperPid = try XCTUnwrap(before["ports"].flatMap(TestSupport.pid(from:)))
+        let caddyPid = try XCTUnwrap(before["caddy"].flatMap(TestSupport.pid(from:)))
+
+        // Kill only the Caddy this engine started; the supervisor brings it back.
+        kill(caddyPid, SIGKILL)
+        let deadline = Date().addingTimeInterval(15)
+        var served: Response?
+        while Date() < deadline {
+            let now = engine.status().processes["caddy"].flatMap(TestSupport.pid(from:))
+            if let now, now != caddyPid, let r = try? get("plain-php.test", "/"), r.status == 200 {
+                served = r
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        XCTAssertTrue(served?.body.hasPrefix("plain:8.5") == true, "\(String(describing: served))")
+        XCTAssertEqual(engine.status().processes["ports"], "running (pid \(helperPid))", "the helper was restarted")
+        XCTAssertTrue(engine.status().running)
+    }
+
+    func testWebServerDownClosesConnection() throws {
+        // Long restart delays, so Caddy stays down for a while after it dies.
+        let engine = Engine.development(paths: paths, settings: settings, backoffScale: 10)
+        self.engine = engine
+        try engine.start()
+        let caddyPid = try XCTUnwrap(engine.status().processes["caddy"].flatMap(TestSupport.pid(from:)))
+        let helperPid = try XCTUnwrap(engine.status().processes["ports"].flatMap(TestSupport.pid(from:)))
+        kill(caddyPid, SIGKILL)
+        let gone = Date().addingTimeInterval(5)
+        while engine.status().processes["caddy"]?.hasPrefix("running") == true && Date() < gone {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertFalse(engine.status().running, "Caddy is down")
+
+        let began = Date()
+        let r = try get("plain-php.test", "/")
+        XCTAssertEqual(r.status, 0, "no HTTP answer while the web server is down: \(r.body)")
+        XCTAssertLessThan(Date().timeIntervalSince(began), 2, "the connection was closed, not left hanging")
+        XCTAssertEqual(engine.status().processes["ports"], "running (pid \(helperPid))")
+    }
+
+    /// A socket bound to the HTTPS port without listening passes the connection check, but the helper
+    /// can't bind there: start fails naming the helper, and nothing of the web stack is left running.
+    func testHelperThatCannotBindLeavesNothingRunning() throws {
+        let squatter = try XCTUnwrap(TestSupport.bindSocket(type: SOCK_STREAM, port: settings.httpsPort))
+        defer { close(squatter) }
+        let engine = Engine.development(paths: paths, settings: settings)
+        self.engine = engine
+        XCTAssertThrowsError(try engine.start()) { error in
+            guard case EngineError.notReady(let process, let log) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(process, "ports")
+            XCTAssertTrue(log.hasSuffix("paddock-ports.log"), log)
+        }
+        let status = engine.status()
+        XCTAssertFalse(status.running)
+        XCTAssertTrue(status.processes.values.allSatisfy { $0 == "stopped" }, "\(status.processes)")
+        XCTAssertEqual(PortCheck.holders(of: [settings.httpPort]), [])
+    }
+
+    /// On the real system launchd owns ports 80/443 (the installed helper): the engine starts Caddy on
+    /// its Unix sockets only, runs no helper and checks no ports.
+    func testSystemModeServesOnUnixSocketsWithoutHelperOrTCPPort() throws {
+        // A listener on the HTTP port does not matter here: the engine doesn't look.
+        let holder = try TestSupport.listen(port: settings.httpPort)
+        defer { close(holder) }
+        let engine = Engine(paths: paths, settings: settings, installAction: nil, managesPortHelper: false)
+        self.engine = engine
+        try engine.start()
+        let status = engine.status()
+        XCTAssertTrue(status.running, "blocked by \(status.blockedBy)")
+        XCTAssertEqual(status.blockedBy, [])
+        XCTAssertFalse(status.portHelperInstalled, "the real check arrives with the installer")
+        XCTAssertNil(status.processes["ports"], "\(status.processes)")
+
+        let r = try curlUnix(paths.httpSocket, "http://plain-php.test/")
+        XCTAssertEqual(r.status, 200, r.verbose)
+        XCTAssertTrue(r.body.hasPrefix("plain:8.5"), r.body)
+        let caddyPid = try XCTUnwrap(status.processes["caddy"].flatMap(TestSupport.pid(from:)))
+        XCTAssertEqual(try TestSupport.tcpListeners(pid: caddyPid), "")
+        XCTAssertEqual(PortCheck.holders(of: [settings.httpsPort]), [], "nothing listens on the HTTPS port")
+    }
+
+    func testPortHelperInstalledComesFromTheInjectedCheckOnTheRealSystem() throws {
+        let engine = Engine(paths: paths, settings: settings, installAction: nil, managesPortHelper: false,
+                            portHelperInstalled: { true })
+        self.engine = engine
+        XCTAssertTrue(engine.status().portHelperInstalled)
+    }
+
+    func testTooLongHomeFailsStartNamingTheSocket() async throws {
+        // /tmp/<name>/run/http.sock is exactly 104 bytes: one too many.
+        let name = String(repeating: "p", count: 104 - "/tmp//run/http.sock".utf8.count)
+        let longHome = URL(fileURLWithPath: "/tmp/\(name)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: longHome) }
+        let long = Paths(home: longHome)
+        XCTAssertEqual(long.httpSocket.path.utf8.count, 104)
+        let engine = Engine.development(paths: long, settings: settings)
+        self.engine = engine
+        let response = await engine.handle(.start)
+        XCTAssertEqual(response, .error(code: ErrorCode.internal,
+                                        message: Messages.socketPathTooLong(long.httpSocket.path)))
+        XCTAssertTrue(engine.status().processes.isEmpty, "\(engine.status().processes)")
     }
 
     // MARK: - HTTPS
@@ -226,8 +373,8 @@ final class EngineTests: XCTestCase {
     func testDeclinedTrustLeavesSiteSecuredAndAnswersNeedsTrust() async throws {
         let (trust, runner) = fakeTrust(accepts: false)
         let logged = LockedBox<[String]>([])
-        let engine = Engine(paths: paths, settings: settings, installAction: nil, trust: trust,
-                            log: { line in logged.value.append(line) })
+        let engine = Engine.development(paths: paths, settings: settings, trust: trust,
+                                        log: { line in logged.value.append(line) })
         self.engine = engine
         try engine.start()
         let response = await engine.handle(.secure(site: "plain-php"))
@@ -268,7 +415,7 @@ final class EngineTests: XCTestCase {
     func testNoRootCertificateMeansNeedsTrustWithoutCallingTrust() async throws {
         let (trust, runner) = fakeTrust()
         // Engine never started: Caddy is down, so root.crt cannot exist.
-        let engine = Engine(paths: paths, settings: settings, trust: trust)
+        let engine = Engine.development(paths: paths, settings: settings, trust: trust)
         self.engine = engine
         let response = await engine.handle(.secure(site: "plain-php"))
         XCTAssertEqual(response, .error(code: ErrorCode.needsTrust, message:
@@ -300,7 +447,7 @@ final class EngineTests: XCTestCase {
     }
 
     private func startEngine(trust: CertificateTrust? = nil) throws {
-        let engine = Engine(paths: paths, settings: settings, trust: trust)
+        let engine = Engine.development(paths: paths, settings: settings, trust: trust)
         self.engine = engine
         try engine.start()
         XCTAssertTrue(engine.status().running, "blocked by \(engine.status().blockedBy)")
@@ -365,6 +512,18 @@ final class EngineTests: XCTestCase {
             if result.status != 0 || Date() >= deadline { return result }
             Thread.sleep(forTimeInterval: 0.2)
         }
+    }
+
+    /// A request straight to one of Caddy's Unix sockets, bypassing the port helper.
+    private func curlUnix(_ socket: URL, _ url: String) throws -> CurlResult {
+        try curl(["--unix-socket", socket.path, url])
+    }
+
+    /// Whether a Unix stream socket at `path` accepts a connection.
+    private static func acceptsUnix(_ path: String) -> Bool {
+        guard let fd = Wire.connect(to: path) else { return false }
+        close(fd)
+        return true
     }
 
     private func curlHTTP(_ host: String, _ path: String) throws -> CurlResult {

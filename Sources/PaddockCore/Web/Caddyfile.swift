@@ -10,12 +10,13 @@ public enum Caddyfile {
     public static func render(sites: [Site], defaultPHP: PHPVersion, paths: Paths,
                               settings: Settings) -> String {
         let serverPHP = Bundled.resources.appendingPathComponent("router/server.php").path
+        let httpBind = quote("unix/" + paths.httpSocket.path)
+        let httpsBind = quote("unix/" + paths.httpsSocket.path)
         var out = """
         {
             admin \(quote("unix/" + paths.caddyAdminSocket.path))
             http_port \(settings.httpPort)
             https_port \(settings.httpsPort)
-            default_bind 127.0.0.1 [::1]
             local_certs
             skip_install_trust
             auto_https disable_redirects
@@ -40,7 +41,9 @@ public enum Caddyfile {
 
         # Every other host on the HTTP port, subdomains included (api.myapp.test). Only .test resolves
         # here, and the router picks the site from the host. Named site blocks below take precedence.
+        # Caddy listens only on Unix sockets; the port helper forwards the HTTP and HTTPS ports to them.
         http:// {
+            bind \(httpBind)
             import paddock_php \(quote(paths.fpmSocket(defaultPHP).path))
         }
 
@@ -55,11 +58,13 @@ public enum Caddyfile {
                 out += """
 
                 https://\(site.host), https://*.\(site.host) {
+                    bind \(httpsBind)
                     tls internal
                     import paddock_php \(socket)
                 }
 
                 http://\(site.host), http://*.\(site.host) {
+                    bind \(httpBind)
                     redir https://\(httpsAuthority){uri}
                 }
 
@@ -68,6 +73,7 @@ public enum Caddyfile {
                 out += """
 
                 http://\(site.host), http://*.\(site.host) {
+                    bind \(httpBind)
                     import paddock_php \(socket)
                 }
 

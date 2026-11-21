@@ -32,6 +32,9 @@ final class PHPVersionsTests: XCTestCase {
 
         let plain = try get("plain-php.test", "/")
         XCTAssertTrue(plain.hasPrefix("plain:8.4"), plain)
+        // A pinned site's subdomains are served by the pinned version too.
+        let sub = try get("api.plain-php.test", "/")
+        XCTAssertTrue(sub.hasPrefix("plain:8.4"), sub)
         let laravel = try get("laravel-like.test", "/version.php")
         XCTAssertTrue(laravel.hasPrefix("laravel:8.5"), laravel)
     }
@@ -116,7 +119,7 @@ final class PHPVersionsTests: XCTestCase {
     func testEngineInstallShimsCopiesTheSiblingPaddockOfTheRunningDaemon() throws {
         let daemon = products.appendingPathComponent("paddockd")
         guard FileManager.default.isExecutableFile(atPath: daemon.path) else { throw XCTSkip("paddockd not built") }
-        let engine = Engine(paths: home.paths, settings: home.settings)
+        let engine = Engine.development(paths: home.paths, settings: home.settings)
         // Under XCTest the running executable is xctest, which has no `paddock` beside it: a no-op.
         try engine.installShims()
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.bin.path))
@@ -132,7 +135,7 @@ final class PHPVersionsTests: XCTestCase {
     private var products: URL { Bundle(for: PHPVersionsTests.self).bundleURL.deletingLastPathComponent() }
 
     private func startEngine() throws {
-        let engine = Engine(paths: home.paths, settings: home.settings)
+        let engine = Engine.development(paths: home.paths, settings: home.settings)
         self.engine = engine
         try engine.start()
         XCTAssertTrue(engine.status().running, "blocked by \(engine.status().blockedBy)")

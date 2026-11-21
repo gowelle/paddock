@@ -60,10 +60,11 @@ final class SystemLifecycleTests: XCTestCase {
         }
     }
 
-    private func engineStatus(blockedBy: [PortHolder] = [], notPermitted: [Int] = []) -> EngineStatus {
-        EngineStatus(running: blockedBy.isEmpty && notPermitted.isEmpty, blockedBy: blockedBy,
-                     portsNotPermitted: notPermitted, sites: [], installedPHP: [], defaultPHP: nil,
-                     processes: [:], resolverInstalled: false, trustEnabled: true, dnsRunning: true)
+    private func engineStatus(blockedBy: [PortHolder] = []) -> EngineStatus {
+        EngineStatus(running: blockedBy.isEmpty, blockedBy: blockedBy,
+                     sites: [], installedPHP: [], defaultPHP: nil,
+                     processes: [:], resolverInstalled: false, trustEnabled: true, dnsRunning: true,
+                     portHelperInstalled: true)
     }
 
     /// Starts with the engine reporting `status`; records how many times the engine was asked.
@@ -100,12 +101,10 @@ final class SystemLifecycleTests: XCTestCase {
 
     func testBlockedStartNeverPromptsAndLeavesTheResolverAlone() throws {
         try writeResolver("nameserver 127.0.0.1\nport 53\n") // another tool's
-        for status in [engineStatus(blockedBy: herd), engineStatus(notPermitted: [80, 443])] {
-            let fake = runner()
-            XCTAssertTrue(try start(lifecycle(fake), status: status))
-            XCTAssertFalse(fake.calls.contains { $0.executable == "/usr/bin/osascript" }, "\(fake.calls)")
-            XCTAssertEqual(try String(contentsOf: resolverFile, encoding: .utf8), "nameserver 127.0.0.1\nport 53\n")
-        }
+        let fake = runner()
+        XCTAssertTrue(try start(lifecycle(fake), status: engineStatus(blockedBy: herd)))
+        XCTAssertFalse(fake.calls.contains { $0.executable == "/usr/bin/osascript" }, "\(fake.calls)")
+        XCTAssertEqual(try String(contentsOf: resolverFile, encoding: .utf8), "nameserver 127.0.0.1\nport 53\n")
     }
 
     func testTheFirstStartWithFreePortsAfterABlockedOneInstallsTheResolver() throws {

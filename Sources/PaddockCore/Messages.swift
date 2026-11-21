@@ -59,14 +59,11 @@ public enum Messages {
         return "Can't start: \(portList(first.ports)) in use by \(first.who)"
     }
 
-    /// For ports below 1024 that macOS won't let Paddock listen on (not held by anyone).
-    public static func portsNotPermitted(_ ports: [Int]) -> String {
-        "Paddock can't listen on \(portList(ports)) yet on this Mac. This is a known limitation being worked on."
-    }
+    public static let portHelperMissing = "Can't find paddock-ports next to paddockd."
 
-    /// The menu bar's one-line form of `portsNotPermitted`.
-    public static func cantListen(_ ports: [Int]) -> String {
-        "Can't listen on \(portList(ports)) yet"
+    /// A Unix socket under Paddock's folder would be longer than macOS allows (103 bytes).
+    public static func socketPathTooLong(_ path: String) -> String {
+        "Paddock's folder path is too long for macOS sockets: \(path)"
     }
 
     /// `port 80`, `ports 80 and 443`, `ports 80, 443 and 8080`.

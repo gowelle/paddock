@@ -90,7 +90,7 @@ public struct SystemLifecycle: Sendable {
         }
 
         let status = try startEngine()
-        guard !status.portsUnavailable, !resolver.isInstalled() else { return true }
+        guard status.blockedBy.isEmpty, !resolver.isInstalled() else { return true }
         do {
             try resolver.install()
         } catch {

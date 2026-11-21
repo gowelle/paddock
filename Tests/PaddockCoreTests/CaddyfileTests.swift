@@ -25,7 +25,9 @@ final class CaddyfileTests: XCTestCase {
         XCTAssertTrue(out.contains("admin \"unix//h/Paddock/run/caddy-admin.sock\""))
         XCTAssertTrue(out.contains("http_port 18080"))
         XCTAssertTrue(out.contains("https_port 18443"))
-        XCTAssertTrue(out.contains("default_bind 127.0.0.1 [::1]"))
+        // Caddy listens only on Unix sockets; the global ports stay for URLs and redirects.
+        XCTAssertFalse(out.contains("default_bind"))
+        XCTAssertFalse(out.contains("127.0.0.1"))
         XCTAssertTrue(out.contains("local_certs"))
         XCTAssertTrue(out.contains("skip_install_trust"))
         XCTAssertTrue(out.contains("auto_https disable_redirects"))
@@ -42,21 +44,25 @@ final class CaddyfileTests: XCTestCase {
     func testCatchAllServesEveryOtherHostWithTheDefaultVersion() {
         let out = render([])
         // Every host on the HTTP port, so subdomains (api.myapp.test) reach the router too.
-        XCTAssertTrue(out.contains("http:// {\n    import paddock_php \"/h/Paddock/run/php-8.4.sock\"\n}"))
+        XCTAssertTrue(out.contains("http:// {\n    bind \"unix//h/Paddock/run/http.sock\"\n"
+            + "    import paddock_php \"/h/Paddock/run/php-8.4.sock\"\n}"))
         XCTAssertFalse(out.contains("*.test"))
     }
 
     func testPinnedSiteGetsOwnBlock() {
         let out = render([site("blog", pinned: true, php: v83)])
         XCTAssertTrue(out.contains(
-            "http://blog.test, http://*.blog.test {\n    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
+            "http://blog.test, http://*.blog.test {\n    bind \"unix//h/Paddock/run/http.sock\"\n"
+            + "    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
     }
 
     func testSecuredSiteGetsHttpsAndRedirect() {
         let out = render([site("shop", secured: true, pinned: true, php: v83)])
-        XCTAssertTrue(out.contains("https://shop.test, https://*.shop.test {\n    tls internal\n"
+        XCTAssertTrue(out.contains("https://shop.test, https://*.shop.test {\n"
+            + "    bind \"unix//h/Paddock/run/https.sock\"\n    tls internal\n"
             + "    import paddock_php \"/h/Paddock/run/php-8.3.sock\"\n}"))
-        XCTAssertTrue(out.contains("http://shop.test, http://*.shop.test {\n    redir https://{host}:18443{uri}\n}"))
+        XCTAssertTrue(out.contains("http://shop.test, http://*.shop.test {\n    bind \"unix//h/Paddock/run/http.sock\"\n"
+            + "    redir https://{host}:18443{uri}\n}"))
     }
 
     func testRedirectOmitsPortOnDefaultHttpsPort() {
@@ -64,7 +70,8 @@ final class CaddyfileTests: XCTestCase {
         settings.httpsPort = 443
         let out = Caddyfile.render(sites: [site("shop", secured: true)], defaultPHP: v84, paths: paths,
                                    settings: settings)
-        XCTAssertTrue(out.contains("http://shop.test, http://*.shop.test {\n    redir https://{host}{uri}\n}"))
+        XCTAssertTrue(out.contains("http://shop.test, http://*.shop.test {\n    bind \"unix//h/Paddock/run/http.sock\"\n"
+            + "    redir https://{host}{uri}\n}"))
     }
 
     func testPlainSiteHasNoBlock() {
@@ -88,6 +95,16 @@ final class CaddyfileTests: XCTestCase {
         XCTAssertTrue(out.contains("storage file_system \"/Users/x/Library/Application Support/Paddock/caddy\""))
         XCTAssertTrue(out.contains("env PADDOCK_ROUTER_HOME \"/Users/x/Library/Application Support/Paddock/config/valet\""))
         XCTAssertTrue(out.contains("import paddock_php \"/Users/x/Library/Application Support/Paddock/run/php-8.4.sock\""))
+        XCTAssertTrue(out.contains("bind \"unix//Users/x/Library/Application Support/Paddock/run/http.sock\""))
+        XCTAssertTrue(out.contains("bind \"unix//Users/x/Library/Application Support/Paddock/run/https.sock\""))
         XCTAssertEqual(Caddyfile.quote("a\"b\\c"), "\"a\\\"b\\\\c\"")
+    }
+
+    func testEverySiteBlockBindsItsUnixSocket() {
+        let out = render([site("plain"), site("blog", pinned: true, php: v83), site("shop", secured: true)])
+        // Catch-all, pinned blog, and shop's HTTP redirect on the HTTP socket; shop's HTTPS on the HTTPS socket.
+        XCTAssertEqual(out.components(separatedBy: "bind \"unix//h/Paddock/run/http.sock\"").count - 1, 3)
+        XCTAssertEqual(out.components(separatedBy: "bind \"unix//h/Paddock/run/https.sock\"").count - 1, 1)
+        XCTAssertEqual(out.components(separatedBy: "bind ").count - 1, 4, out)
     }
 }

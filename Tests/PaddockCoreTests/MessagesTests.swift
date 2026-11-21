@@ -71,13 +71,6 @@ final class MessagesTests: XCTestCase {
                        "Can't start: port 80 in use by nginx")
     }
 
-    func testPortsNotPermittedSentence() {
-        XCTAssertEqual(Messages.portsNotPermitted([80]),
-                       "Paddock can't listen on port 80 yet on this Mac. This is a known limitation being worked on.")
-        XCTAssertEqual(Messages.portsNotPermitted([80, 443]),
-                       "Paddock can't listen on ports 80 and 443 yet on this Mac. This is a known limitation being worked on.")
-    }
-
     func testEnclosingAppIsTheOutermostAppFolder() {
         let herd = PortHolder.enclosingApp(ofExecutable: "/Applications/Herd.app/Contents/Resources/nginx-x86")
         XCTAssertEqual(herd?.path, "/Applications/Herd.app")

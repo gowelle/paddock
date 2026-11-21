@@ -142,8 +142,7 @@ extension Engine {
 
     // MARK: - Pieces
 
-    /// Starts the engine; held ports are `ports_blocked` with the full sentence naming who holds them,
-    /// ports macOS won't let Paddock use are `ports_not_permitted`.
+    /// Starts the engine; held ports are `ports_blocked` with the full sentence naming who holds them.
     private func startReply() async -> Response {
         do {
             try await blocking { try self.start() }
@@ -151,15 +150,16 @@ extension Engine {
             return error(ErrorCode.internal, "\(process) did not become ready; see \(log)")
         } catch EngineError.caddyReloadFailed(let output) {
             return error(ErrorCode.internal, "Caddy rejected the configuration: \(output)")
+        } catch EngineError.socketPathTooLong(let path) {
+            return error(ErrorCode.internal, Messages.socketPathTooLong(path))
+        } catch EngineError.portHelperMissing {
+            return error(ErrorCode.internal, Messages.portHelperMissing)
         } catch {
             return self.error(ErrorCode.internal, "Could not start: \(error.localizedDescription)")
         }
         let current = status()
         if !current.blockedBy.isEmpty {
             return error(ErrorCode.portsBlocked, Messages.portsBlocked(current.blockedBy))
-        }
-        if !current.portsNotPermitted.isEmpty {
-            return error(ErrorCode.portsNotPermitted, Messages.portsNotPermitted(current.portsNotPermitted))
         }
         return .ok(current)
     }

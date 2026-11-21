@@ -5,8 +5,6 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var running: Bool
     /// Listeners on the HTTP/HTTPS ports that stopped the last `start()`.
     public var blockedBy: [PortHolder]
-    /// HTTP/HTTPS ports nobody holds but macOS didn't let Paddock listen on at the last `start()`.
-    public var portsNotPermitted: [Int]
     public var sites: [Site]
     public var installedPHP: [PHPVersion]
     public var defaultPHP: PHPVersion?
@@ -18,13 +16,15 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     /// Whether the `.test` DNS responder is answering. It runs whenever the daemon does, even while
     /// the web server is stopped or blocked.
     public var dnsRunning: Bool
+    /// Whether something forwards the web ports to Caddy's Unix sockets: always true in a development
+    /// home, whose engine runs the helper itself; on the real system, whether launchd's helper is installed.
+    public var portHelperInstalled: Bool
 
-    public init(running: Bool, blockedBy: [PortHolder], portsNotPermitted: [Int], sites: [Site],
+    public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
-                resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool) {
+                resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool) {
         self.running = running
         self.blockedBy = blockedBy
-        self.portsNotPermitted = portsNotPermitted
         self.sites = sites
         self.installedPHP = installedPHP
         self.defaultPHP = defaultPHP
@@ -32,19 +32,24 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.resolverInstalled = resolverInstalled
         self.trustEnabled = trustEnabled
         self.dnsRunning = dnsRunning
+        self.portHelperInstalled = portHelperInstalled
     }
-
-    /// True when the last start found the web ports held or not permitted.
-    public var portsUnavailable: Bool { !blockedBy.isEmpty || !portsNotPermitted.isEmpty }
 }
 
 public enum EngineError: Error, Equatable {
     /// A process did not become ready in time, or exited while starting. `log` is its log file.
     case notReady(process: String, log: String)
     case caddyReloadFailed(output: String)
+    /// A Unix socket under the Paddock home would be longer than macOS allows.
+    case socketPathTooLong(path: String)
+    /// A development home needs `paddock-ports` and there is none to run.
+    case portHelperMissing
 }
 
 /// Runs the web stack (one PHP-FPM per PHP version in use, Caddy in front) and the DNS responder.
+/// Caddy listens only on two owner-only Unix sockets; something else forwards the HTTP and HTTPS ports to
+/// them. In a development home that is the engine's own `paddock-ports` child; on the real system it is
+/// launchd's helper, so the engine neither runs it nor checks the ports.
 /// The DNS responder is independent of the web stack: it starts with the first `start()` (or
 /// `startDNS()`) and stops only in `shutdown()`, when the daemon exits.
 public final class Engine: @unchecked Sendable {
@@ -56,6 +61,12 @@ public final class Engine: @unchecked Sendable {
     let trust: CertificateTrust?
     /// The file `status().resolverInstalled` reads; `/etc/resolver/<tld>` unless a test says otherwise.
     let resolverFile: URL
+    /// True in a development home: the engine checks the web ports and runs `paddock-ports` on them.
+    let managesPortHelper: Bool
+    /// The helper the engine runs when it manages one.
+    private let portHelper: URL?
+    /// On the real system, whether launchd's helper is installed.
+    private let portHelperInstalled: @Sendable () -> Bool
 
     private let supervisor: Supervisor
     private let dns: DNSResponder
@@ -65,7 +76,6 @@ public final class Engine: @unchecked Sendable {
     private let flagsLock = NSLock()
     private var isRunning = false
     private var blockedBy: [PortHolder] = []
-    private var notPermitted: [Int] = []
     private var dnsUp = false
     private var shuttingDown = false
     /// Only touched while holding `operationLock`.
@@ -78,6 +88,7 @@ public final class Engine: @unchecked Sendable {
     let log: @Sendable (String) -> Void
 
     private static let caddyName = "caddy"
+    private static let portHelperName = "ports"
     private static let readyTimeout: TimeInterval = 15
 
     public convenience init(paths: Paths = .current, settings: Settings = .current,
@@ -85,11 +96,18 @@ public final class Engine: @unchecked Sendable {
         self.init(paths: paths, settings: settings, installAction: nil, trust: trust, resolverFile: resolverFile)
     }
 
-    /// `backoffScale` shortens the supervisor's restart delays (tests only).
+    /// `backoffScale` shortens the supervisor's restart delays (tests only). `managesPortHelper` defaults to
+    /// "this is a development home" (`SystemIntegration`); tests set it to exercise either mode.
     init(paths: Paths, settings: Settings, installAction: (@Sendable (PHPVersion) async throws -> Void)?,
          trust: CertificateTrust? = nil, backoffScale: TimeInterval = 1, resolverFile: URL? = nil,
+         managesPortHelper: Bool = !SystemIntegration.isEnabled(environment: ProcessInfo.processInfo.environment),
+         portHelper: URL? = PortHelperLocator.binary(),
+         portHelperInstalled: @escaping @Sendable () -> Bool = { false },
          log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
+        self.managesPortHelper = managesPortHelper
+        self.portHelper = portHelper
+        self.portHelperInstalled = portHelperInstalled
         self.log = log
         self.trust = trust
         self.resolverFile = resolverFile ?? Resolver.defaultFile(settings: settings)
@@ -103,40 +121,56 @@ public final class Engine: @unchecked Sendable {
 
     deinit { shutdown() }
 
-    /// Starts the DNS responder (if it isn't answering yet), then the web stack, unless the HTTP/HTTPS
-    /// ports are held or not permitted, in which case it starts no web server and reports why in
-    /// `status().blockedBy` / `status().portsNotPermitted`. Returns once Caddy accepts connections.
+    /// Starts the DNS responder (if it isn't answering yet), then the web stack. In a development home,
+    /// if something already accepts connections on the HTTP/HTTPS ports, it starts no web server and
+    /// reports who in `status().blockedBy`. Returns once Caddy accepts connections on its sockets and,
+    /// in a development home, the port helper on both ports.
     public func start() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
         startDNS()
         if flags.running {
-            // Caddy crashed and was given up on: tear down what is left and start afresh.
-            guard caddyCrashed else { return }
+            // Caddy or the helper crashed and was given up on: tear down what is left and start afresh.
+            guard caddyCrashed || helperCrashed else { return }
             stopLocked()
         }
 
+        if let path = paths.tooLongSocket { throw EngineError.socketPathTooLong(path: path) }
         try paths.ensureDirectories()
         do { try installShims() } catch {
             log("could not install the php and composer commands: \(error.localizedDescription)")
         }
         let state = try prepareState()
 
-        let ports = PortCheck.report(ports: [settings.httpPort, settings.httpsPort])
-        setFlags(blockedBy: ports.holders, notPermitted: ports.notPermitted)
-        guard ports.isClear else { return }
+        var helper: URL?
+        if managesPortHelper {
+            let holders = PortCheck.holders(of: webPorts)
+            setFlags(blockedBy: holders)
+            guard holders.isEmpty else { return }
+            guard let portHelper else { throw EngineError.portHelperMissing }
+            helper = portHelper
+        } else {
+            setFlags(blockedBy: [])
+        }
 
         do {
             try writeConfigs(state)
             for v in versionsInUse(state).sorted() { try startFPM(v) }
             try startCaddy()
             try waitUntilReady()
+            if let helper {
+                try startPortHelper(helper)
+                // Someone took a port between the check and the helper's bind: that is the blocked case.
+                guard try waitForPortHelper() else { return }
+            }
             setFlags(running: true)
         } catch {
             stopLocked()
             throw error
         }
     }
+
+    private var webPorts: [Int] { [settings.httpPort, settings.httpsPort] }
 
     /// Puts the `paddock` binary that sits next to the running daemon into `bin/`, with `php` and
     /// `composer` linking to it. Does nothing when there is no such binary (e.g. under tests).
@@ -167,7 +201,7 @@ public final class Engine: @unchecked Sendable {
         operationLock.lock()
         defer { operationLock.unlock() }
         stopLocked()
-        setFlags(blockedBy: [], notPermitted: [])
+        setFlags(blockedBy: [])
     }
 
     /// Stops the web stack and the DNS responder; for the daemon's exit.
@@ -176,7 +210,7 @@ public final class Engine: @unchecked Sendable {
         defer { operationLock.unlock() }
         stopLocked()
         dns.stop()
-        setFlags(blockedBy: [], notPermitted: [], dnsRunning: false)
+        setFlags(blockedBy: [], dnsRunning: false)
     }
 
     /// Regenerates configs; when running, also starts/stops FPM pools to match the versions in use
@@ -203,7 +237,8 @@ public final class Engine: @unchecked Sendable {
     }
 
     /// Answers promptly even while `start`, `reload` or a PHP install is in progress: it takes only
-    /// short-lived locks, never `operationLock`. `running` is false while Caddy is crashed.
+    /// short-lived locks, never `operationLock`. `running` is false while Caddy (or, in a development
+    /// home, the port helper) is crashed.
     public func status() -> EngineStatus {
         let current = flags
         let state = store.load()
@@ -212,13 +247,15 @@ public final class Engine: @unchecked Sendable {
         } ?? []
         var processes: [String: String] = [:]
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
-        return EngineStatus(running: current.running && !caddyCrashed, blockedBy: current.blockedBy,
-                            portsNotPermitted: current.notPermitted, sites: sites,
+        return EngineStatus(running: current.running && !caddyCrashed && !helperCrashed,
+                            blockedBy: current.blockedBy,
+                            sites: sites,
                             installedPHP: installer.installed(), defaultPHP: state.defaultPHP,
                             processes: processes,
                             resolverInstalled: (try? String(contentsOf: resolverFile, encoding: .utf8))
                                 == Resolver.desiredContents(settings: settings),
-                            trustEnabled: trust != nil, dnsRunning: current.dnsRunning)
+                            trustEnabled: trust != nil, dnsRunning: current.dnsRunning,
+                            portHelperInstalled: managesPortHelper || portHelperInstalled())
     }
 
     // MARK: - State and configs
@@ -286,7 +323,9 @@ public final class Engine: @unchecked Sendable {
     private var caddyLog: URL { paths.log.appendingPathComponent("caddy.log") }
 
     private func startCaddy() throws {
-        try? FileManager.default.removeItem(at: paths.caddyAdminSocket)
+        for socket in [paths.caddyAdminSocket, paths.httpSocket, paths.httpsSocket] {
+            try? FileManager.default.removeItem(at: socket)
+        }
         try supervisor.start(ProcessSpec(
             name: Self.caddyName, executable: caddyBinary,
             arguments: ["run", "--config", paths.caddyfile.path, "--adapter", "caddyfile"],
@@ -310,7 +349,40 @@ public final class Engine: @unchecked Sendable {
         }
     }
 
-    /// Waits until every FPM socket exists and Caddy accepts TCP connections on the HTTP port.
+    /// Forwards the web ports to Caddy's sockets. It keeps running while Caddy restarts: a connection
+    /// that arrives while Caddy is down is closed at once.
+    private func startPortHelper(_ helper: URL) throws {
+        try supervisor.start(ProcessSpec(
+            name: Self.portHelperName, executable: helper,
+            arguments: ["listen", "\(settings.httpPort)", "\(settings.httpsPort)",
+                        paths.httpSocket.path, paths.httpsSocket.path],
+            logFile: portHelperLog))
+    }
+
+    private var portHelperLog: URL { paths.log.appendingPathComponent("paddock-ports.log") }
+
+    /// Waits until the helper accepts connections on both ports. False when it could not take them
+    /// because something else holds one: the web stack is stopped again and the holders are reported.
+    private func waitForPortHelper() throws -> Bool {
+        let deadline = Date().addingTimeInterval(Self.readyTimeout)
+        while !webPorts.allSatisfy(PortCheck.accepts(port:)) {
+            guard case .running = supervisor.status(Self.portHelperName), Date() < deadline else {
+                stopLocked()
+                let holders = PortCheck.holders(of: webPorts)
+                guard holders.isEmpty else {
+                    setFlags(blockedBy: holders)
+                    return false
+                }
+                throw EngineError.notReady(process: Self.portHelperName, log: portHelperLog.path)
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return true
+    }
+
+    /// Waits until every FPM socket exists and Caddy accepts connections on its HTTP socket. Caddy
+    /// opens all its listeners before it serves a configuration, and its HTTPS socket exists only
+    /// while some site is secured, so the HTTP socket (the catch-all is always there) stands for both.
     private func waitUntilReady() throws {
         let deadline = Date().addingTimeInterval(Self.readyTimeout)
         var pending: [(name: String, log: URL, ready: () -> Bool)] = fpmVersions.sorted().map { v in
@@ -318,7 +390,9 @@ public final class Engine: @unchecked Sendable {
              { [paths] in FileManager.default.fileExists(atPath: paths.fpmSocket(v).path) })
         }
         if supervisor.names.contains(Self.caddyName) {
-            pending.append((Self.caddyName, caddyLog, { [settings] in Self.accepts(port: settings.httpPort) }))
+            pending.append((Self.caddyName, caddyLog, { [paths] in
+                Self.acceptsConnection(onSocket: paths.httpSocket.path)
+            }))
         }
         for item in pending {
             while !item.ready() {
@@ -344,20 +418,10 @@ public final class Engine: @unchecked Sendable {
     /// Whether Caddy is up, so a root certificate can be expected.
     var isServing: Bool { flags.running && !caddyCrashed }
 
-    private static func accepts(port: Int) -> Bool {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = UInt16(port).bigEndian
-        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-        return withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
-            }
-        }
+    private static func acceptsConnection(onSocket path: String) -> Bool {
+        guard let fd = Wire.connect(to: path) else { return false }
+        close(fd)
+        return true
     }
 
     private func stopLocked() {
@@ -371,19 +435,23 @@ public final class Engine: @unchecked Sendable {
         return false
     }
 
-    private var flags: (running: Bool, blockedBy: [PortHolder], notPermitted: [Int], dnsRunning: Bool) {
-        flagsLock.lock()
-        defer { flagsLock.unlock() }
-        return (isRunning, blockedBy, notPermitted, dnsUp)
+    /// Only ever true in a development home, the one place the engine runs the helper.
+    private var helperCrashed: Bool {
+        if case .crashed = supervisor.status(Self.portHelperName) { return true }
+        return false
     }
 
-    private func setFlags(running: Bool? = nil, blockedBy: [PortHolder]? = nil, notPermitted: [Int]? = nil,
-                          dnsRunning: Bool? = nil) {
+    private var flags: (running: Bool, blockedBy: [PortHolder], dnsRunning: Bool) {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        return (isRunning, blockedBy, dnsUp)
+    }
+
+    private func setFlags(running: Bool? = nil, blockedBy: [PortHolder]? = nil, dnsRunning: Bool? = nil) {
         flagsLock.lock()
         defer { flagsLock.unlock() }
         if let running { isRunning = running }
         if let blockedBy { self.blockedBy = blockedBy }
-        if let notPermitted { self.notPermitted = notPermitted }
         if let dnsRunning { dnsUp = dnsRunning }
     }
 

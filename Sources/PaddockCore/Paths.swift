@@ -30,6 +30,16 @@ public struct Paths: Sendable {
     public var routerHome: URL { config.appendingPathComponent("valet", isDirectory: true) }
     public var daemonSocket: URL { run.appendingPathComponent("paddockd.sock") }
     public var caddyAdminSocket: URL { run.appendingPathComponent("caddy-admin.sock") }
+    /// Caddy serves plain HTTP here; in a development home the port helper forwards the HTTP port to it.
+    public var httpSocket: URL { run.appendingPathComponent("http.sock") }
+    /// Caddy serves HTTPS here; the helper forwards the HTTPS port to it.
+    public var httpsSocket: URL { run.appendingPathComponent("https.sock") }
+
+    /// The first Unix socket of the web stack whose path is too long for macOS (more than 103 bytes:
+    /// `sun_path` holds 104 including the terminating NUL), or nil when they all fit.
+    public var tooLongSocket: String? {
+        [httpSocket, httpsSocket, caddyAdminSocket].map(\.path).first { Wire.socketAddress($0) == nil }
+    }
 
     /// User-edited PHP settings; unlike `config/`, never regenerated.
     public var userPHP: URL { home.appendingPathComponent("php", isDirectory: true) }
@@ -53,6 +63,8 @@ public struct Paths: Sendable {
         for dir in [home, bin, phpRoot, userPHP, config, routerHome, run, log, backup, caddyData] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
+        // Owner only, so the sockets inside are reachable by no one else, whatever mode they get.
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: run.path)
     }
 }
 

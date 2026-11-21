@@ -98,13 +98,13 @@ private struct SomeError: Error, LocalizedError {
 private let v84 = PHPVersion(major: 8, minor: 4)
 private let v85 = PHPVersion(major: 8, minor: 5)
 
-private func sampleStatus(running: Bool = true, blockedBy: [PortHolder] = [], notPermitted: [Int] = [],
+private func sampleStatus(running: Bool = true, blockedBy: [PortHolder] = [],
                           sites: [Site]? = nil) -> EngineStatus {
-    EngineStatus(running: running, blockedBy: blockedBy, portsNotPermitted: notPermitted,
+    EngineStatus(running: running, blockedBy: blockedBy,
                  sites: sites ?? [Site(name: "blog", path: "/p/blog", kind: .parked, secured: true,
                                        php: v85, pinned: false)],
                  installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
-                 resolverInstalled: true, trustEnabled: true, dnsRunning: true)
+                 resolverInstalled: true, trustEnabled: true, dnsRunning: true, portHelperInstalled: true)
 }
 
 @MainActor
@@ -181,28 +181,6 @@ final class AppModelTests: XCTestCase {
         await model.refresh()
         XCTAssertFalse(model.canQuitBlockingHolder)
         XCTAssertEqual(model.blockedExplanation, "Paddock can't start: ports 80 and 443 are in use by Herd.")
-    }
-
-    func testPortsNotPermittedShowTheLimitationSentence() async {
-        let model = AppModel(client: FakeClient { _ in .ok(sampleStatus(running: false, notPermitted: [80, 443])) },
-                             quitter: FakeQuitter())
-        await model.refresh()
-        XCTAssertEqual(model.statusLine, "Can't listen on ports 80 and 443 yet")
-        XCTAssertFalse(model.canQuitBlockingHolder)
-        XCTAssertEqual(model.blockedExplanation, Messages.portsNotPermitted([80, 443]))
-    }
-
-    func testPortsNotPermittedOnStartIsNotAnErrorLine() async {
-        let client = FakeClient { r in
-            if r == .start {
-                return .error(code: ErrorCode.portsNotPermitted, message: Messages.portsNotPermitted([80]))
-            }
-            return .ok(sampleStatus(running: false, notPermitted: [80]))
-        }
-        let model = AppModel(client: client, services: FakeServices())
-        await model.start()
-        XCTAssertNil(model.lastError)
-        XCTAssertEqual(model.statusLine, "Can't listen on port 80 yet")
     }
 
     // MARK: - Derived properties

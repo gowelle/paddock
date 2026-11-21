@@ -11,7 +11,7 @@ final class EngineHandleTests: XCTestCase {
     override func setUpWithError() throws {
         try TestSupport.requireVendored()
         home = try TestHome()
-        engine = Engine(paths: home.paths, settings: home.settings)
+        engine = Engine.development(paths: home.paths, settings: home.settings)
         try engine.installer.installBundled()
     }
 
@@ -184,7 +184,7 @@ final class EngineHandleTests: XCTestCase {
     func testStatusIsPromptWhileInstallPHPRuns() async throws {
         let started = expectation(description: "install started")
         let release = DispatchSemaphore(value: 0)
-        let slow = Engine(paths: home.paths, settings: home.settings, installAction: { _ in
+        let slow = Engine.development(paths: home.paths, settings: home.settings, installAction: { _ in
             started.fulfill()
             await withCheckedContinuation { continuation in
                 DispatchQueue.global().async {
@@ -217,7 +217,7 @@ final class EngineHandleTests: XCTestCase {
     func testRequestsQueuedBehindShutdownCannotStartTheEngineAgain() async throws {
         let started = expectation(description: "install started")
         let release = DispatchSemaphore(value: 0)
-        let slow = Engine(paths: home.paths, settings: home.settings, installAction: { _ in
+        let slow = Engine.development(paths: home.paths, settings: home.settings, installAction: { _ in
             started.fulfill()
             await withCheckedContinuation { continuation in
                 DispatchQueue.global().async {
@@ -265,7 +265,7 @@ final class EngineHandleTests: XCTestCase {
     }
 
     func testStatusIsPromptWhileStartRuns() async throws {
-        let fresh = Engine(paths: home.paths, settings: home.settings)
+        let fresh = Engine.development(paths: home.paths, settings: home.settings)
         let done = DispatchGroup()
         done.enter()
         let starter = Thread {
@@ -339,7 +339,7 @@ final class EngineHandleTests: XCTestCase {
     }
 
     func testStartRecoversAfterCaddyIsGivenUpOn() async throws {
-        let fast = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.01)
+        let fast = Engine.development(paths: home.paths, settings: home.settings, backoffScale: 0.01)
         defer { fast.shutdown() }
         _ = await fast.handle(.start)
         try await driveCaddyToGivenUp(fast)
@@ -351,7 +351,7 @@ final class EngineHandleTests: XCTestCase {
     }
 
     func testStateChangesStillSucceedWhileCaddyIsGivenUpOn() async throws {
-        let fast = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.01)
+        let fast = Engine.development(paths: home.paths, settings: home.settings, backoffScale: 0.01)
         defer { fast.shutdown() }
         _ = await fast.handle(.start)
         try await driveCaddyToGivenUp(fast)
