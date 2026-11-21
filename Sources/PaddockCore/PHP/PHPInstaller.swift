@@ -169,12 +169,12 @@ public final class PHPInstaller {
         try fm.moveItem(at: stage, to: target)
     }
 
-    /// Creates an empty php.ini if none exists; never overwrites. Real defaults arrive in a later task.
+    /// Writes the default php.ini if none exists; never overwrites.
     private func ensurePhpIni(_ v: PHPVersion) throws {
         let ini = paths.phpIni(v)
         let fm = FileManager.default
         guard !fm.fileExists(atPath: ini.path) else { return }
         try fm.createDirectory(at: ini.deletingLastPathComponent(), withIntermediateDirectories: true)
-        fm.createFile(atPath: ini.path, contents: Data())
+        try Data(FPMConfig.defaultIni(version: v, paths: paths).utf8).write(to: ini)
     }
 }

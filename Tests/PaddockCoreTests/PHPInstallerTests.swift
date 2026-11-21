@@ -208,7 +208,7 @@ final class PHPInstallerTests: XCTestCase {
         XCTAssertEqual(try installer.installBundled(), v85)
         XCTAssertTrue(installer.isInstalled(v85))
         let ini = paths.phpIni(v85)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: ini.path))
+        XCTAssertEqual(try String(contentsOf: ini), FPMConfig.defaultIni(version: v85, paths: paths))
         try Data("memory_limit=1G\n".utf8).write(to: ini)
         // marker proves the second call does not re-copy
         let marker = paths.phpDir(v85).appendingPathComponent("marker")
