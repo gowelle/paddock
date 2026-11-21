@@ -12,10 +12,13 @@ public struct State: Codable, Equatable, Sendable {
     public var previousResolver: String?
     /// Added services, in the order they were added.
     public var services: [ServiceInstance]
+    /// Site name -> the tasks the user approved for it (`paddock tasks on`).
+    public var taskApprovals: [String: ApprovedTasks]
 
     public init(parked: [String] = [], links: [String: String] = [:], secured: Set<String> = [],
                 phpPins: [String: PHPVersion] = [:], defaultPHP: PHPVersion? = nil,
-                previousResolver: String? = nil, services: [ServiceInstance] = []) {
+                previousResolver: String? = nil, services: [ServiceInstance] = [],
+                taskApprovals: [String: ApprovedTasks] = [:]) {
         self.parked = parked
         self.links = links
         self.secured = secured
@@ -23,13 +26,15 @@ public struct State: Codable, Equatable, Sendable {
         self.defaultPHP = defaultPHP
         self.previousResolver = previousResolver
         self.services = services
+        self.taskApprovals = taskApprovals
     }
 
     private enum CodingKeys: String, CodingKey {
-        case parked, links, secured, phpPins, defaultPHP, previousResolver, services
+        case parked, links, secured, phpPins, defaultPHP, previousResolver, services, taskApprovals
     }
 
-    /// As before services existed, plus `services` (absent in older files: none).
+    /// As before services existed, plus `services` (absent in older files: none) and `taskApprovals` (absent:
+    /// none; one that can't be read is dropped, never costing the file).
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         parked = try c.decode([String].self, forKey: .parked)
@@ -39,6 +44,8 @@ public struct State: Codable, Equatable, Sendable {
         defaultPHP = try c.decodeIfPresent(PHPVersion.self, forKey: .defaultPHP)
         previousResolver = try c.decodeIfPresent(String.self, forKey: .previousResolver)
         services = try c.decodeIfPresent([ServiceInstance].self, forKey: .services) ?? []
+        taskApprovals = ((try? c.decodeIfPresent([String: Lenient<ApprovedTasks>].self, forKey: .taskApprovals)) ?? [:])
+            .compactMapValues(\.value)
     }
 
     /// First-run state: `~/Paddock` parked, expanded to an absolute path.

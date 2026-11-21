@@ -428,6 +428,31 @@ public enum Messages {
         }.joined(separator: "\n")
     }
 
+    // MARK: - Site tasks
+
+    /// Whether a command shows exactly as it runs: no control, format (bidirectional overrides among them),
+    /// separator, private-use, surrogate or unassigned characters, no escape sequences, and no whitespace but
+    /// the plain space. A command that doesn't can't be approved: the user would approve text they can't see.
+    public static func isShowable(_ command: String) -> Bool {
+        command.unicodeScalars.allSatisfy { scalar in
+            if scalar == " " { return true }
+            if scalar.properties.isWhitespace { return false }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator, .spaceSeparator, .privateUse, .surrogate,
+                 .unassigned:
+                return false
+            default:
+                return true
+            }
+        }
+    }
+
+    /// A task's command as Paddock shows it: exactly as written when it `isShowable`, else what `displayName`
+    /// leaves of it.
+    public static func shownCommand(_ command: String) -> String {
+        isShowable(command) ? command : (displayName(command, limit: SiteTasksFile.maximumRunLength) ?? "?")
+    }
+
     /// Columns: site name, URL, PHP version, secured.
     public static func siteTable(_ sites: [Site]) -> String {
         let header = ["SITE", "URL", "PHP", "SECURED"]

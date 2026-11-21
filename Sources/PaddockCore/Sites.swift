@@ -44,13 +44,15 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
     public var php: PHPVersion
     public var pinned: Bool
     public let tld: String
+    /// The site's tasks (`paddock.json`), as the daemon last saw them; nil without a file or from an older daemon.
+    public var tasks: SiteTasksStatus?
 
     public var id: String { name }
     public var host: String { "\(name).\(tld)" }
     public var url: String { "\(secured ? "https" : "http")://\(host)" }
 
     public init(name: String, path: String, kind: Kind, secured: Bool, php: PHPVersion,
-                pinned: Bool, tld: String = "test") {
+                pinned: Bool, tld: String = "test", tasks: SiteTasksStatus? = nil) {
         self.name = name
         self.path = path
         self.kind = kind
@@ -58,6 +60,22 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
         self.php = php
         self.pinned = pinned
         self.tld = tld
+        self.tasks = tasks
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, path, kind, secured, php, pinned, tld, tasks }
+
+    /// As before tasks existed; `tasks` that can't be read are left out rather than costing the site.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        path = try c.decode(String.self, forKey: .path)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        secured = try c.decode(Bool.self, forKey: .secured)
+        php = try c.decode(PHPVersion.self, forKey: .php)
+        pinned = try c.decode(Bool.self, forKey: .pinned)
+        tld = try c.decode(String.self, forKey: .tld)
+        tasks = try? c.decodeIfPresent(SiteTasksStatus.self, forKey: .tasks)
     }
 }
 
