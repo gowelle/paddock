@@ -163,7 +163,7 @@ struct ApprovalSheet: View {
                 Text(verbatim: reason)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let error = model.approvalError { ErrorLine(text: error) }
+            if let error = model.approvalError { VerbatimErrorText(text: error) }
             HStack {
                 Spacer()
                 switch model.approvalState {

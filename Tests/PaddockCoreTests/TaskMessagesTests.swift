@@ -30,6 +30,10 @@ final class TaskMessagesTests: XCTestCase {
                        "crashed: exited with status 3 5 times within a minute, so Paddock stopped restarting it. "
                        + "See: paddock tasks logs queue")
         XCTAssertEqual(Messages.taskState(.waitingForApproval), "waiting for your approval")
+        // Left from an earlier run: the remedy, when the task is named.
+        XCTAssertEqual(Messages.taskState(.leftFromEarlierRun, task: "queue"),
+                       "already running (processes left from an earlier run), not started by this Paddock; "
+                           + "run: paddock tasks restart queue --force")
         XCTAssertEqual(Messages.taskState(.alreadyRunning(pid: 9)), "already running (pid 9), not started by this Paddock")
     }
 

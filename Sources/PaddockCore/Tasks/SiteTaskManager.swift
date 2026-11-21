@@ -57,10 +57,20 @@ public final class SiteTaskManager: @unchecked Sendable {
         set { stateLock.lock(); processSource = newValue; stateLock.unlock() }
     }
     private var processSource = ProcessSource.live
-    /// Told after every refresh, so the web side can follow the sites' routes (the engine sets it).
-    var routesMayHaveChanged: (@Sendable ([String: [String: Int]]) -> Void)?
-    /// Called (tests) in a forced restart between the end of the task's stop and the pass over leftovers.
-    var beforeForcePassForTesting: (@Sendable () -> Void)?
+    /// Told after every refresh, so the web side can follow the sites' routes (the engine sets it). Read and
+    /// written under `stateLock`.
+    var routesMayHaveChanged: (@Sendable ([String: [String: Int]]) -> Void)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return routesObserver }
+        set { stateLock.lock(); routesObserver = newValue; stateLock.unlock() }
+    }
+    private var routesObserver: (@Sendable ([String: [String: Int]]) -> Void)?
+    /// Called (tests) in a forced restart between the end of the task's stop and the pass over leftovers. Read and
+    /// written under `stateLock`.
+    var beforeForcePassForTesting: (@Sendable () -> Void)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return forcePassHook }
+        set { stateLock.lock(); forcePassHook = newValue; stateLock.unlock() }
+    }
+    private var forcePassHook: (@Sendable () -> Void)?
     /// Paddock's own ports: never a proxy route's target.
     let reservedPorts: @Sendable () -> Set<Int>
     let log: @Sendable (String) -> Void

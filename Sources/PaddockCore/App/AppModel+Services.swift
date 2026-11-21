@@ -182,7 +182,8 @@ extension AppModel {
         let service = status?.services.first { $0.id == id }
         let name = service?.name ?? id
         if case .envLines(let lines)? = await act(.serviceEnv(id: id), timeout: 30) {
-            copyText?(lines.joined(separator: "\n") + "\n", !(service?.secretEnvNames ?? []).isEmpty)
+            // Not knowing (the service isn't in the last status) counts as holding a secret.
+            copyText?(lines.joined(separator: "\n") + "\n", service.map { !($0.secretEnvNames ?? []).isEmpty } ?? true)
             showNotice("Copied the .env lines of \(name).")
         }
     }

@@ -356,6 +356,14 @@ final class SiteProxyTests: XCTestCase {
                       still.notice ?? "no notice")
         XCTAssertEqual(still.routes, ["/app": port], "still served, truthfully")
         XCTAssertTrue(try fetch("shop.test", "/app/x", https: false).body.hasPrefix("echo /app/x"), "it is still active")
+
+        // With its paddock.json gone too, the site has no tasks to show it under: the site itself says so.
+        try FileManager.default.removeItem(at: home.sites.appendingPathComponent("shop/paddock.json"))
+        engine.tasks.refresh()
+        let bare = try XCTUnwrap(engine.status().sites.first { $0.name == "shop" })
+        XCTAssertNil(bare.tasks)
+        XCTAssertEqual(bare.notice, Messages.forwardingStillActive("Caddy said no"))
+        XCTAssertTrue(Messages.siteTasksLines([bare]).contains("shop: \(Messages.forwardingStillActive("Caddy said no"))"))
         engine.stop()
         XCTAssertNil(engine.status().sites.first { $0.name == "blog" }?.tasks?.notice, "a stopped web side owes no notice")
     }

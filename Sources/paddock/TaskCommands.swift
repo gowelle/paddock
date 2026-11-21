@@ -68,7 +68,7 @@ extension CLI {
             return "\(name): unknown"
         }
         if case .running(let pid) = task.state { return "\(name) is running (pid \(pid))." }
-        return "\(name): \(Messages.taskState(task.state))"
+        return "\(name): \(Messages.taskState(task.state, task: name))"
     }
 }
 

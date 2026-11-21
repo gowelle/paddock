@@ -638,8 +638,8 @@ public enum Messages {
 
     public static let taskSiteGone = "The site's folder is gone, so Paddock stopped this task."
 
-    /// `running (pid 12)`, `stopped by you`…
-    public static func taskState(_ state: TaskState) -> String {
+    /// `running (pid 12)`, `stopped by you`…; with `task`, a state the user must clear names how.
+    public static func taskState(_ state: TaskState, task: String? = nil) -> String {
         switch state {
         case .running(let pid): return "running (pid \(pid))"
         case .starting: return "starting"
@@ -654,7 +654,9 @@ public enum Messages {
         case .crashed(let reason): return "crashed: \(reason)"
         case .waitingForApproval: return "waiting for your approval"
         case .alreadyRunning(let pid): return "already running (pid \(pid)), not started by this Paddock"
-        case .leftFromEarlierRun: return "already running (processes left from an earlier run), not started by this Paddock"
+        case .leftFromEarlierRun:
+            return "already running (processes left from an earlier run), not started by this Paddock"
+                + (task.map { "; run: paddock tasks restart \($0) --force" } ?? "")
         }
     }
 
@@ -663,13 +665,16 @@ public enum Messages {
     public static func siteTasksLines(_ sites: [Site]) -> [String] {
         var lines: [String] = []
         for site in sites {
-            guard let tasks = site.tasks else { continue }
+            guard let tasks = site.tasks else {
+                if let notice = site.notice { lines.append("\(site.name): \(notice)") }
+                continue
+            }
             switch tasks.approval {
             case .none: break
             case .needsApproval: lines.append(tasksWaitingForApproval(site: site.name))
             case .invalid(let reason): lines.append(tasksFileInvalid(site: site.name, reason: reason))
             case .approved, .changed:
-                for task in tasks.tasks { lines.append("\(site.name)/\(task.name): \(taskState(task.state))") }
+                for task in tasks.tasks { lines.append("\(site.name)/\(task.name): \(taskState(task.state, task: task.name))") }
                 lines += routeLines(tasks, site: site).map { "\(site.name): \($0)" }
                 if tasks.approval == .changed, let notice = tasks.notice { lines.append(notice) }
             }
@@ -681,7 +686,7 @@ public enum Messages {
     /// as `routeLines` gives them), each task's warning and the site's notice, one line each.
     public static func taskTable(_ status: SiteTasksStatus, routes: [String] = []) -> String {
         var lines = [table([["TASK", "STATE", "COMMAND"]]
-                           + status.tasks.map { [$0.name, taskState($0.state), $0.run] })]
+                           + status.tasks.map { [$0.name, taskState($0.state, task: $0.name), $0.run] })]
         lines += status.tasks.filter(\.restartOnChange).map { "\($0.name): restarts when code changes" }
         lines += routes
         lines += status.tasks.compactMap { task in task.warning.map { "\(task.name): \($0)" } }

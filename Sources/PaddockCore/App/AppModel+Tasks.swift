@@ -90,7 +90,7 @@ extension AppModel {
                 canCreateStarterFile: approval == .none, canRevoke: inForce,
                 tasks: taskRows(for: site.name),
                 routes: tasks.map { Messages.routeLines($0, site: site) } ?? [],
-                notice: tasks?.notice)
+                notice: tasks?.notice ?? site.notice)
         }
     }
 
@@ -107,7 +107,7 @@ extension AppModel {
             case .crashed: startable = true; stoppable = true
             case .waitingForApproval, .alreadyRunning, .stopping, .leftFromEarlierRun: break
             }
-            return TaskRow(site: siteName, name: task.name, command: task.run, stateText: Messages.taskState(task.state),
+            return TaskRow(site: siteName, name: task.name, command: task.run, stateText: Messages.taskState(task.state, task: task.name),
                            restartsOnChange: task.restartOnChange, warning: task.warning,
                            canStart: inForce && startable, canStop: inForce && stoppable)
         }

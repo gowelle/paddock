@@ -467,7 +467,11 @@ final class AppModelTests: XCTestCase {
 
         client.handler = { _ in .ok(sampleStatus()) }
         await model.perform(.use(version: v85))
-        XCTAssertNil(model.lastError)
+        XCTAssertEqual(model.lastError, "PHP 8.4 isn't installed.", "another action's success leaves it")
+        await model.perform(.secure(site: "blog"))
+        XCTAssertEqual(model.lastError, "PHP 8.4 isn't installed.")
+        await model.perform(.use(version: v84))
+        XCTAssertNil(model.lastError, "the same action on the same item worked")
     }
 
     func testOwnedDaemonIsShutDownOnQuit() async {
@@ -1131,6 +1135,17 @@ extension AppModelTests {
                         .taskRestart(site: "shop", task: "queue"), .tasksRevoke(site: "shop")])
     }
 
+    /// A task held by what an earlier run left says how to clear it, as the command line does.
+    func testALeftoverHeldTaskNamesTheRemedy() async {
+        let held = SiteTasksStatus(approval: .approved, tasks: [task("queue", state: .leftFromEarlierRun)], pending: [],
+                                   pendingHash: nil, notice: nil)
+        let (model, _, _) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: held)])) }
+        await model.refresh()
+        XCTAssertEqual(model.taskRows(for: "shop").first?.stateText,
+                       "already running (processes left from an earlier run), not started by this Paddock; "
+                           + "run: paddock tasks restart queue --force")
+    }
+
     func testOpenTaskLogOpensTheTasksLogFileOrSaysThereIsNoneYet() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("paddock-log-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1477,5 +1492,49 @@ extension AppModelTests {
         }
         await model.loadCatalog()
         XCTAssertEqual(model.catalog.map(\.unavailableReason), [reason])
+    }
+}
+
+// MARK: - Final fix wave
+
+extension AppModelTests {
+    /// Not knowing whether the lines hold a secret (the service isn't in the last status) copies them concealed.
+    func testCopyEnvConcealsWhenItCannotTell() async {
+        let (model, _, outside) = servicesModel { request in
+            if case .serviceEnv = request { return .envLines(["MAIL_PORT=1025"]) }
+            return .ok(statusWith())
+        }
+        await model.copyEnv("mail")
+        XCTAssertEqual(outside.concealed, [true])
+    }
+}
+
+extension AppModelTests {
+    /// Approving names the folder the prompt was read from, as the daemon reported it, so a site that meanwhile
+    /// points elsewhere is refused.
+    func testApproveSendsTheFolderThatWasShown() async {
+        let pending = pendingShop()
+        let withFolder = SiteTasksStatus(approval: pending.approval, tasks: pending.tasks, pending: pending.pending,
+                                         pendingHash: pending.pendingHash, notice: nil,
+                                         folder: "/Users/someone/Code/real-shop")
+        let (model, client) = sheetModel { _ in .ok(statusWith(sites: [site("shop", tasks: withFolder)])) }
+        await model.showApproval(site: "shop")
+        XCTAssertEqual(model.shownApproval?.folder, "/Users/someone/Code/real-shop")
+        XCTAssertEqual(model.shownApproval?.heading, "/Users/someone/Code/real-shop/paddock.json would run:")
+        await model.approveTasks(site: "shop")
+        XCTAssertTrue(client.requests.contains(.tasksApprove(site: "shop", hash: "v1:shown",
+                                                             folder: "/Users/someone/Code/real-shop")),
+                      "\(client.requests)")
+    }
+}
+
+extension AppModelTests {
+    /// A site with no tasks to show still shows its own notice (forwarding still active after a failed withdrawal).
+    func testASitesOwnNoticeShowsWithoutTasks() async {
+        var bare = site("shop", tasks: nil)
+        bare.notice = "Forwarding for this site is still active until Paddock can reload the web server: Caddy said no"
+        let (model, _) = sheetModel { [bare] _ in .ok(statusWith(sites: [bare])) }
+        await model.refresh()
+        XCTAssertEqual(model.taskSites.first?.notice, bare.notice)
     }
 }

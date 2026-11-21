@@ -502,8 +502,9 @@ public final class Engine: @unchecked Sendable {
                 SiteTasksStatus(approval: tasks.approval, tasks: tasks.tasks, pending: tasks.pending,
                                 pendingHash: tasks.pendingHash,
                                 notice: [tasks.notice, problem].compactMap { $0 }.joined(separator: " ").nonEmpty,
-                                routes: routes)
+                                routes: routes, folder: tasks.folder)
             }
+            if site.tasks == nil { site.notice = problem }
             return site
         }
         var processes = services.processes

@@ -171,12 +171,25 @@ struct DismissibleErrorLine: View {
     var body: some View {
         if let error = model.lastError {
             HStack(alignment: .firstTextBaseline) {
-                ErrorLine(text: error)
+                VerbatimErrorText(text: error)
                 Spacer()
                 Button("Dismiss") { model.dismissError() }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
             }
         }
+    }
+}
+
+/// The quiet error line's look, with the text shown exactly as given (no Markdown, no localisation).
+struct VerbatimErrorText: View {
+    let text: String
+
+    var body: some View {
+        Text(verbatim: text)
+            .font(.caption)
+            .foregroundStyle(Theme.inkMuted)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
     }
 }

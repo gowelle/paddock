@@ -317,25 +317,25 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    /// Sends one request, marking it busy while it is in flight, then refreshes.
+    /// Sends one request, marking it busy while it is in flight, then refreshes. Its error goes to the error line
+    /// as this action's; its success clears only an earlier error of this same action on this same item.
     public func perform(_ r: Request) async {
+        let key = Self.busyKey(r)
         switch await exchange(r) {
         case .refused(let refusal):
-            lastError = refusal
+            showError(refusal, from: key)
             return
         case .failed(let message):
-            lastError = message
-        case .answer(.ok), .answer(.removed), .answer(.databaseCreated):
-            lastError = nil
+            showError(message, from: key)
+        case .answer(.ok), .answer(.removed), .answer(.databaseCreated), .answer(.catalog), .answer(.envLines):
+            if lastErrorSource == key { lastError = nil }
             if Self.isTrustRequest(r) { trustNotice = nil }
-        case .answer(.catalog), .answer(.envLines):
-            lastError = nil
         case .answer(.error(let code, let message)):
             if code == ErrorCode.needsTrust || code == ErrorCode.trustDisabled {
                 trustNotice = message
             } else if code != ErrorCode.portsBlocked {
                 // (The status line already says that.)
-                lastError = message
+                showError(message, from: key)
             }
         }
         await refresh()
@@ -477,11 +477,11 @@ public final class AppModel: ObservableObject {
                 await refresh()
                 return
             case .failure(let error as DaemonLaunchError):
-                lastError = error.message()
+                showError(error.message(), from: key)
                 await refresh()
                 return
             case .failure(let error):
-                lastError = "Couldn't start Paddock: \(Self.describe(error))"
+                showError("Couldn't start Paddock: \(Self.describe(error))", from: key)
                 await refresh()
                 return
             }
