@@ -9,6 +9,7 @@ let package = Package(
         .executable(name: "paddockd", targets: ["paddockd"]),
         .executable(name: "paddock", targets: ["paddock"]),
         .executable(name: "PaddockApp", targets: ["PaddockApp"]),
+        .executable(name: "paddock-ports", targets: ["paddock-ports"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
@@ -24,6 +25,8 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "PaddockApp", dependencies: ["PaddockCore"]),
+        // C, because Swift cannot see launch_activate_socket from <launch.h>.
+        .executableTarget(name: "paddock-ports"),
         .target(name: "PaddockTestSupport", dependencies: ["PaddockCore"], path: "Tests/PaddockTestSupport"),
         .testTarget(name: "PaddockCoreTests", dependencies: ["PaddockCore", "PaddockTestSupport"]),
         .testTarget(name: "IntegrationTests", dependencies: ["PaddockCore", "PaddockTestSupport"]),
