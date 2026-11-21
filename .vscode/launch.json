@@ -1,0 +1,64 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Debug paddockd",
+            "target": "paddockd",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug paddockd"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Release paddockd",
+            "target": "paddockd",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release paddockd"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Debug paddock",
+            "target": "paddock",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug paddock"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Release paddock",
+            "target": "paddock",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release paddock"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Debug PaddockApp",
+            "target": "PaddockApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug PaddockApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Release PaddockApp",
+            "target": "PaddockApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release PaddockApp"
+        }
+    ]
+}
