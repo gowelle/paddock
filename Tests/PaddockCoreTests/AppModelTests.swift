@@ -1025,3 +1025,212 @@ extension AppModelTests {
         XCTAssertEqual(model.lastError, "PostgreSQL 18 needs macOS 15 or later.")
     }
 }
+
+// MARK: - Site tasks
+
+private let longCommand = "php artisan queue:work --queue=high,default,low --tries=3 --timeout=90 --sleep=1 --backoff=5 "
+    + String(repeating: "--memory=512 ", count: 15) + "--name=paddock-worker-one --env=local"
+
+private func task(_ name: String, run: String = "php artisan queue:work", state: TaskState = .running(pid: 41),
+                  restartOnChange: Bool = true, warning: String? = nil) -> TaskStatus {
+    TaskStatus(name: name, run: run, state: state, restartOnChange: restartOnChange,
+               logPath: "/h/log/tasks/shop/\(name).log", warning: warning)
+}
+
+private func site(_ name: String, tasks: SiteTasksStatus?) -> Site {
+    Site(name: name, path: "/Users/someone/Code/\(name)", kind: .parked, secured: true, php: v85, pinned: false,
+         tasks: tasks)
+}
+
+private let approvedShop = SiteTasksStatus(
+    approval: .approved,
+    tasks: [task("queue"), task("reverb", run: "php artisan reverb:start --host=0.0.0.0 --port=8080", restartOnChange: false,
+                                warning: "Listening on all network interfaces (port 8080). Add --host=127.0.0.1 or similar to keep it on this Mac."),
+            task("scheduler", run: "php artisan schedule:work", state: .crashed(reason: "exited with status 1; Paddock restarts it in a moment")),
+            task("vite", run: "bun run dev", state: .stopped(reason: .byYou), restartOnChange: false)],
+    pending: [], pendingHash: nil, notice: nil, routes: ["/app": 8080])
+
+private func pendingShop(hash: String = "v1:shown", command: String = longCommand) -> SiteTasksStatus {
+    SiteTasksStatus(
+        approval: .needsApproval,
+        tasks: [task("queue", run: command, state: .waitingForApproval)],
+        pending: [PendingTask(name: "queue", run: command, port: nil), PendingTask(name: "scheduler", run: "php artisan schedule:work", port: nil),
+                  PendingTask(name: "/app", run: nil, port: 8080)],
+        pendingHash: hash, notice: nil)
+}
+
+extension AppModelTests {
+    private func tasksModel(_ handler: @escaping @Sendable (Request) throws -> Response,
+                            refusal: Error? = nil) -> (AppModel, FakeClient, Outside) {
+        let client = FakeClient(handler)
+        let outside = Outside()
+        let services = FakeServices()
+        services.refusal = refusal
+        let model = AppModel(client: client, services: services,
+                             copyText: { outside.copied.append($0) }, open: { outside.opened.append($0) })
+        return (model, client, outside)
+    }
+
+    func testTaskRowsShowEachTasksCommandStateAndWarning() async {
+        let (model, _, _) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: approvedShop)])) }
+        await model.refresh()
+        let rows = model.taskRows(for: "shop")
+        XCTAssertEqual(rows.map(\.name), ["queue", "reverb", "scheduler", "vite"])
+        XCTAssertEqual(rows.map(\.command), ["php artisan queue:work", "php artisan reverb:start --host=0.0.0.0 --port=8080",
+                                              "php artisan schedule:work", "bun run dev"])
+        XCTAssertEqual(rows.map(\.stateText), ["running (pid 41)", "running (pid 41)",
+                                                "crashed: exited with status 1; Paddock restarts it in a moment",
+                                                "stopped by you"])
+        XCTAssertEqual(rows.map(\.restartsOnChange), [true, false, true, false])
+        XCTAssertEqual(rows[1].warning, "Listening on all network interfaces (port 8080). Add --host=127.0.0.1 or similar to keep it on this Mac.")
+        XCTAssertEqual(rows.map(\.canStart), [false, false, true, true])
+        XCTAssertEqual(rows.map(\.canStop), [true, true, true, false], "a crashed task can be stopped from restarting")
+
+        let section = try? XCTUnwrap(model.taskSites.first { $0.id == "shop" })
+        XCTAssertEqual(section?.routes, ["forward https://shop.test/app → 127.0.0.1:8080"])
+        XCTAssertEqual(section?.needsApproval, false)
+        XCTAssertEqual(section?.canCreateStarterFile, false)
+        XCTAssertEqual(section?.canRevoke, true)
+    }
+
+    func testTheSitesNoticeShowsWhenRoutesAreNotInEffect() async {
+        let notInEffect = SiteTasksStatus(approval: .approved, tasks: [task("queue")], pending: [], pendingHash: nil,
+                                          notice: Messages.proxyRoutesNotApplied("the web server refused it"), routes: [:])
+        let (model, _, _) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: notInEffect)])) }
+        await model.refresh()
+        let section = model.taskSites.first { $0.id == "shop" }
+        XCTAssertEqual(section?.routes, [])
+        XCTAssertEqual(section?.notice, "Paddock couldn't apply this site's forwarding: the web server refused it")
+    }
+
+    func testASiteWithoutPaddockJSONOffersTheStarterFile() async {
+        let (model, client, _) = tasksModel { _ in .ok(statusWith(sites: [site("blog", tasks: nil), site("shop", tasks: approvedShop)])) }
+        await model.refresh()
+        XCTAssertEqual(model.taskSites.map(\.id), ["blog", "shop"])
+        XCTAssertEqual(model.taskSites.map(\.canCreateStarterFile), [true, false])
+        XCTAssertEqual(model.taskRows(for: "blog"), [])
+        await model.createStarterFile(site: "blog")
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.tasksInit(site: "blog")])
+    }
+
+    func testStartStopRestartAndRevokeSendTheTaskRequests() async {
+        let (model, client, _) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: approvedShop)])) }
+        await model.startTask(site: "shop", task: "vite")
+        await model.stopTask(site: "shop", task: "queue")
+        await model.restartTask(site: "shop", task: "queue")
+        await model.revokeTasks(site: "shop")
+        XCTAssertEqual(client.requests.filter { $0 != .status },
+                       [.taskStart(site: "shop", task: "vite"), .taskStop(site: "shop", task: "queue"),
+                        .taskRestart(site: "shop", task: "queue"), .tasksRevoke(site: "shop")])
+    }
+
+    func testOpenTaskLogOpensTheTasksLogFile() async {
+        let (model, _, outside) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: approvedShop)])) }
+        await model.refresh()
+        model.openTaskLog(site: "shop", task: "queue")
+        model.openTaskLog(site: "shop", task: "nope")
+        XCTAssertEqual(outside.opened, [URL(fileURLWithPath: "/h/log/tasks/shop/queue.log")])
+    }
+
+    /// The prompt lists every command and forwarding line exactly as the daemon reported them, in full.
+    func testTheApprovalPromptListsEveryLineInFull() async throws {
+        let (model, _, _) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: pendingShop())])) }
+        await model.refresh()
+        XCTAssertEqual(model.taskSites.first?.needsApproval, true)
+        let prompt = try XCTUnwrap(model.approvalPrompt(for: "shop"))
+        XCTAssertEqual(prompt.site, "shop")
+        XCTAssertEqual(prompt.folder, "/Users/someone/Code/shop")
+        XCTAssertEqual(prompt.lines, ["queue: \(longCommand)", "scheduler: php artisan schedule:work",
+                                      "forward https://shop.test/app → 127.0.0.1:8080"])
+        XCTAssertGreaterThan(longCommand.count, 250)
+        XCTAssertEqual(prompt.hash, "v1:shown")
+        XCTAssertEqual(prompt.heading, "/Users/someone/Code/shop/paddock.json would run:")
+        XCTAssertNil(model.approvalPrompt(for: "blog"))
+    }
+
+    func testApproveDoesNothingWithoutADisplayedPrompt() async {
+        let (model, client, _) = tasksModel { _ in .ok(statusWith(sites: [site("shop", tasks: pendingShop())])) }
+        await model.refresh()
+        XCTAssertNotNil(model.approvalPrompt(for: "shop"), "pending in the status is not enough")
+        XCTAssertFalse(model.canApprove)
+        await model.approveTasks(site: "shop")
+        XCTAssertFalse(client.requests.contains { if case .tasksApprove = $0 { return true }; return false })
+    }
+
+    /// Opening the sheet reloads the site's file (a read); Approve is off until that content is in, and sends
+    /// the hash of what was shown, even if a poll meanwhile saw the file change.
+    func testApproveSendsTheHashThatWasDisplayed() async throws {
+        let current = Locked<EngineStatus>(statusWith(sites: [site("shop", tasks: pendingShop(hash: "v1:shown"))]))
+        let loading = DispatchSemaphore(value: 0)
+        let (model, client, _) = tasksModel { request in
+            if case .tasksStatus = request { loading.wait() }
+            if case .tasksApprove = request {
+                return .ok(statusWith(sites: [site("shop", tasks: approvedShop)]))
+            }
+            return .ok(current.value)
+        }
+        let opening = Task { await model.showApproval(site: "shop") }
+        let deadline = Date().addingTimeInterval(5)
+        while model.approvalSite == nil && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(model.approvalSite, "shop", "the sheet opens at once")
+        XCTAssertFalse(model.canApprove, "until the content is loaded")
+        await model.approveTasks(site: "shop")
+        loading.signal()
+        await opening.value
+        XCTAssertTrue(model.canApprove)
+        XCTAssertEqual(model.shownApproval?.hash, "v1:shown")
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.tasksStatus(site: "shop")])
+
+        // A poll sees the file change; the sheet keeps what it shows, and approving names that.
+        current.withValue { $0 = statusWith(sites: [site("shop", tasks: pendingShop(hash: "v1:newer", command: "rm -rf ~"))]) }
+        await model.refresh()
+        XCTAssertEqual(model.shownApproval?.hash, "v1:shown")
+        XCTAssertEqual(model.shownApproval?.lines.first, "queue: \(longCommand)")
+        await model.approveTasks(site: "other")
+        await model.approveTasks(site: "shop")
+        XCTAssertEqual(client.requests.filter { $0 != .status },
+                       [.tasksStatus(site: "shop"), .tasksApprove(site: "shop", hash: "v1:shown")])
+        XCTAssertNil(model.approvalSite, "approved: the sheet closes")
+        XCTAssertNil(model.shownApproval)
+        XCTAssertNil(model.lastError)
+    }
+
+    /// The file changed after it was shown: the daemon refuses, the model shows its sentence and the new content,
+    /// and never approves again by itself.
+    func testAStaleHashShowsTheRefusalAndReloadsThePrompt() async throws {
+        let current = Locked<EngineStatus>(statusWith(sites: [site("shop", tasks: pendingShop(hash: "v1:shown"))]))
+        let refusal = Messages.taskError(.changedSinceShown(site: "shop"))
+        let (model, client, _) = tasksModel { request in
+            if case .tasksApprove = request {
+                current.withValue { $0 = statusWith(sites: [site("shop", tasks: pendingShop(hash: "v1:newer", command: "php artisan horizon"))]) }
+                return .error(code: ErrorCode.tasksChanged, message: refusal)
+            }
+            return .ok(current.value)
+        }
+        await model.showApproval(site: "shop")
+        await model.approveTasks(site: "shop")
+        XCTAssertEqual(model.lastError, refusal)
+        XCTAssertEqual(model.approvalSite, "shop", "the sheet stays open")
+        XCTAssertEqual(model.shownApproval?.hash, "v1:newer")
+        XCTAssertEqual(model.shownApproval?.lines.first, "queue: php artisan horizon", "the new content is shown")
+        XCTAssertEqual(client.requests.filter { $0 != .status },
+                       [.tasksStatus(site: "shop"), .tasksApprove(site: "shop", hash: "v1:shown"), .tasksStatus(site: "shop")],
+                       "exactly one approval, never retried with the new hash")
+
+        model.dismissApproval()
+        XCTAssertNil(model.approvalSite)
+        XCTAssertNil(model.shownApproval)
+        await model.approveTasks(site: "shop")
+        XCTAssertEqual(client.requests.filter { if case .tasksApprove = $0 { return true }; return false }.count, 1)
+    }
+
+    func testADevelopmentBuildMayShowTheApprovalButNotApprove() async {
+        let (model, client, _) = tasksModel({ _ in .ok(statusWith(sites: [site("shop", tasks: pendingShop())])) },
+                                            refusal: DaemonLaunchError.developmentBuild)
+        await model.showApproval(site: "shop")
+        XCTAssertTrue(model.canApprove, "reading the file is allowed")
+        await model.approveTasks(site: "shop")
+        XCTAssertEqual(model.lastError, Messages.developmentBuild)
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.tasksStatus(site: "shop")])
+    }
+}

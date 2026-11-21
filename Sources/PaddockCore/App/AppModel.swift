@@ -74,6 +74,11 @@ public final class AppModel: ObservableObject {
     /// The service whose `Remove and Delete Data…` the user was asked to confirm; only it may be removed with
     /// its data, once.
     @Published public internal(set) var dataDeletionAsked: String?
+    /// The site whose approval sheet is open.
+    @Published public internal(set) var approvalSite: String?
+    /// What the open approval sheet shows, loaded when it opened (polling never changes it); approving approves
+    /// exactly this. Nil until loaded.
+    @Published public internal(set) var shownApproval: ApprovalPrompt?
 
     /// Every PHP version Paddock can install.
     public let availablePHP: [PHPVersion]
