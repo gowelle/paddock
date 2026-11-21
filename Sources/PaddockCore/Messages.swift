@@ -371,6 +371,9 @@ public enum Messages {
         case .invalidParameter(let parameter, let value):
             return parameter == "database" ? "Database names can use letters, numbers and underscores."
                 : "\"\(printable(value) ?? "?")\" isn't a valid \(parameter)."
+        case .actionCancelled(let name, let action):
+            let what = action == RecipeAction.createDatabase ? "Creating the database" : "Running \(action)"
+            return "\(what) in \(name) was cancelled."
         case .notRunning(let name, let id):
             return "\(name) isn't running. Start it with: paddock service start \(id)"
         }

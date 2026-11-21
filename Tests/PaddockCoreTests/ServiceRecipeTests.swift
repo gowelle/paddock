@@ -186,9 +186,13 @@ final class ServiceRecipeTests: XCTestCase {
             XCTAssertEqual(recipe.start.executable, "{bin}/bin/postgres")
             XCTAssertTrue(recipe.start.arguments.contains("listen_addresses=127.0.0.1"), label)
             XCTAssertTrue(recipe.start.arguments.contains("unix_socket_directories={socketDir}"), label)
-            XCTAssertEqual(recipe.ready, .tcp(port: "{port.main}"))
+            XCTAssertEqual(recipe.ready, .command(RecipeCommand(executable: "{bin}/bin/pg_isready",
+                                                                arguments: ["--host=127.0.0.1", "--port={port.main}",
+                                                                            "--quiet"])),
+                           "ready means accepting connections, not just a listening port")
             XCTAssertEqual(recipe.stopSignal, "INT", "fast shutdown")
-            XCTAssertEqual(recipe.stopGraceSeconds, 20)
+            XCTAssertEqual(recipe.stopGraceSeconds, 60, "a fast shutdown ends with a checkpoint")
+            XCTAssertEqual(recipe.lockFiles, ["{data}/postmaster.pid", "{run}/.s.PGSQL.{port.main}.lock"])
             XCTAssertEqual(recipe.ports, [RecipePort(name: "main", preferred: 5432)])
             XCTAssertEqual(recipe.socket, "{run}/.s.PGSQL.{port.main}")
             XCTAssertEqual(recipe.env, ["DB_CONNECTION=pgsql", "DB_HOST=127.0.0.1", "DB_PORT={port.main}",
@@ -203,6 +207,23 @@ final class ServiceRecipeTests: XCTestCase {
             XCTAssertEqual(create.command.executable, "{bin}/bin/createdb")
             XCTAssertEqual(create.parameters, [RecipeParameter(name: "database", pattern: "^[A-Za-z0-9_]{1,63}$")])
         }
+    }
+
+    /// Readiness keeps its JSON form for the existing kinds, and a command is the command itself.
+    func testReadinessCoding() throws {
+        let decoder = JSONDecoder()
+        XCTAssertEqual(try decoder.decode(Readiness.self, from: Data(#"{"tcp":{"port":"{port.main}"}}"#.utf8)),
+                       .tcp(port: "{port.main}"))
+        XCTAssertEqual(try decoder.decode(Readiness.self, from: Data(#"{"unixSocket":{"path":"{socket}"}}"#.utf8)),
+                       .unixSocket(path: "{socket}"))
+        XCTAssertEqual(try decoder.decode(Readiness.self, from: Data(#"{"http":{"url":"http://127.0.0.1:1/","expectStatus":200}}"#.utf8)),
+                       .http(url: "http://127.0.0.1:1/", expectStatus: 200))
+        let command = try decoder.decode(Readiness.self, from: Data(#"{"command":{"executable":"{bin}/r","arguments":["-q"]}}"#.utf8))
+        XCTAssertEqual(command, .command(RecipeCommand(executable: "{bin}/r", arguments: ["-q"])))
+        for readiness in [Readiness.tcp(port: "1"), .unixSocket(path: "p"), .http(url: "u", expectStatus: 204), command] {
+            XCTAssertEqual(try decoder.decode(Readiness.self, from: JSONEncoder().encode(readiness)), readiness)
+        }
+        XCTAssertEqual(String(decoding: try JSONEncoder().encode(Readiness.tcp(port: "1")), as: UTF8.self), #"{"tcp":{"port":"1"}}"#)
     }
 
     /// The catalog a daemon uses: a development home may name its own file (tests); a real home never.

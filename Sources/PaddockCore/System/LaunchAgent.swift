@@ -16,6 +16,17 @@ public struct LaunchAgent: Sendable {
 
     static let launchctl = "/bin/launchctl"
 
+    /// Seconds launchd gives a stopping daemon before killing it: the web stack's grace, then every service's
+    /// at once (they stop side by side), with room to spare; never less than 20.
+    static func exitTimeOut(serviceGrace: Int) -> Int {
+        max(20, Supervisor.defaultStopGrace + serviceGrace + 15)
+    }
+
+    /// For the longest stop grace of any recipe in the bundled catalog (PostgreSQL's 60 seconds).
+    static var exitTimeOut: Int {
+        exitTimeOut(serviceGrace: (try? ServiceCatalog.bundled())?.recipes.map(\.stopGraceSeconds).max() ?? 0)
+    }
+
     /// How long to wait for launchd. Tests shorten them.
     public struct Waits: Sendable {
         /// The longest `bootout` is given to finish unloading the job.
@@ -51,7 +62,8 @@ public struct LaunchAgent: Sendable {
     private var service: String { "\(domain)/\(Self.label)" }
 
     /// No `EnvironmentVariables`: a launched daemon uses the real home and the default ports.
-    /// `ExitTimeOut` gives a stopping daemon 20 seconds to stop its web stack before launchd kills it.
+    /// `ExitTimeOut` gives a stopping daemon time to stop its web stack and its services before launchd kills
+    /// it (`exitTimeOut`).
     public func plistContents(daemon: URL) -> String {
         let log = paths.log.appendingPathComponent("paddockd.log").path
         let dictionary: [String: Any] = [
@@ -62,7 +74,7 @@ public struct LaunchAgent: Sendable {
             "StandardOutPath": log,
             "StandardErrorPath": log,
             "ProcessType": "Interactive",
-            "ExitTimeOut": 20,
+            "ExitTimeOut": Self.exitTimeOut,
         ]
         let data = try? PropertyListSerialization.data(fromPropertyList: dictionary, format: .xml, options: 0)
         return String(decoding: data ?? Data(), as: UTF8.self)

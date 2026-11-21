@@ -132,7 +132,7 @@ final class ServiceCatalogValidationTests: XCTestCase {
         assertRejected([valid(start: start("{bin}/sample", ["PATH": "{data}/x:/anything"]))], "PATH")
         assertRejected([valid(start: start("{bin}/sample", ["PATH": "{data}/x:"]))], "PATH")
         assertRejected([valid(start: start("{bin}/sample", ["TMPDIR": "{run}{name}"]))], "TMPDIR")
-        XCTAssertNoThrow(try ServiceCatalog.validate([valid(start: start("{bin}/sample", ["PATH": "{bin}:{data}/bin",
+        XCTAssertNoThrow(try ServiceCatalog.validate([valid(start: start("{bin}/sample", ["PATH": "{bin}:{config}/bin",
                                                                                           "TMPDIR": "{run}"]))]))
     }
 
@@ -270,6 +270,53 @@ final class ServiceCatalogValidationTests: XCTestCase {
         assertRejected([withAction(action(parameters: [database, database]))], "parameter")
         assertRejected([withAction(action(arguments: ["{dbname}"]))], "{dbname}")
         assertRejected([withAction(action("/usr/bin/createdb"))], "under {bin}/")
+    }
+
+    // MARK: - Fix round 1
+
+    /// The service can write to `{data}` and `{run}`: a program there could shadow `sh` for its children.
+    func testPATHTakesOnlyTheBinariesAndConfigFolders() {
+        func path(_ value: String) -> ServiceRecipe {
+            valid(start: RecipeCommand(executable: "{bin}/sample", environment: ["PATH": value]))
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([path("{bin}/bin:{config}/tools")]))
+        assertRejected([path("{data}/bin")], "PATH")
+        assertRejected([path("{bin}:{run}")], "PATH")
+        assertRejected([path("{bin}:{data}")], "PATH")
+    }
+
+    /// Lock files hold a pid on their first line; Paddock removes stale ones, so they must be the instance's own.
+    func testLockFilesStayInTheDataOrRunFolder() {
+        func locks(_ files: [String]) -> ServiceRecipe {
+            let base = valid()
+            return ServiceRecipe(kind: base.kind, displayName: base.displayName, version: base.version, series: base.series,
+                                 licence: base.licence, assets: base.assets, initialise: base.initialise, start: base.start,
+                                 ready: base.ready, ports: base.ports, socket: base.socket, env: base.env,
+                                 configFiles: base.configFiles, lockFiles: files)
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([locks(["{data}/postmaster.pid", "{run}/.s.PGSQL.{port.main}.lock",
+                                                             "{data}/sub/x-{port.main}.pid"])]))
+        for bad in ["{config}/x.pid", "/tmp/x.pid", "{data}", "{data}/", "{data}/../x.pid", "{data}/{name}.pid",
+                    "{data}/{port.main}/x.pid", "{run}{port.main}", "{bin}/x.pid", "{data}//x"] {
+            assertRejected([locks([bad])], "lock file")
+        }
+        assertRejected([locks(["{run}/{port.other}.lock"])], "{port.other}")
+    }
+
+    /// Readiness may be a command (PostgreSQL's pg_isready), held to the same rules as every other command.
+    func testAReadinessCommandFollowsTheCommandRules() throws {
+        func ready(_ command: RecipeCommand) -> ServiceRecipe {
+            ServiceRecipe(kind: "sample", displayName: "Sample", version: "1.0", licence: "MIT", assets: [],
+                          start: RecipeCommand(executable: "{bin}/s"), ready: .command(command),
+                          ports: [RecipePort(name: "main", preferred: 4000)])
+        }
+        XCTAssertNoThrow(try ServiceCatalog.validate([ready(RecipeCommand(executable: "{bin}/bin/pg_isready",
+                                                                           arguments: ["--port={port.main}", "--quiet"]))]))
+        assertRejected([ready(RecipeCommand(executable: "/bin/sh", arguments: ["-c", "true"]))], "under {bin}/")
+        assertRejected([ready(RecipeCommand(executable: "{bin}/x", arguments: ["{nope}"]))], "{nope}")
+        assertRejected([ready(RecipeCommand(executable: "{bin}/x", environment: ["DYLD_INSERT_LIBRARIES": "{data}/x"]))],
+                       "DYLD_")
+        assertRejected([ready(RecipeCommand(executable: "{bin}/x", stdin: "x"))], "stdin")
     }
 
     /// Decoding a catalog validates it, so a bad bundled, hosted or development catalog never loads.

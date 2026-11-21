@@ -8,8 +8,9 @@ extension ServiceCatalog {
     /// Environment names a recipe may set only to a path inside the instance's own folders.
     static let pathVariables: Set<String> = ["HOME", "TMPDIR", "PHPRC"]
     /// Environment names holding `:`-separated folders, each of which must be one of these roots or under it.
-    /// A recipe's PATH comes before the base PATH (`/usr/bin:/bin:/usr/sbin:/sbin`).
-    static let folderListVariables: [String: [String]] = ["PATH": ["{bin}", "{data}", "{config}", "{run}"],
+    /// A recipe's PATH comes before the base PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), so it may name only
+    /// folders the service can't write to itself: `{data}` or `{run}` could shadow `sh` for its children.
+    static let folderListVariables: [String: [String]] = ["PATH": ["{bin}", "{config}"],
                                                           "PHP_INI_SCAN_DIR": ["{data}", "{config}", "{run}"]]
     /// Display names leave room for the series and a ` (2)` within an instance name's 64 characters.
     static let maximumDisplayNameLength = 48
@@ -61,11 +62,13 @@ extension ServiceCatalog {
             throw fail("the action \"\(name)\" is not one Paddock knows")
         }
         let actions = recipe.actions.sorted { $0.key < $1.key }.map(\.value)
-        let commands = [recipe.start] + recipe.initialise + actions.map(\.command)
+        let commands = [recipe.start] + recipe.initialise + actions.map(\.command) + [recipe.ready.command].compactMap { $0 }
         for command in commands where !runsFromBinariesOrPHP(command.executable) {
             throw fail("\(command.executable) must be a program under {bin}/ or exactly {php}")
         }
-        if recipe.start.stdin != nil { throw fail("only initialise steps may have stdin, not the start command") }
+        if recipe.start.stdin != nil || recipe.ready.command?.stdin != nil {
+            throw fail("only initialise steps may have stdin, not the start or readiness command")
+        }
         for command in commands {
             for (name, value) in command.environment {
                 guard name.range(of: "^[A-Z_][A-Z0-9_]*$", options: .regularExpression) != nil else {
@@ -91,6 +94,10 @@ extension ServiceCatalog {
         }
         for file in recipe.configFiles where !isRootedPath(file.path, roots: ["{config}"], restRequired: true) {
             throw fail("the config file \(file.path) must be {config}/ followed by a literal path")
+        }
+        for file in recipe.lockFiles where !isLockFilePath(file) {
+            throw fail("the lock file \(file) must be {data}/ or {run}/ followed by a literal path, literal but for "
+                       + "{port.<name>} in its file name")
         }
 
         // Ports, signals, downloads.
@@ -130,9 +137,10 @@ extension ServiceCatalog {
 
         // Placeholders.
         let known = knownPlaceholders.union(recipe.ports.map { "port.\($0.name)" })
-        var templates = [recipe.ready.template] + recipe.env + [recipe.socket, recipe.openURL].compactMap { $0 }
+        var templates = recipe.env + [recipe.socket, recipe.openURL].compactMap { $0 } + recipe.lockFiles
+        if recipe.ready.command == nil { templates.append(recipe.ready.template) }
         // (Actions below: their arguments may also use their parameters.)
-        for command in [recipe.start] + recipe.initialise {
+        for command in [recipe.start] + recipe.initialise + [recipe.ready.command].compactMap({ $0 }) {
             templates += [command.executable] + command.arguments.flatMap(\.templates) + Array(command.environment.values)
             templates += [command.stdin].compactMap { $0 }
         }
@@ -176,6 +184,17 @@ extension ServiceCatalog {
                 }
             }
         }
+    }
+
+    /// `{data}/` or `{run}/`, literal folders, then a file name that is literal but for `{port.<name>}`.
+    static func isLockFilePath(_ value: String) -> Bool {
+        guard let root = ["{data}/", "{run}/"].first(where: value.hasPrefix) else { return false }
+        let components = value.dropFirst(root.count).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard let name = components.last else { return false }
+        let folders = components.dropLast()
+        return folders.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && ServiceTemplate.placeholders(in: $0).isEmpty }
+            && !name.isEmpty && name != "." && name != ".."
+            && ServiceTemplate.placeholders(in: name).allSatisfy { $0.hasPrefix("port.") }
     }
 
     /// `{run}/` and one file name: literal text, except `{port.<name>}` (digits once rendered).

@@ -87,7 +87,10 @@ public final class Supervisor: @unchecked Sendable {
     private let stopGracePeriod: TimeInterval
 
     /// `backoffScale` multiplies the restart delays (tests use a small value).
-    public init(backoffScale: TimeInterval = 1, stopGracePeriod: TimeInterval = 5) {
+    /// Seconds between the stop signal and SIGKILL when a spec names none (the web stack's processes).
+    public static let defaultStopGrace = 5
+
+    public init(backoffScale: TimeInterval = 1, stopGracePeriod: TimeInterval = TimeInterval(Supervisor.defaultStopGrace)) {
         self.backoffScale = backoffScale
         self.stopGracePeriod = stopGracePeriod
     }

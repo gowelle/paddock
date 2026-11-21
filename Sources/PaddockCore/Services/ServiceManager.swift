@@ -43,6 +43,8 @@ public enum ServiceError: Error, Equatable, Sendable {
     case invalidParameter(parameter: String, value: String)
     /// The request needs the service running.
     case notRunning(name: String, id: String)
+    /// The action was stopped because the service stopped or Paddock is shutting down.
+    case actionCancelled(name: String, action: String)
 }
 
 /// How an action ended when it didn't fail.
@@ -115,6 +117,8 @@ public final class ServiceManager: @unchecked Sendable {
     private var cancelled = false
     /// Problems already logged (one line each): invalid saved instances, invalid stored recipes.
     private var reported: Set<String> = []
+    /// Actions running now, by instance id (`runtimeLock`).
+    private var inFlight: [String: [ActionFlight]] = [:]
 
     /// Unix socket paths longer than this don't fit `sun_path` (104 bytes with the NUL).
     static let maximumSocketPath = 103
@@ -157,15 +161,23 @@ public final class ServiceManager: @unchecked Sendable {
 
     /// Creates `database` in a running service with its recipe's `createDatabase` action. The name is
     /// checked here (`isValidDatabaseName`) and against the recipe's own pattern before anything runs; a
-    /// database already there is `.alreadyDone`, not an error.
+    /// database already there is `.alreadyDone`, not an error. The command runs outside the change lock:
+    /// stopping, removing or updating the service, or shutting down, cancels it instead of waiting for it.
     public func createDatabase(_ name: String, database: String) throws -> ServiceActionResult {
         guard Self.isValidDatabaseName(database) else {
             throw ServiceError.invalidParameter(parameter: "database", value: database)
         }
         operationLock.lock()
-        defer { operationLock.unlock() }
-        let instance = try find(name)
-        return try perform(RecipeAction.createDatabase, on: instance, parameters: ["database": database])
+        let prepared: PreparedAction
+        do {
+            prepared = try prepare(RecipeAction.createDatabase, on: try find(name), parameters: ["database": database])
+        } catch {
+            operationLock.unlock()
+            throw error
+        }
+        operationLock.unlock()
+        defer { finish(prepared) }
+        return try run(prepared)
     }
 
     /// 1 to 63 ASCII letters, digits and underscores (PostgreSQL's limit; fine for MySQL too).
@@ -175,12 +187,24 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// Runs one of the recipe's actions on a running instance, through the bounded step runner, in the
-    /// instance's folder, with `parameters` bound. Every parameter the action declares must be given and
-    /// match its pattern (and never start with `-` or hold a control character); no other value is bound.
-    /// The caller holds `operationLock`.
-    private func perform(_ actionName: String, on instance: ServiceInstance,
-                         parameters: [String: String]) throws -> ServiceActionResult {
+    /// An action ready to run: everything checked and rendered while the change lock was held.
+    private struct PreparedAction {
+        let name: String
+        let instance: ServiceInstance
+        let recipe: ServiceRecipe
+        let action: RecipeAction
+        let command: RenderedCommand
+        let context: ServiceTemplateContext
+        let probe: ReadyProbe
+        let flight: ActionFlight
+    }
+
+    /// Resolves one of the recipe's actions for a running instance (the caller holds `operationLock`): every
+    /// parameter the action declares must be given and match its pattern (and never start with `-` or hold a
+    /// control character); no other value is bound. The command is rendered and checked like every other,
+    /// and the action is recorded as in flight, so a stop of the instance or a shutdown can cancel it.
+    private func prepare(_ actionName: String, on instance: ServiceInstance,
+                         parameters: [String: String]) throws -> PreparedAction {
         guard let recipe = installedRecipe(instance) else {
             throw ServiceError.unavailable(name: instance.name, reason: nothingToRun(instance))
         }
@@ -200,26 +224,67 @@ public final class ServiceManager: @unchecked Sendable {
         }
         var context = try self.context(instance, recipe: recipe)
         context.parameters = bound
+        let command = try ServiceTemplate.render(action.command, context: context)
+        try checkRendered(command, template: action.command, instance: instance, recipe: recipe)
+        let probe = try makeProbe(instance, recipe, context: context)
+        let flight = ActionFlight()
+        runtimeLock.lock()
+        inFlight[instance.id, default: []].append(flight)
+        runtimeLock.unlock()
+        return PreparedAction(name: actionName, instance: instance, recipe: recipe, action: action, command: command,
+                              context: context, probe: probe, flight: flight)
+    }
+
+    /// Runs a prepared action without the change lock: waits until the service is ready (a postmaster in
+    /// crash recovery accepts connections before it accepts queries), then runs the command through the
+    /// bounded step runner in the instance's folder; its output goes to the service's log.
+    private func run(_ prepared: PreparedAction) throws -> ServiceActionResult {
+        let instance = prepared.instance
+        let flight = prepared.flight
+        let cancelled = { [weak self] in flight.isCancelled || (self?.isCancelled ?? true) }
         let failed = { (output: String) in
-            ServiceError.actionFailed(name: instance.name, action: actionName, output: output)
+            ServiceError.actionFailed(name: instance.name, action: prepared.name, output: output)
         }
-        let outcome = try runBounded(action.command, instance: instance, recipe: recipe, context: context,
-                                     timeout: action.timeout, couldNotRun: failed)
+        guard waitUntilReady(Self.processName(instance.id), prepared.probe,
+                             timeout: readyTimeout ?? prepared.recipe.readyTimeout, isCancelled: cancelled) else {
+            if cancelled() { throw ServiceError.actionCancelled(name: instance.name, action: prepared.name) }
+            throw ServiceError.unavailable(name: instance.name, reason: "it isn't ready to accept connections")
+        }
+        let outcome = try runRendered(prepared.command, id: instance.id, context: prepared.context,
+                                      timeout: prepared.action.timeout, isCancelled: cancelled, couldNotRun: failed)
         switch outcome.end {
         case .exited(0):
             return .done
         case .exited:
-            if let marker = try action.alreadyDone.map({ try ServiceTemplate.render($0, context: context) }),
+            if let marker = try prepared.action.alreadyDone.map({ try ServiceTemplate.render($0, context: prepared.context) }),
                !marker.isEmpty, outcome.output.contains(marker) {
                 return .alreadyDone
             }
+            if cancelled() { throw ServiceError.actionCancelled(name: instance.name, action: prepared.name) }
             throw failed(Self.lastLines(outcome.output, 30))
         case .timedOut:
-            throw failed("It took longer than \(Int(action.timeout)) seconds, so Paddock stopped it.\n"
+            throw failed("It took longer than \(Int(prepared.action.timeout)) seconds, so Paddock stopped it.\n"
                          + Self.lastLines(outcome.output, 30))
         case .cancelled:
-            throw ServiceError.cancelled(name: instance.name)
+            throw ServiceError.actionCancelled(name: instance.name, action: prepared.name)
         }
+    }
+
+    private func finish(_ prepared: PreparedAction) {
+        runtimeLock.lock()
+        inFlight[prepared.instance.id]?.removeAll { $0 === prepared.flight }
+        if inFlight[prepared.instance.id]?.isEmpty == true { inFlight[prepared.instance.id] = nil }
+        runtimeLock.unlock()
+        prepared.flight.done()
+    }
+
+    /// Cancels the actions in flight for `id` (every instance when nil) and waits, briefly, until they end.
+    private func cancelActions(of id: String?) {
+        runtimeLock.lock()
+        let flights = id.map { inFlight[$0] ?? [] } ?? inFlight.values.flatMap { $0 }
+        runtimeLock.unlock()
+        for flight in flights { flight.cancel() }
+        for flight in flights { flight.wait(timeout: 10) }
     }
 
     /// Not empty, not an option (`-h`), no control characters: whatever a recipe's pattern allows.
@@ -484,25 +549,32 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// Renders and checks one command (an initialise step or an action) and runs it through the bounded
-    /// runner in the instance's folder, with the service environment; its output goes to the service's log.
-    /// A program that can't be run at all is `couldNotRun`.
+    /// Renders and checks one initialise step and runs it (`runRendered`).
     private func runBounded(_ step: RecipeCommand, instance: ServiceInstance, recipe: ServiceRecipe,
                             context: ServiceTemplateContext, timeout: TimeInterval,
                             couldNotRun: (String) -> ServiceError) throws -> ServiceStepRunner.Outcome {
         let command = try ServiceTemplate.render(step, context: context)
         try checkRendered(command, template: step, instance: instance, recipe: recipe)
+        return try runRendered(command, id: instance.id, context: context, timeout: timeout,
+                               isCancelled: { [weak self] in self?.isCancelled ?? true }, couldNotRun: couldNotRun)
+    }
+
+    /// Runs a rendered, checked command through the bounded step runner in the instance's folder, with the
+    /// service environment; its output goes to the service's log. A program that can't be run at all is
+    /// `couldNotRun`.
+    private func runRendered(_ command: RenderedCommand, id: String, context: ServiceTemplateContext,
+                             timeout: TimeInterval, isCancelled: @escaping () -> Bool,
+                             couldNotRun: (String) -> ServiceError) throws -> ServiceStepRunner.Outcome {
         let outcome: ServiceStepRunner.Outcome
         do {
             outcome = try ServiceStepRunner.run(
                 executable: command.executable, arguments: command.arguments,
-                environment: environment(for: command, context: context, id: instance.id),
-                directory: paths.serviceHome(instance.id), stdin: command.stdin, timeout: timeout,
-                isCancelled: { [weak self] in self?.isCancelled ?? true })
+                environment: environment(for: command, context: context, id: id),
+                directory: paths.serviceHome(id), stdin: command.stdin, timeout: timeout, isCancelled: isCancelled)
         } catch {
             throw couldNotRun("\(command.executable) could not be run: \(error.localizedDescription)")
         }
-        appendToLog(instance.id, Data(outcome.output.utf8))
+        appendToLog(id, Data(outcome.output.utf8))
         return outcome
     }
 
@@ -550,7 +622,7 @@ public final class ServiceManager: @unchecked Sendable {
             let allowed: [URL]
             switch name {
             case "HOME", "TMPDIR", "PHPRC", "PHP_INI_SCAN_DIR": allowed = own
-            case "PATH": allowed = own + [bin]
+            case "PATH": allowed = [paths.serviceConfig(instance.id), bin]
             default: continue
             }
             let entries = ServiceCatalog.folderListVariables[name] != nil
@@ -692,6 +764,7 @@ public final class ServiceManager: @unchecked Sendable {
     public func stopAll() {
         operationLock.lock()
         defer { operationLock.unlock() }
+        cancelActions(of: nil)
         supervisor.stopAll()
         for instance in instances() { removePIDRecord(instance.id) }
         runtimeLock.lock()
@@ -736,6 +809,7 @@ public final class ServiceManager: @unchecked Sendable {
     }
 
     private func stopLocked(_ id: String) {
+        cancelActions(of: id)
         stopProcess(id)
         setRuntime(.stopped, for: id)
         setNotice(nil, for: id)
@@ -877,8 +951,9 @@ public final class ServiceManager: @unchecked Sendable {
             try ensureFolders(id)
             try writeConfigFiles(recipe, context: context, id: id)
             if let socket = context.socket { Self.removeStaleSocket(socket, inside: paths.serviceRun(id)) }
+            try removeStaleLocks(instance, recipe, context: context)
             let record = paths.serviceRun(id).appendingPathComponent(Self.pidFileName)
-            let target = try ServiceTemplate.render(recipe.ready.template, context: context)
+            let probe = try makeProbe(instance, recipe, context: context)
             let spawns = SpawnCounter()
             var spec = ProcessSpec(
                 name: Self.processName(id), executable: URL(fileURLWithPath: command.executable),
@@ -888,13 +963,13 @@ public final class ServiceManager: @unchecked Sendable {
                 didSpawn: { [weak self] pid in
                     try? ServiceProcessRecord.live(pid: pid)?.write(to: record)
                     // The first spawn is this launch, checked below; later ones are the supervisor's restarts.
-                    if spawns.next() > 1 { self?.checkAfterRestart(instance, recipe, target, processGroup: pid) }
+                    if spawns.next() > 1 { self?.checkAfterRestart(instance, recipe, probe, processGroup: pid) }
                 })
             spec.workingDirectory = paths.serviceHome(id)
             try supervisor.start(spec)
             setRuntime(.starting, for: id)
-            guard waitUntilReady(Self.processName(id), recipe.ready, target,
-                                 timeout: readyTimeout ?? recipe.readyTimeout) else {
+            guard waitUntilReady(Self.processName(id), probe, timeout: readyTimeout ?? recipe.readyTimeout,
+                                 isCancelled: { [weak self] in self?.isCancelled ?? true }) else {
                 stopProcess(id)
                 setRuntime(.crashed, for: id)
                 return .notReady(name: instance.name, log: Self.lastLines(logTail(id), 20))
@@ -930,19 +1005,114 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// Polls the readiness probe until it passes, the process exits, the deadline passes, or shutting
-    /// down cancels the wait.
-    private func waitUntilReady(_ process: String, _ readiness: Readiness, _ target: String,
-                                timeout: TimeInterval) -> Bool {
+    /// A readiness probe, rendered (and, for a command, checked) once per launch.
+    struct ReadyProbe: Sendable {
+        let readiness: Readiness
+        /// The rendered port, path or URL; unused for a command.
+        let target: String
+        let command: RenderedCommand?
+        let environment: [String: String]
+        let directory: URL
+    }
+
+    private func makeProbe(_ instance: ServiceInstance, _ recipe: ServiceRecipe,
+                           context: ServiceTemplateContext) throws -> ReadyProbe {
+        guard let template = recipe.ready.command else {
+            return ReadyProbe(readiness: recipe.ready, target: try ServiceTemplate.render(recipe.ready.template, context: context),
+                              command: nil, environment: [:], directory: paths.serviceHome(instance.id))
+        }
+        let command = try ServiceTemplate.render(template, context: context)
+        try checkRendered(command, template: template, instance: instance, recipe: recipe)
+        return ReadyProbe(readiness: recipe.ready, target: command.executable, command: command,
+                          environment: environment(for: command, context: context, id: instance.id),
+                          directory: paths.serviceHome(instance.id))
+    }
+
+    /// Seconds one readiness command may take.
+    static let readyCommandLimit: TimeInterval = 5
+
+    /// One attempt of the probe: a connection, or the readiness command exiting 0 within `limit` seconds
+    /// (at most `readyCommandLimit`).
+    private func probeOnce(_ probe: ReadyProbe, limit: TimeInterval, isCancelled: @escaping () -> Bool) -> Bool {
+        guard let command = probe.command else { return ServiceReadiness.probe(probe.readiness, rendered: probe.target) }
+        let outcome = try? ServiceStepRunner.run(
+            executable: command.executable, arguments: command.arguments, environment: probe.environment,
+            directory: probe.directory, stdin: nil, timeout: max(0.5, min(Self.readyCommandLimit, limit)), killGrace: 1,
+            isCancelled: isCancelled)
+        return outcome?.end == .exited(0)
+    }
+
+    /// Polls the readiness probe until it passes, the process exits (or, with `processGroup`, is replaced),
+    /// the deadline passes, or `isCancelled` says so.
+    private func waitUntilReady(_ process: String, _ probe: ReadyProbe, timeout: TimeInterval, processGroup: Int32? = nil,
+                                isCancelled: @escaping () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if isCancelled { return false }
-            guard case .running = supervisor.status(process) else { return false }
-            if ServiceReadiness.probe(readiness, rendered: target) { return true }
-            Thread.sleep(forTimeInterval: 0.1)
+            if isCancelled() { return false }
+            guard case .running(let pid) = supervisor.status(process), processGroup == nil || pid == processGroup else {
+                return false
+            }
+            if probeOnce(probe, limit: deadline.timeIntervalSinceNow, isCancelled: isCancelled) { return true }
+            Thread.sleep(forTimeInterval: probe.command == nil ? 0.1 : 0.2)
         }
         return false
     }
+
+    // MARK: - Lock files
+
+    /// Before a start (after any orphan was reclaimed): each of the recipe's lock files that names a process
+    /// which is not a live program from this kind's installed binaries is stale (a crash, and its pid reused
+    /// since) and is removed: only a regular file, never through a symlink, only inside the instance's own
+    /// data and run folders. One naming such a live program is left alone and the start refused: another copy
+    /// runs on this data. A lock file that is not a regular file is left alone and the start refused.
+    private func removeStaleLocks(_ instance: ServiceInstance, _ recipe: ServiceRecipe,
+                                  context: ServiceTemplateContext) throws {
+        let own = [paths.serviceData(instance.id), paths.serviceRun(instance.id)]
+        let binaries = paths.serviceBin(kind: instance.kind, version: "-").deletingLastPathComponent()
+        for template in recipe.lockFiles {
+            let path = URL(fileURLWithPath: try ServiceTemplate.render(template, context: context)).standardizedFileURL
+            guard own.contains(where: { Self.isUnder(path.path, folder: $0) }) else {
+                throw ServiceError.unsafeRecipe(name: instance.name, reason: "its lock file would be outside its own folders")
+            }
+            // Its folder (symlinks resolved) must be inside them too; no folder, no lock.
+            guard let folder = Self.realPath(path.deletingLastPathComponent().path) else { continue }
+            guard own.contains(where: { root in
+                Self.realPath(root.path).map { folder == $0 || folder.hasPrefix($0 + "/") } ?? false
+            }) else {
+                throw ServiceError.unsafeRecipe(name: instance.name, reason: "its lock file would be outside its own folders")
+            }
+            var info = stat()
+            guard lstat(path.path, &info) == 0 else { continue }
+            guard (info.st_mode & S_IFMT) == S_IFREG else {
+                throw ServiceError.unavailable(name: instance.name, reason: "its lock file \(path.lastPathComponent) is "
+                                               + "not a plain file, so Paddock left it alone (\(path.path))")
+            }
+            if let pid = Self.lockOwner(path.path), Self.isAlive(pid),
+               let program = PortCheck.executablePath(pid: pid), Self.resolves(program, inside: binaries) {
+                throw ServiceError.unavailable(name: instance.name, reason: "another copy of it is already running "
+                                               + "(process \(pid)) on its data; Paddock left it alone")
+            }
+            guard unlink(path.path) == 0 || errno == ENOENT else {
+                throw ServiceError.unavailable(name: instance.name,
+                                               reason: "its stale lock file \(path.path) couldn't be removed")
+            }
+            log("removed the stale lock file \(path.lastPathComponent) of \(instance.name)")
+        }
+    }
+
+    /// The pid on a lock file's first line (read without following a symlink), if it has one.
+    static func lockOwner(_ path: String) -> Int32? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let n = read(fd, &buffer, buffer.count)
+        guard n > 0 else { return nil }
+        let first = String(decoding: buffer[0..<n], as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false).first
+        return first.flatMap { Int32($0.trimmingCharacters(in: .whitespaces)) }.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    static func isAlive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 || errno == EPERM }
 
     /// The first TCP listener of the process group that isn't on 127.0.0.1 or [::1] (`lsof`, at most 5
     /// seconds). A recipe can forget a bind flag (MySQL and Redis listen everywhere by default); this catches
@@ -971,17 +1141,15 @@ public final class ServiceManager: @unchecked Sendable {
     /// After the supervisor restarted a service on its own: once the new process is ready (or the recipe's
     /// readiness deadline passes), the same listener checks as after a launch, tied to the new process: a
     /// later restart or stop makes them do nothing.
-    private func checkAfterRestart(_ instance: ServiceInstance, _ recipe: ServiceRecipe, _ target: String,
+    private func checkAfterRestart(_ instance: ServiceInstance, _ recipe: ServiceRecipe, _ probe: ReadyProbe,
                                    processGroup: Int32) {
         let name = Self.processName(instance.id)
         let timeout = readyTimeout ?? recipe.readyTimeout
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
-            let deadline = Date().addingTimeInterval(timeout)
-            while Date() < deadline, !ServiceReadiness.probe(recipe.ready, rendered: target) {
-                guard case .running(let pid) = self.supervisor.status(name), pid == processGroup else { return }
-                Thread.sleep(forTimeInterval: 0.1)
-            }
+            _ = self.waitUntilReady(name, probe, timeout: timeout, processGroup: processGroup,
+                                    isCancelled: { [weak self] in self?.isCancelled ?? true })
+            guard case .running(let pid) = self.supervisor.status(name), pid == processGroup else { return }
             self.lateListenerCheck(instance, processGroup: processGroup)
             self.scheduleLateListenerChecks(instance, processGroup: processGroup)
         }
@@ -1269,4 +1437,29 @@ private final class SpawnCounter: @unchecked Sendable {
         count += 1
         return count
     }
+}
+
+/// One action in flight: whether it was asked to stop, and a way to wait until it has.
+private final class ActionFlight: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private let group = DispatchGroup()
+
+    init() { group.enter() }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    func done() { group.leave() }
+
+    func wait(timeout: TimeInterval) { _ = group.wait(timeout: .now() + timeout) }
 }

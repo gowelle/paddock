@@ -173,12 +173,12 @@ final class ServiceRecipeAdditionsTests: XCTestCase {
     }
 
     func testARecipesPATHComesBeforeTheBasePATH() async throws {
-        let manager = makeManager([fake(environment: ["PATH": "{bin}:{data}/tools"])])
+        let manager = makeManager([fake(environment: ["PATH": "{bin}:{config}/tools"])])
         _ = try await manager.add(kind: "fake", version: nil)
         let bin = home.paths.serviceBin(kind: "fake", version: "1.0").path
-        let data = home.paths.serviceData("fake").path
+        let config = home.paths.serviceConfig("fake").path
         XCTAssertTrue(FakeService.environment(paths: home.paths, id: "fake")
-            .contains("PATH=\(bin):\(data)/tools:/usr/bin:/bin:/usr/sbin:/sbin"),
+            .contains("PATH=\(bin):\(config)/tools:/usr/bin:/bin:/usr/sbin:/sbin"),
                       "\(FakeService.environment(paths: home.paths, id: "fake"))")
     }
 

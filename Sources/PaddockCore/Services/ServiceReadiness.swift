@@ -15,6 +15,8 @@ enum ServiceReadiness {
             return true
         case .http(_, let expectStatus):
             return httpStatus(target, timeout: 1) == expectStatus
+        case .command:
+            return false
         }
     }
 

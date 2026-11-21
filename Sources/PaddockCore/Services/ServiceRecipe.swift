@@ -185,23 +185,78 @@ public struct RecipePort: Codable, Equatable, Sendable {
 }
 
 /// How Paddock tells a started service is ready. Each value is a template.
-public enum Readiness: Codable, Equatable, Sendable {
+public enum Readiness: Equatable, Sendable {
     /// 127.0.0.1 accepts a connection on this port (e.g. `{port.main}`).
     case tcp(port: String)
     /// The Unix socket at this path accepts a connection.
     case unixSocket(path: String)
     /// A GET of this loopback URL answers with `expectStatus`.
     case http(url: String, expectStatus: Int)
+    /// This command exits 0 (PostgreSQL's `pg_isready`): run like a step, under the same rules as every
+    /// other command, a few seconds at most per attempt, again and again until the deadline.
+    case command(RecipeCommand)
 
     /// How long a service may take to become ready, unless its recipe says otherwise.
     public static let deadline: TimeInterval = 30
 
-    /// The template the probe renders.
+    /// The template a probe renders (the program, for a command).
     public var template: String {
         switch self {
         case .tcp(let port): return port
         case .unixSocket(let path): return path
         case .http(let url, _): return url
+        case .command(let command): return command.executable
+        }
+    }
+
+    /// The command a `.command` probe runs.
+    public var command: RecipeCommand? {
+        if case .command(let command) = self { return command }
+        return nil
+    }
+}
+
+/// The JSON forms: `{"tcp":{"port":…}}`, `{"unixSocket":{"path":…}}`, `{"http":{"url":…,"expectStatus":…}}`
+/// and `{"command":{"executable":…,"arguments":[…]}}`.
+extension Readiness: Codable {
+    private enum Kind: String, CodingKey { case tcp, unixSocket, http, command }
+    private enum Field: String, CodingKey { case port, path, url, expectStatus }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Kind.self)
+        guard c.allKeys.count == 1, let kind = c.allKeys.first else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "readiness needs exactly one of tcp, unixSocket, http or command"))
+        }
+        switch kind {
+        case .tcp:
+            self = .tcp(port: try c.nestedContainer(keyedBy: Field.self, forKey: .tcp).decode(String.self, forKey: .port))
+        case .unixSocket:
+            self = .unixSocket(path: try c.nestedContainer(keyedBy: Field.self, forKey: .unixSocket)
+                .decode(String.self, forKey: .path))
+        case .http:
+            let http = try c.nestedContainer(keyedBy: Field.self, forKey: .http)
+            self = .http(url: try http.decode(String.self, forKey: .url), expectStatus: try http.decode(Int.self, forKey: .expectStatus))
+        case .command:
+            self = .command(try c.decode(RecipeCommand.self, forKey: .command))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Kind.self)
+        switch self {
+        case .tcp(let port):
+            var tcp = c.nestedContainer(keyedBy: Field.self, forKey: .tcp)
+            try tcp.encode(port, forKey: .port)
+        case .unixSocket(let path):
+            var socket = c.nestedContainer(keyedBy: Field.self, forKey: .unixSocket)
+            try socket.encode(path, forKey: .path)
+        case .http(let url, let expectStatus):
+            var http = c.nestedContainer(keyedBy: Field.self, forKey: .http)
+            try http.encode(url, forKey: .url)
+            try http.encode(expectStatus, forKey: .expectStatus)
+        case .command(let command):
+            try c.encode(command, forKey: .command)
         }
     }
 }
@@ -249,6 +304,8 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     public let initialiseTimeoutSeconds: Int?
     /// What it can do on request while it runs, by name (`RecipeAction.names`).
     public let actions: [String: RecipeAction]
+    /// Files whose first line is the pid of the process holding them (PostgreSQL's `postmaster.pid`).
+    public let lockFiles: [String]
 
     public static let defaultInitialiseTimeout: TimeInterval = 120
 
@@ -257,7 +314,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                 start: RecipeCommand, ready: Readiness, stopSignal: String = "TERM", stopGraceSeconds: Int = 10,
                 ports: [RecipePort], socket: String? = nil, env: [String] = [], openURL: String? = nil,
                 needsPHP: Bool = false, configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
-                initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:]) {
+                initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:], lockFiles: [String] = []) {
         self.kind = kind
         self.displayName = displayName
         self.version = version
@@ -280,12 +337,13 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         self.readyTimeoutSeconds = readyTimeoutSeconds
         self.initialiseTimeoutSeconds = initialiseTimeoutSeconds
         self.actions = actions
+        self.lockFiles = lockFiles
     }
 
     private enum CodingKeys: String, CodingKey {
         case kind, displayName, version, series, seriesInID, licence, minimumMacOS, assets, initialise, start, ready
         case stopSignal, stopGraceSeconds, ports, socket, env, openURL, needsPHP, configFiles, readyTimeoutSeconds
-        case initialiseTimeoutSeconds, actions
+        case initialiseTimeoutSeconds, actions, lockFiles
     }
 
     public init(from decoder: Decoder) throws {
@@ -312,6 +370,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         readyTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .readyTimeoutSeconds)
         initialiseTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .initialiseTimeoutSeconds)
         actions = try c.decodeIfPresent([String: RecipeAction].self, forKey: .actions) ?? [:]
+        lockFiles = try c.decodeIfPresent([String].self, forKey: .lockFiles) ?? []
     }
 
     /// The signal `stopSignal` names; SIGTERM for anything else.
@@ -349,6 +408,6 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                       start: start, ready: ready, stopSignal: stopSignal, stopGraceSeconds: stopGraceSeconds,
                       ports: ports, socket: socket, env: env, openURL: openURL, needsPHP: needsPHP,
                       configFiles: configFiles, readyTimeoutSeconds: readyTimeoutSeconds,
-                      initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions)
+                      initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions, lockFiles: lockFiles)
     }
 }

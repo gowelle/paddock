@@ -11,7 +11,12 @@
 //       it. Exits 0 on SIGTERM or SIGINT, writing <data>/stopped.
 //       More serve options: --fork-child (a child in the same group serves too, and stays when the leader
 //       dies); --poison-data (writes <data>/poison); --refuse-poison (exits 4 at once if <data>/poison exists);
-//       --late-listen PORT --late-delay MS (after MS milliseconds also listens on 0.0.0.0:PORT).
+//       --late-listen PORT --late-delay MS (after MS milliseconds also listens on 0.0.0.0:PORT);
+//       --lock PATH (like postmaster.pid: exits 5 if PATH names a live process, else writes its pid there and
+//       removes it on stop); --ignore-term (ignores SIGTERM and SIGINT, so only SIGKILL stops it).
+//   paddock-fake-service ready <data> <ms>
+//       Exits 0 once <data>/args (written when serve starts) is at least MS milliseconds old, else 1: a
+//       readiness command that succeeds later than the port accepts connections.
 //   paddock-fake-service action <data> <value>
 //       Like createdb: creates <data>/made-<value> and prints "made <value>"; if it is there already, prints
 //       `"<value>" already exists` and exits 1. Also records its working directory in <data>/action-cwd.
@@ -30,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -94,7 +100,8 @@ static int serve(int argc, char **argv) {
     const char *socket_path = NULL;
     int delay_ms = 0;
     int no_listen = 0;
-    int fork_child = 0, poison = 0, refuse_poison = 0, late_port = 0, late_delay = 0;
+    int fork_child = 0, poison = 0, refuse_poison = 0, late_port = 0, late_delay = 0, ignore_term = 0;
+    const char *lock_path = NULL;
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0 && i + 1 < argc && nports < 8) ports[nports++] = atoi(argv[++i]);
         else if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) socket_path = argv[++i];
@@ -106,6 +113,22 @@ static int serve(int argc, char **argv) {
         else if (strcmp(argv[i], "--refuse-poison") == 0) refuse_poison = 1;
         else if (strcmp(argv[i], "--late-listen") == 0 && i + 1 < argc) late_port = atoi(argv[++i]);
         else if (strcmp(argv[i], "--late-delay") == 0 && i + 1 < argc) late_delay = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--lock") == 0 && i + 1 < argc) lock_path = argv[++i];
+        else if (strcmp(argv[i], "--ignore-term") == 0) ignore_term = 1;
+    }
+    if (lock_path) {
+        FILE *f = fopen(lock_path, "r");
+        if (f) {
+            int other = 0;
+            if (fscanf(f, "%d", &other) == 1 && other > 0 && kill(other, 0) == 0) {
+                printf("fake-service: lock file \"%s\" already exists (process %d)\n", lock_path, other);
+                fclose(f);
+                return 5;
+            }
+            fclose(f);
+        }
+        f = fopen(lock_path, "w");
+        if (f) { fprintf(f, "%d\n%s\n", getpid(), data); fclose(f); }
     }
     if (refuse_poison) {
         char marker[4096];
@@ -137,6 +160,7 @@ static int serve(int argc, char **argv) {
     sa.sa_handler = on_stop;
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
+    if (ignore_term) { signal(SIGTERM, SIG_IGN); signal(SIGINT, SIG_IGN); }
 
     printf("fake-service: starting (pid %d)\n", getpid());
     fflush(stdout);
@@ -189,6 +213,7 @@ static int serve(int argc, char **argv) {
         }
     }
     if (socket_path && socket_path[0]) unlink(socket_path);
+    if (lock_path) unlink(lock_path);
     write_file(data, "stopped", "yes\n");
     printf("fake-service: stopped\n");
     return 0;
@@ -234,8 +259,20 @@ static int action(char **argv) {
     return 0;
 }
 
+static int ready(char **argv) {
+    char path[4096];
+    snprintf(path, sizeof path, "%s/args", argv[2]);
+    struct stat info;
+    if (stat(path, &info) != 0) return 1;
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    long age = (now.tv_sec - info.st_mtimespec.tv_sec) * 1000 + (now.tv_nsec - info.st_mtimespec.tv_nsec) / 1000000;
+    return age >= atol(argv[3]) ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 4 && strcmp(argv[1], "action") == 0) return action(argv);
+    if (argc >= 4 && strcmp(argv[1], "ready") == 0) return ready(argv);
     if (argc >= 3 && strcmp(argv[1], "init") == 0) return init(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "serve") == 0) return serve(argc, argv);
     if (argc >= 3 && strcmp(argv[1], "spawn-orphan") == 0) {

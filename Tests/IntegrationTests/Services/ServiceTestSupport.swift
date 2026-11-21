@@ -45,7 +45,8 @@ enum FakeService {
                        assets: [RecipeAsset]? = nil, socket: String? = "{run}/fake.sock",
                        ready: Readiness = .tcp(port: "{port.main}"), stopSignal: String = "TERM",
                        configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
-                       actions: [String: RecipeAction] = [:]) -> ServiceRecipe {
+                       actions: [String: RecipeAction] = [:], lockFiles: [String] = [],
+                       stopGraceSeconds: Int = 5) -> ServiceRecipe {
         var arguments = ["serve", "{data}"]
         for port in ports { arguments += ["--port", "{port.\(port.name)}"] }
         arguments += ["--socket", "{socket}", "--name", "{name}"] + extraArguments
@@ -56,11 +57,11 @@ enum FakeService {
             licence: "MIT", assets: assets ?? [asset],
             initialise: [RecipeCommand(executable: program, arguments: initialise.map(RecipeArgument.plain))],
             start: RecipeCommand(executable: program, arguments: arguments.map(RecipeArgument.plain)),
-            ready: ready, stopSignal: stopSignal, stopGraceSeconds: 5, ports: ports, socket: socket,
+            ready: ready, stopSignal: stopSignal, stopGraceSeconds: stopGraceSeconds, ports: ports, socket: socket,
             env: ["FAKE_HOST=127.0.0.1", "FAKE_PORT={port.main}", "FAKE_SOCKET={socket}"],
             openURL: "http://127.0.0.1:{port.main}", configFiles: configFiles,
             readyTimeoutSeconds: readyTimeoutSeconds, initialiseTimeoutSeconds: initialiseTimeoutSeconds,
-            actions: actions)
+            actions: actions, lockFiles: lockFiles)
     }
 
     /// Like createdb: `action <data> <database>` makes `made-<database>` in the data folder, and says

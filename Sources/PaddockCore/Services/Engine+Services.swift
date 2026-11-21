@@ -101,7 +101,7 @@ extension Engine {
         case .initialiseFailed, .initialiseTimedOut, .installFailed, .notReady, .notLoopback, .updateFailed,
              .rollbackFailed, .unsafeRecipe:
             code = ErrorCode.serviceFailed
-        case .cancelled: code = ErrorCode.serviceCancelled
+        case .cancelled, .actionCancelled: code = ErrorCode.serviceCancelled
         case .needsNewerMacOS, .noAction, .notRunning: code = ErrorCode.serviceUnavailable
         case .actionFailed: code = ErrorCode.serviceFailed
         case .invalidParameter: code = ErrorCode.invalidArgument

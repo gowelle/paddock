@@ -176,17 +176,16 @@ final class PostgresServiceTests: XCTestCase {
         let manager = makeManager(recipes)
 
         let preferred = home.portBase + 5432
-        let holder = try? listenReusingAddress(port: preferred)
+        // The preferred (shifted) port is taken: the next free one is chosen. Never skipped silently.
+        let holder = try listenReusingAddress(port: preferred)
         let added = try await manager.add(kind: "postgres", version: "18")
-        if let holder { close(holder) }
+        close(holder)
         XCTAssertEqual(added.id, "postgres-18")
         XCTAssertEqual(added.name, "PostgreSQL 18")
         XCTAssertEqual(added.version, "18.7.0")
         let port = try XCTUnwrap(added.ports["main"])
         XCTAssertNotEqual(port, 5432, "never the Mac's own PostgreSQL port")
-        if holder != nil {
-            XCTAssertTrue((preferred + 1...preferred + ServicePorts.searchLimit).contains(port), "the next free port: \(port)")
-        }
+        XCTAssertTrue((preferred + 1...preferred + ServicePorts.searchLimit).contains(port), "the next free port: \(port)")
         let running = try XCTUnwrap(status(manager, "postgres-18"))
         XCTAssertEqual(running.state, .running)
         XCTAssertEqual(running.mainPort, port)
@@ -229,6 +228,26 @@ final class PostgresServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: data18.appendingPathComponent("postmaster.pid").path))
         try manager.start("postgres-18")
         XCTAssertEqual(try pdo(tcp(port), "read"), "over TCP,over the socket")
+
+        // After an unclean shutdown the pids in postmaster.pid and the socket lock may belong to other
+        // processes by now: PostgreSQL would refuse to start ("lock file already exists"); Paddock removes
+        // them, and never signals the process they name.
+        manager.stop("postgres-18")
+        let stranger = Process()
+        stranger.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        stranger.arguments = ["60"]
+        try stranger.run()
+        defer { if stranger.isRunning { stranger.terminate() } }
+        let postmasterPid = data18.appendingPathComponent("postmaster.pid")
+        try Data("\(stranger.processIdentifier)\n\(data18.path)\n".utf8).write(to: postmasterPid)
+        let socketLock = home.paths.serviceRun("postgres-18").appendingPathComponent(".s.PGSQL.\(port).lock")
+        try Data("\(stranger.processIdentifier)\n".utf8).write(to: socketLock)
+        try manager.start("postgres-18")
+        XCTAssertTrue(stranger.isRunning, "never signalled")
+        XCTAssertEqual(try pdo(tcp(port), "read"), "over TCP,over the socket")
+        let restarted = try postmaster(manager, "postgres-18")
+        XCTAssertEqual(try String(contentsOf: postmasterPid, encoding: .utf8).components(separatedBy: "\n").first,
+                       "\(restarted)")
 
         // 17 beside it: another port, its own data.
         let added17 = try await manager.add(kind: "postgres", version: "17")

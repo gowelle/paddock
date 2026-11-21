@@ -90,13 +90,19 @@
           "-c", "log_destination=stderr"
         ]
       },
-      "ready": { "tcp": { "port": "{port.main}" } },
+      "ready": {
+        "command": {
+          "executable": "{bin}/bin/pg_isready",
+          "arguments": ["--host=127.0.0.1", "--port={port.main}", "--quiet"]
+        }
+      },
       "stopSignal": "INT",
-      "stopGraceSeconds": 20,
+      "stopGraceSeconds": 60,
       "ports": [
         { "name": "main", "preferred": 5432 }
       ],
       "socket": "{run}/.s.PGSQL.{port.main}",
+      "lockFiles": ["{data}/postmaster.pid", "{run}/.s.PGSQL.{port.main}.lock"],
       "env": [
         "DB_CONNECTION=pgsql",
         "DB_HOST=127.0.0.1",
@@ -168,13 +174,19 @@
           "-c", "log_destination=stderr"
         ]
       },
-      "ready": { "tcp": { "port": "{port.main}" } },
+      "ready": {
+        "command": {
+          "executable": "{bin}/bin/pg_isready",
+          "arguments": ["--host=127.0.0.1", "--port={port.main}", "--quiet"]
+        }
+      },
       "stopSignal": "INT",
-      "stopGraceSeconds": 20,
+      "stopGraceSeconds": 60,
       "ports": [
         { "name": "main", "preferred": 5432 }
       ],
       "socket": "{run}/.s.PGSQL.{port.main}",
+      "lockFiles": ["{data}/postmaster.pid", "{run}/.s.PGSQL.{port.main}.lock"],
       "env": [
         "DB_CONNECTION=pgsql",
         "DB_HOST=127.0.0.1",
@@ -246,13 +258,19 @@
           "-c", "log_destination=stderr"
         ]
       },
-      "ready": { "tcp": { "port": "{port.main}" } },
+      "ready": {
+        "command": {
+          "executable": "{bin}/bin/pg_isready",
+          "arguments": ["--host=127.0.0.1", "--port={port.main}", "--quiet"]
+        }
+      },
       "stopSignal": "INT",
-      "stopGraceSeconds": 20,
+      "stopGraceSeconds": 60,
       "ports": [
         { "name": "main", "preferred": 5432 }
       ],
       "socket": "{run}/.s.PGSQL.{port.main}",
+      "lockFiles": ["{data}/postmaster.pid", "{run}/.s.PGSQL.{port.main}.lock"],
       "env": [
         "DB_CONNECTION=pgsql",
         "DB_HOST=127.0.0.1",

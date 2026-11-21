@@ -31,6 +31,11 @@ final class LaunchAgentTests: XCTestCase {
         FakeLaunchd(loaded: loaded).runner()
     }
 
+    func testTheExitTimeoutFollowsTheLongestServiceGrace() {
+        XCTAssertEqual(LaunchAgent.exitTimeOut(serviceGrace: 0), 20, "never shorter than before")
+        XCTAssertEqual(LaunchAgent.exitTimeOut(serviceGrace: 60), 80)
+    }
+
     func testPlistContentsIsAValidPropertyListWithTheRequiredKeys() throws {
         let text = agent(RecordingCommandRunner()).plistContents(daemon: daemon)
         let object = try PropertyListSerialization.propertyList(from: Data(text.utf8), format: nil)
@@ -43,7 +48,10 @@ final class LaunchAgentTests: XCTestCase {
         XCTAssertEqual(dict["StandardOutPath"] as? String, log)
         XCTAssertEqual(dict["StandardErrorPath"] as? String, log)
         XCTAssertEqual(dict["ProcessType"] as? String, "Interactive")
-        XCTAssertEqual(dict["ExitTimeOut"] as? Int, 20, "time for a clean shutdown before launchd kills it")
+        XCTAssertEqual(dict["ExitTimeOut"] as? Int, LaunchAgent.exitTimeOut, "time for a clean shutdown before launchd kills it")
+        let longest = try ServiceCatalog.bundled().recipes.map(\.stopGraceSeconds).max() ?? 0
+        XCTAssertGreaterThanOrEqual(LaunchAgent.exitTimeOut, longest + 15,
+                                    "the web stack and every service's grace (stopped side by side) fit before launchd kills it")
         XCTAssertNil(dict["EnvironmentVariables"])
         XCTAssertFalse(text.contains("PADDOCK_"))
     }
