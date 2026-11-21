@@ -108,4 +108,10 @@ final class LaunchAgentTests: XCTestCase {
         XCTAssertEqual(runner.calls.map(\.arguments), [["print", target], ["bootout", target]])
         XCTAssertTrue(FileManager.default.fileExists(atPath: plist.path))
     }
+
+    func testKickstartRunsLaunchctlKickstart() throws {
+        let runner = fake(loaded: true)
+        try agent(runner).kickstart()
+        XCTAssertEqual(runner.calls, [.init(executable: "/bin/launchctl", arguments: ["kickstart", target])])
+    }
 }

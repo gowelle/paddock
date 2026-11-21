@@ -4,6 +4,8 @@ public enum ResolverError: Error, Equatable {
     /// The owner dismissed the password prompt.
     case cancelled
     case failed(String)
+    /// Another program rewrote the file while the password prompt was open; nothing was written.
+    case changedDuringInstall
 }
 
 /// What `restore()` did.
@@ -49,51 +51,48 @@ public struct Resolver: Sendable {
     /// True iff the resolver file is exactly Paddock's. Reading needs no privileges.
     public func isInstalled() -> Bool { currentContents() == desiredContents }
 
-    /// Saves any file that isn't Paddock's (once), then writes the resolver file with one password prompt.
+    /// Writes the resolver file with one password prompt, unless it is already Paddock's.
+    /// The privileged script re-checks the file after the prompt and does nothing if another
+    /// program changed it meanwhile (`ResolverError.changedDuringInstall`).
     public func install() throws {
         let current = currentContents()
         if current == desiredContents { return }
+        let script = Self.guardedScript(destination: file, expected: current,
+                                        action: .write(desiredContents))
+        if try runPrivileged(script) == .changed { throw ResolverError.changedDuringInstall }
+        // Saved only once the write succeeded, so a cancelled or raced install leaves no stale copy.
         if let current, store.load().previousResolver == nil {
             try store.update { $0.previousResolver = current }
-        }
-        try withStagedFile(desiredContents) { staged in
-            try runPrivileged(Self.installShellScript(staged: staged, target: file))
         }
     }
 
     /// Puts the saved original back (or deletes the file if there was none), unless the file
-    /// is no longer Paddock's, in which case it is left alone.
+    /// is no longer Paddock's, in which case it is left alone. The privileged script re-checks that
+    /// after the prompt, so a file rewritten while the dialog was open is never overwritten.
     @discardableResult
     public func restore() throws -> ResolverRestoreOutcome {
         guard let current = currentContents() else { return .notInstalled }
         guard current == desiredContents else { return .changedByAnotherProgram }
-        if let previous = store.load().previousResolver {
-            try withStagedFile(previous) { staged in
-                try runPrivileged(Self.installShellScript(staged: staged, target: file))
-            }
-            try store.update { $0.previousResolver = nil }
-            return .restored
-        }
-        try runPrivileged("rm -f \(Self.shellQuote(file.path))")
-        return .removed
+        let previous = store.load().previousResolver
+        let script = Self.guardedScript(destination: file, expected: desiredContents,
+                                        action: previous.map { .write($0) } ?? .remove)
+        if try runPrivileged(script) == .changed { return .changedByAnotherProgram }
+        guard previous != nil else { return .removed }
+        try store.update { $0.previousResolver = nil }
+        return .restored
     }
 
     private func currentContents() -> String? {
         try? String(contentsOf: file, encoding: .utf8)
     }
 
-    /// The privileged script copies a file the user wrote, so the contents never pass through quoting.
-    private func withStagedFile(_ contents: String, _ body: (URL) throws -> Void) throws {
-        let staged = store.paths.home.appendingPathComponent("resolver.pending")
-        try FileManager.default.createDirectory(at: staged.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try contents.write(to: staged, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: staged) }
-        try body(staged)
-    }
+    private enum PrivilegedResult { case done, changed }
 
-    private func runPrivileged(_ shell: String) throws {
+    private func runPrivileged(_ shell: String) throws -> PrivilegedResult {
         let result = try runner.run(Self.osascript, ["-e", Self.appleScript(shell: shell)])
-        guard result.status != 0 else { return }
+        guard result.status != 0 else {
+            return result.output.contains(Self.changedMarker) ? .changed : .done
+        }
         let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         if output.contains("User canceled") || output.contains("(-128)") { throw ResolverError.cancelled }
         throw ResolverError.failed(output)
@@ -111,11 +110,43 @@ public struct Resolver: Sendable {
         text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    static func installShellScript(staged: URL, target: URL) -> String {
-        let directory = shellQuote(target.deletingLastPathComponent().path)
-        let destination = shellQuote(target.path)
-        return "mkdir -p \(directory) && cp \(shellQuote(staged.path)) \(destination) && chmod 644 \(destination)"
+    enum Action {
+        case write(String)
+        case remove
     }
+
+    /// Printed (with exit 0) by the privileged script when the destination no longer matches.
+    static let changedMarker = "PADDOCK_CHANGED"
+
+    /// A root shell script that acts only if `destination` still is what Paddock saw before the
+    /// prompt: absent (`expected == nil`) or a regular file with exactly `expected`. Contents travel
+    /// base64-encoded inside the script, so there is no staged file to swap, and writes go to a
+    /// root-made temp file in the same directory, then `mv` into place with mode 644 (atomic).
+    static func guardedScript(destination: URL, expected: String?, action: Action) -> String {
+        let dest = shellQuote(destination.path)
+        let dir = shellQuote(destination.deletingLastPathComponent().path)
+        let unchanged: String
+        if let expected {
+            unchanged = "[ -f \"$D\" ] && [ ! -L \"$D\" ] && printf %s \(shellQuote(base64(expected))) "
+                + "| /usr/bin/base64 -D | /usr/bin/cmp -s - \"$D\""
+        } else {
+            unchanged = "[ ! -e \"$D\" ] && [ ! -L \"$D\" ]"
+        }
+        let act: String
+        switch action {
+        case .remove:
+            act = "/bin/rm -f \"$D\""
+        case .write(let text):
+            act = "T=$(/usr/bin/mktemp \"$DIR/.paddock.XXXXXX\") || exit 1; "
+                + "if printf %s \(shellQuote(base64(text))) | /usr/bin/base64 -D > \"$T\" "
+                + "&& /bin/chmod 644 \"$T\" && /bin/mv -f \"$T\" \"$D\"; then exit 0; "
+                + "else /bin/rm -f \"$T\"; exit 1; fi"
+        }
+        return "D=\(dest); DIR=\(dir); /bin/mkdir -p \"$DIR\" || exit 1; "
+            + "if \(unchanged); then \(act); else echo \(changedMarker); fi"
+    }
+
+    private static func base64(_ text: String) -> String { Data(text.utf8).base64EncodedString() }
 
     static func appleScript(shell: String) -> String {
         "do shell script \"\(appleScriptEscape(shell))\" with prompt \"\(appleScriptEscape(prompt))\" with administrator privileges"

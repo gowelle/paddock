@@ -28,16 +28,23 @@ public struct SystemLifecycle: Sendable {
     let settings: Settings
     let environment: [String: String]
     let userHome: URL
+    let daemonIsRunning: @Sendable () -> Bool
 
+    /// With system integration on, the LaunchAgent starts a daemon with default settings, so the
+    /// resolver is built from default `Settings()` and port environment variables are ignored.
     public init(services: SystemServices, paths: Paths, settings: Settings,
                 environment: [String: String] = ProcessInfo.processInfo.environment,
-                userHome: URL = FileManager.default.homeDirectoryForCurrentUser) {
+                userHome: URL = FileManager.default.homeDirectoryForCurrentUser,
+                daemonIsRunning: (@Sendable () -> Bool)? = nil) {
         self.services = services
         self.paths = paths
-        self.settings = settings
+        self.settings = SystemIntegration.isEnabled(environment: environment) ? Settings() : settings
+        self.daemonIsRunning = daemonIsRunning ?? { PaddockClient(paths: paths).daemonIsRunning }
         self.environment = environment
         self.userHome = userHome
     }
+
+    public var resolverPath: String { services.resolverFile.path }
 
     public var isEnabled: Bool { SystemIntegration.isEnabled(environment: environment) }
 
@@ -58,7 +65,12 @@ public struct SystemLifecycle: Sendable {
         guard isEnabled else { return false }
         if !resolver.isInstalled() { try resolver.install() }
         let agent = agent
-        if !(agent.isCurrent(daemon: daemon) && agent.isLoaded()) { try agent.install(daemon: daemon) }
+        if agent.isCurrent(daemon: daemon) && agent.isLoaded() {
+            // launchd doesn't restart a daemon that exited cleanly (KeepAlive SuccessfulExit false).
+            if !daemonIsRunning() { try agent.kickstart() }
+        } else {
+            try agent.install(daemon: daemon)
+        }
         return true
     }
 
@@ -74,12 +86,12 @@ public struct SystemLifecycle: Sendable {
     public func uninstall() throws -> [String] {
         guard isEnabled else { return ["Nothing to uninstall for this Paddock home."] }
         var lines: [String] = []
-        try agent.uninstall()
-
-        let resolver = resolver
+        // Resolver first: if the password prompt is cancelled we stop here with the agent still
+        // running, so `.test` keeps resolving.
         if try resolver.restore() == .changedByAnotherProgram {
             lines.append("\(services.resolverFile.path) was changed by another program, so Paddock left it alone.")
         }
+        try agent.uninstall()
 
         let trust = CertificateTrust(paths: paths, runner: services.runner)
         if trust.isTrusted() { try trust.untrust() }

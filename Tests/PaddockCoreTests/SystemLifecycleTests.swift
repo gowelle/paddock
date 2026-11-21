@@ -27,12 +27,13 @@ final class SystemLifecycleTests: XCTestCase {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    private func lifecycle(_ runner: CommandRunner, enabled: Bool = true) -> SystemLifecycle {
+    private func lifecycle(_ runner: CommandRunner, enabled: Bool = true, settings: Settings = Settings(),
+                           environment: [String: String]? = nil, daemonRunning: Bool = true) -> SystemLifecycle {
         SystemLifecycle(
             services: SystemServices(runner: runner, resolverFile: resolverFile, launchAgents: agents),
-            paths: paths, settings: Settings(),
-            environment: enabled ? [:] : ["PADDOCK_HOME": paths.home.path],
-            userHome: dir)
+            paths: paths, settings: settings,
+            environment: environment ?? (enabled ? [:] : ["PADDOCK_HOME": paths.home.path]),
+            userHome: dir, daemonIsRunning: { daemonRunning })
     }
 
     private func writeResolver(_ text: String) throws {
@@ -82,6 +83,24 @@ final class SystemLifecycleTests: XCTestCase {
         let fake = runner(loaded: true)
         _ = try lifecycle(fake).startViaSystem(daemon: daemon)
         XCTAssertEqual(fake.calls.map(\.arguments), [["print", target]])
+    }
+
+    func testLoadedAgentWhoseDaemonExitedIsKickstarted() throws {
+        try writeResolver(desired)
+        _ = try lifecycle(runner()).startViaSystem(daemon: daemon)
+        let fake = runner(loaded: true)
+        _ = try lifecycle(fake, daemonRunning: false).startViaSystem(daemon: daemon)
+        XCTAssertEqual(fake.calls.map(\.arguments), [["print", target], ["kickstart", target]])
+        XCTAssertEqual(fake.calls.last?.executable, "/bin/launchctl")
+    }
+
+    func testResolverIgnoresPortEnvironmentWhenIntegrationIsEnabled() throws {
+        var odd = Settings()
+        odd.dnsPort = 9999
+        try writeResolver(desired) // Paddock's own file, for the default port
+        let fake = runner()
+        _ = try lifecycle(fake, settings: odd, environment: ["PADDOCK_DNS_PORT": "9999"]).startViaSystem(daemon: daemon)
+        XCTAssertFalse(fake.calls.contains { $0.executable == "/usr/bin/osascript" })
     }
 
     func testCancelledPasswordDoesNotStartTheAgent() throws {
@@ -139,7 +158,7 @@ final class SystemLifecycleTests: XCTestCase {
         let lines = try lifecycle(fake).uninstall()
 
         let steps = fake.calls.map { $0.executable == "/usr/bin/osascript" ? "osascript" : ($0.arguments.first ?? "") }
-        XCTAssertEqual(steps, ["print", "bootout", "osascript", "verify-cert", "remove-trusted-cert"])
+        XCTAssertEqual(steps, ["osascript", "print", "bootout", "verify-cert", "remove-trusted-cert"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: plist.path))
         XCTAssertNil(store.load().previousResolver)
         XCTAssertTrue(lines.contains { $0.contains(".zshrc") }, "\(lines)")
@@ -165,12 +184,24 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertTrue(lines.last?.hasPrefix("Paddock is uninstalled.") == true)
     }
 
-    func testUninstallCancelledPasswordThrows() throws {
+    func testUninstallCancelledPasswordLeavesTheAgentRunning() throws {
         try writeResolver(desired)
-        let fake = runner(osascriptStatus: 1, osascriptOutput: "User canceled.")
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        try "x".write(to: plist, atomically: true, encoding: .utf8)
+        let fake = runner(trusted: true, loaded: true, osascriptStatus: 1, osascriptOutput: "User canceled.")
         XCTAssertThrowsError(try lifecycle(fake).uninstall()) {
             XCTAssertEqual($0 as? ResolverError, .cancelled)
         }
-        XCTAssertFalse(fake.calls.contains { $0.arguments.first == "remove-trusted-cert" })
+        XCTAssertEqual(fake.calls.map(\.executable), ["/usr/bin/osascript"], "nothing else ran")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: plist.path))
+    }
+
+    func testUninstallFailedResolverRestoreLeavesTheAgentRunning() throws {
+        try writeResolver(desired)
+        let fake = runner(osascriptStatus: 1, osascriptOutput: "boom")
+        XCTAssertThrowsError(try lifecycle(fake).uninstall()) {
+            XCTAssertEqual($0 as? ResolverError, .failed("boom"))
+        }
+        XCTAssertEqual(fake.calls.map(\.executable), ["/usr/bin/osascript"])
     }
 }

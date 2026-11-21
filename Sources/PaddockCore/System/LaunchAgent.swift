@@ -77,6 +77,11 @@ public struct LaunchAgent: Sendable {
         try? FileManager.default.removeItem(at: plist)
     }
 
+    /// Starts the loaded job's daemon again (launchd leaves it idle after a clean exit).
+    public func kickstart() throws {
+        try launchctl(["kickstart", service])
+    }
+
     public func isLoaded() -> Bool {
         (try? runner.run(Self.launchctl, ["print", service]))?.status == 0
     }

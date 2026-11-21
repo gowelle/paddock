@@ -54,13 +54,16 @@ struct Uninstall: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Remove Paddock's resolver, login item and certificate trust. Keeps your sites and data.")
 
+    private static let stillInstalled = "Paddock is still installed. Run paddock uninstall to try again."
+
     func run() throws {
         do {
             for line in try CLI.lifecycle.uninstall() { print(line) }
         } catch ResolverError.cancelled {
-            throw CLI.failure("Paddock needs your password once to restore .test domains. Run paddock uninstall to try again.")
+            throw CLI.failure(Self.stillInstalled)
         } catch let error as ResolverError {
-            throw CLI.failure("Couldn't restore the resolver: \(error)")
+            CLI.printError("Couldn't restore the resolver: \(error)")
+            throw CLI.failure(Self.stillInstalled)
         } catch {
             throw CLI.failure("Couldn't uninstall Paddock: \(error)")
         }
@@ -156,6 +159,8 @@ enum DaemonLauncher {
             started = try CLI.lifecycle.startViaSystem(daemon: binary)
         } catch ResolverError.cancelled {
             throw CLI.failure("Paddock needs your password once to route .test domains. Run paddock start to try again.")
+        } catch ResolverError.changedDuringInstall {
+            throw CLI.failure("\(CLI.lifecycle.resolverPath) changed while Paddock was waiting for your password. Run paddock start to try again.")
         } catch ResolverError.failed(let message) {
             throw CLI.failure("Couldn't route .test domains to Paddock: \(message)")
         } catch {
