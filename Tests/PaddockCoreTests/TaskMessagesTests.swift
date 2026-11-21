@@ -59,13 +59,13 @@ final class TaskMessagesTests: XCTestCase {
             approval: .changed,
             tasks: [task("queue", .running(pid: 4)),
                     TaskStatus(name: "once", run: "php artisan migrate", state: .stopped(reason: .exited), restartOnChange: false,
-                               logPath: "/l", warning: Messages.taskKeepsExiting)],
+                               logPath: "/l", warning: Messages.taskKeepsFinishing(task: "once"))],
             pending: [], pendingHash: nil, notice: Messages.tasksChanged(site: "shop"))
         XCTAssertEqual(Messages.taskTable(status), """
         TASK   STATE                                  COMMAND
         queue  running (pid 4)                        x
         once   stopped: it keeps finishing by itself  php artisan migrate
-        once: \(Messages.taskKeepsExiting)
+        once: \(Messages.taskKeepsFinishing(task: "once"))
         \(Messages.tasksChanged(site: "shop"))
         """)
     }
@@ -87,9 +87,15 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.taskError(.changedSinceShown(site: "shop")),
                        "shop's paddock.json changed after it was shown, so Paddock approved nothing. "
                        + "Review it again with: paddock tasks on --show")
-        XCTAssertEqual(Messages.taskError(.notShowable(site: "shop", task: "queue")),
-                       #"The command of task "queue" contains characters that cannot be shown, so Paddock won't approve it. "#
-                       + "Make it plain text in paddock.json.")
+        XCTAssertEqual(Messages.taskError(.notShowable(site: "shop", task: "queue", position: 7, codePoint: 0x9)),
+                       #"The command of task "queue" has a character that cannot be shown, at position 7 (U+0009), "#
+                       + "so Paddock won't approve it. Make it plain text in paddock.json.")
+        XCTAssertEqual(Messages.taskError(.stillStopping(task: "queue")), "queue is still stopping.")
+        XCTAssertEqual(Messages.waitingForTask("queue"), "Waiting for queue to finish…")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", pids: [12, 34]),
+                       "Stopped 2 processes left from an earlier run of queue: 12, 34.")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", pids: []),
+                       "Found no processes left from an earlier run of queue.")
         XCTAssertEqual(Messages.taskError(.alreadyRunning(site: "shop", task: "queue", pid: 7)),
                        "queue is already running (pid 7), not started by this Paddock. Stop that process first.")
         XCTAssertEqual(Messages.taskError(.notLaravel(site: "shop")),
@@ -114,9 +120,9 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.taskCutShort(after: 60, allowed: 300),
                        "Paddock was shutting down, so it stopped this task after 60 seconds instead of waiting the 300 "
                        + "its stopSeconds allow.")
-        XCTAssertEqual(Messages.taskKeepsExiting,
-                       "It finished by itself 3 times within 10 seconds, so Paddock stopped restarting it. "
-                       + "A task should be a command that keeps running.")
-        XCTAssertTrue(Messages.tasksUseBasicEnvironment.hasSuffix("paddock tasks on"))
+        XCTAssertEqual(Messages.taskKeepsFinishing(task: "queue"),
+                       "queue keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running.")
+        XCTAssertEqual(Messages.taskState(.stopping), "stopping")
+        XCTAssertTrue(Messages.tasksUseBasicEnvironment(.timedOut).hasSuffix("paddock tasks on"))
     }
 }

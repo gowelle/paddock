@@ -98,10 +98,47 @@ final class TaskApprovalTests: XCTestCase {
 
     func testOnlyCommandsThatShowAsTheyRunCanBeApproved() {
         XCTAssertTrue(Messages.isShowable("php artisan queue:work redis --queue=default,scout --tries=3"))
-        XCTAssertTrue(Messages.isShowable("echo 'Café'  && bun run dev"), "letters beyond ASCII and double spaces show as they are")
-        for hidden in ["echo hi\u{1B}[2K", "a\tb", "rm -rf ~\u{202E}", "x\u{200B}y", "a\u{00A0}b", "a\u{7F}b", "a\u{E000}b"] {
-            XCTAssertFalse(Messages.isShowable(hidden), hidden.debugDescription)
+        XCTAssertTrue(Messages.isShowable("echo 'Café'  && bun run dev"), "precomposed letters and double spaces are fine")
+        XCTAssertTrue(Messages.isShowable("a" + String(repeating: " ", count: 8) + "b"), "up to 8 spaces in a row")
+        let hidden: [(String, String)] = [
+            ("echo hi\u{1B}[2K", "an escape sequence"), ("a\tb", "a tab"), ("rm -rf ~\u{202E}", "a bidi override"),
+            ("x\u{200B}y", "a zero-width space"), ("a\u{00A0}b", "a no-break space"), ("a\u{2003}b", "an em space"),
+            ("a\u{7F}b", "DEL"), ("a\u{E000}b", "private use"),
+            ("a\u{3164}b", "Hangul filler"), ("a\u{115F}b", "Hangul choseong filler"), ("a\u{1160}b", "Hangul jungseong filler"),
+            ("a\u{FFA0}b", "halfwidth Hangul filler"), ("a\u{FE0F}b", "a variation selector"),
+            ("a\u{034F}b", "combining grapheme joiner"), ("a\u{17B4}b", "Khmer inherent vowel"),
+            ("a\u{2800}b", "braille blank"), ("e\u{0301}cho", "a combining accent"), ("a\u{20DD}b", "an enclosing mark"),
+            ("a" + String(repeating: " ", count: 9) + "b", "9 spaces in a row"), (" echo", "a leading space"),
+            ("echo ", "a trailing space"),
+        ]
+        for (command, what) in hidden {
+            XCTAssertFalse(Messages.isShowable(command), what)
         }
+    }
+
+    /// A refusal says where the problem is: the position (in Unicode scalars, from 1) and the code point.
+    func testTheRefusalNamesThePositionAndCodePoint() {
+        XCTAssertEqual(Messages.unshowableCharacter(in: "ab\u{3164}c")?.position, 3)
+        XCTAssertEqual(Messages.unshowableCharacter(in: "ab\u{3164}c")?.codePoint, 0x3164)
+        XCTAssertEqual(Messages.unshowableCharacter(in: "a" + String(repeating: " ", count: 9) + "b")?.position, 10,
+                       "the ninth space")
+        XCTAssertEqual(Messages.unshowableCharacter(in: "echo ")?.position, 5)
+        XCTAssertNil(Messages.unshowableCharacter(in: "echo hi"))
+        XCTAssertEqual(Messages.commandNotShowable(task: "queue", position: 3, codePoint: 0x3164),
+                       #"The command of task "queue" has a character that cannot be shown, at position 3 (U+3164), "#
+                       + "so Paddock won't approve it. Make it plain text in paddock.json.")
+    }
+
+    /// The 2000-character limit counts Unicode scalars, and the command is at most 8000 bytes.
+    func testTheLengthLimitCountsScalars() {
+        let accented = String(repeating: "e\u{0301}", count: 1000)
+        XCTAssertTrue(SiteTasksFile.isRunLine(accented), "2000 scalars")
+        XCTAssertFalse(SiteTasksFile.isRunLine(accented + "x"), "2001 scalars, though only 1001 characters")
+        XCTAssertTrue(SiteTasksFile.isRunLine(String(repeating: "😀", count: 2000)), "8000 bytes")
+        let pending = SiteTasksStatus.pendingLines(SiteTasksFile(tasks: ["q": TaskDefinition(
+            run: String(repeating: "a", count: 2000), restartOnChange: nil, autostart: nil, stopSeconds: nil)], proxy: [:]))
+        XCTAssertEqual(pending.first?.runLength, 2000)
+        XCTAssertEqual(pending.first?.run?.count, 2000, "shown whole")
     }
 
     // MARK: - state.json
@@ -180,5 +217,6 @@ final class TaskApprovalTests: XCTestCase {
 
     func testTheBuildNumberMovesOn() {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 9, "site tasks are in the status: the build number moves on")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 12, "tasksStatus, forced restarts and new task states: it moves on")
     }
 }

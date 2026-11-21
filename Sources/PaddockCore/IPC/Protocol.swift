@@ -34,6 +34,11 @@ public enum Request: Codable, Equatable, Sendable {
     case taskStart(site: String, task: String), taskStop(site: String, task: String), taskRestart(site: String, task: String)
     /// Writes the starter `paddock.json` for a Laravel site that has none; never overwrites.
     case tasksInit(site: String)
+    /// Restarts the task after stopping only the processes an earlier run left in its group (answered with the
+    /// status; the task's warning says what was stopped).
+    case taskForceRestart(site: String, task: String)
+    /// The status, after reading the site's `paddock.json` again (nothing else changes).
+    case tasksStatus(site: String)
 }
 
 extension Request {
@@ -41,12 +46,25 @@ extension Request {
     /// home's daemon). Every case must be classified here: no `default`.
     public var isReadOnly: Bool {
         switch self {
-        case .status, .serviceCatalog:
+        case .status, .serviceCatalog, .tasksStatus:
             return true
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
              .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
              .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate,
-             .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit:
+             .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit,
+             .taskForceRestart:
+            return false
+        }
+    }
+}
+
+extension Request {
+    /// The site task requests that change something; they run outside the queue of other changes.
+    var isSiteTaskChange: Bool {
+        switch self {
+        case .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit, .taskForceRestart:
+            return true
+        default:
             return false
         }
     }

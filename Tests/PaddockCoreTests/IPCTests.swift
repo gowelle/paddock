@@ -49,6 +49,7 @@ final class IPCTests: XCTestCase {
             .serviceCreateDatabase(name: "postgres-18", database: "shop"),
             .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
             .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
+            .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -71,7 +72,8 @@ final class IPCTests: XCTestCase {
          .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog,
          .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop"),
          .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
-         .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop")]
+         .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
+         .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop")]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -107,11 +109,13 @@ final class IPCTests: XCTestCase {
         case .taskStop: return "taskStop"
         case .taskRestart: return "taskRestart"
         case .tasksInit: return "tasksInit"
+        case .taskForceRestart: return "taskForceRestart"
+        case .tasksStatus: return "tasksStatus"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 31, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 33, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }
@@ -129,9 +133,9 @@ final class IPCTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(seen.value.map(caseName), ["status", "serviceCatalog"],
+        XCTAssertEqual(seen.value.map(caseName), ["status", "serviceCatalog", "tasksStatus"],
                        "exactly the read-only requests were sent")
-        XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status", "serviceCatalog"],
+        XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status", "serviceCatalog", "tasksStatus"],
                        "listing the catalog only reads; every other service request, and every site task request, "
                            + "changes something")
 

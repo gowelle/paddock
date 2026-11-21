@@ -33,6 +33,8 @@ final class TaskCLITests: XCTestCase {
         let client = PaddockClient(paths: home.paths)
         if client.daemonIsRunning { _ = try? client.send(.shutdown, timeout: 60) }
         if let daemon, !waitFor(60, { !daemon.isRunning }) { kill(daemon.processIdentifier, SIGKILL) }
+        // A daemon that had to be killed leaves its tasks and web stack: only this home's are signalled.
+        for pid in home.leftoverProcesses() where home.owns(pid) { kill(pid, SIGKILL) }
         home?.cleanUp()
     }
 
@@ -137,6 +139,28 @@ final class TaskCLITests: XCTestCase {
         let last2 = try XCTUnwrap(pid(in: try run(["tasks"], in: shop).out))
         guard case .ok = try PaddockClient(paths: home.paths).send(.shutdown, timeout: 60) else { return XCTFail() }
         XCTAssertTrue(waitFor(30) { kill(last2, 0) != 0 }, "nothing is left running")
+    }
+
+    /// A stop that takes a while says what it is waiting for, and returns once the task has stopped.
+    func testAStopThatTakesAWhileSaysSo() throws {
+        try home.writeTasks("shop", #"{"tasks": {"slow": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 5}}}"#)
+        try launchDaemon()
+        XCTAssertEqual(try run(["tasks", "on"], in: shop).status, 0)
+        Thread.sleep(forTimeInterval: 0.5)
+        let stopped = try run(["tasks", "stop", "slow"], in: shop)
+        XCTAssertEqual(stopped.status, 0, stopped.err)
+        XCTAssertEqual(stopped.out, "Waiting for slow to finish…\nslow stopped.\n")
+    }
+
+    /// Commands are printed whole, however long (up to the 2000 characters a command may have).
+    func testALongCommandIsShownWhole() throws {
+        let command = "echo " + String(repeating: "x", count: 1979) + "; exec sleep 600"
+        XCTAssertEqual(command.unicodeScalars.count, 2000)
+        try home.writeTasks("shop", #"{"tasks": {"long": {"run": "\#(command)"}}}"#)
+        try launchDaemon()
+        let shown = try run(["tasks", "on", "--show"], in: shop)
+        XCTAssertEqual(shown.status, 0, shown.err)
+        XCTAssertTrue(shown.out.contains("  long: \(command)\n"), "not cut short")
     }
 
     func testFollowingALog() throws {

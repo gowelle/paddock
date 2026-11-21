@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 11
+    public static let number = 12
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -225,7 +225,7 @@ public final class Engine: @unchecked Sendable {
                 let php = state.defaultPHP ?? installer.installed().max() ?? PHPVersion(major: 8, minor: 1)
                 return SiteRegistry(state: state, defaultPHP: php, settings: settings).sites()
             },
-            shutdownGrace: taskShutdownGrace, log: log)
+            shutdownGrace: taskShutdownGrace, timeScale: backoffScale, log: log)
     }
 
     deinit { shutdown() }

@@ -29,10 +29,28 @@ struct SiteOption: ParsableArguments {
 }
 
 extension CLI {
-    /// The site a tasks command acts on, and the status it was found in.
+    /// The site a tasks command acts on, and the status after reading its `paddock.json` again.
     static func taskSite(_ option: SiteOption) throws -> (Site, EngineStatus) {
-        let status = try send(.status, timeout: 30)
-        return (try option.site(in: status), status)
+        let site = try option.site(in: try send(.status, timeout: 30))
+        return try freshTasks(of: site.name)
+    }
+
+    /// The site and the status after the daemon read the site's `paddock.json` again (a read-only request).
+    static func freshTasks(of name: String) throws -> (Site, EngineStatus) {
+        let status = try send(.tasksStatus(site: name), timeout: 30)
+        guard let site = status.sites.first(where: { $0.name == name }) else {
+            throw failure(Messages.taskError(.unknownSite(name)))
+        }
+        return (site, status)
+    }
+
+    /// Runs `work`; if it takes more than three seconds, says it is waiting for the task to finish.
+    @discardableResult
+    static func whileWaiting<T>(for task: String, _ work: () throws -> T) rethrows -> T {
+        let notice = SlowNotice()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { notice.show(Messages.waitingForTask(task)) }
+        defer { notice.finish() }
+        return try work()
     }
 
     /// The task as the user typed it, if the site has it (as running or approved) or has a log for it.
@@ -66,13 +84,13 @@ struct TasksList: ParsableCommand {
             let registry = SiteRegistry(state: StateStore(paths: CLI.paths).load(),
                                         defaultPHP: status.defaultPHP ?? PHPVersion(major: 8, minor: 5))
             guard let here = registry.site(containing: CLI.currentDirectory),
-                  let served = status.sites.first(where: { $0.name == here.name }) else {
+                  status.sites.contains(where: { $0.name == here.name }) else {
                 let lines = Messages.siteTasksLines(status.sites)
                 return print(lines.isEmpty ? Messages.noSiteHasTasks : lines.joined(separator: "\n"))
             }
-            target = served
+            target = try CLI.freshTasks(of: here.name).0
         } else {
-            target = try site.site(in: status)
+            target = try CLI.freshTasks(of: try site.site(in: status).name).0
         }
         guard let tasks = target.tasks, tasks.approval != .none else {
             return print(Messages.taskError(.noTasksFile(site: target.name)))
@@ -135,8 +153,10 @@ struct TasksOn: ParsableCommand {
         // Exactly what will run, each command as written (a command that can't be shown that way is refused).
         print(show ? "\(path) would run:" : "Approving what \(path) runs:")
         for line in Messages.approvalLines(SiteTasksStatus.pendingLines(file)) { print("  " + line) }
-        if let hidden = file.tasks.keys.sorted().first(where: { !Messages.isShowable(file.tasks[$0]!.run) }) {
-            throw CLI.failure(Messages.commandNotShowable(task: hidden))
+        for task in file.tasks.keys.sorted() {
+            if let (position, codePoint) = Messages.unshowableCharacter(in: file.tasks[task]!.run) {
+                throw CLI.failure(Messages.commandNotShowable(task: task, position: position, codePoint: codePoint))
+            }
         }
         guard !show else { return print("Approve it with: paddock tasks on") }
         let status = try CLI.send(.tasksApprove(site: target.name, hash: hash))
@@ -155,7 +175,7 @@ struct TasksOff: ParsableCommand {
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
         let (target, _) = try CLI.taskSite(site)
-        try CLI.send(.tasksRevoke(site: target.name))
+        try CLI.whileWaiting(for: "\(target.name)'s tasks") { try CLI.send(.tasksRevoke(site: target.name)) }
         print("Stopped \(target.name)'s tasks and withdrew their approval.")
     }
 }
@@ -182,7 +202,7 @@ struct TaskStop: ParsableCommand {
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
         let (target, _) = try CLI.taskSite(site)
-        try CLI.send(.taskStop(site: target.name, task: task))
+        try CLI.whileWaiting(for: task) { try CLI.send(.taskStop(site: target.name, task: task)) }
         print("\(task) stopped.")
     }
 }
@@ -190,12 +210,21 @@ struct TaskStop: ParsableCommand {
 struct TaskRestart: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "restart", abstract: "Restart a task.")
     @Argument(help: "The task's name, such as queue.") var task: String
+    @Flag(name: .customLong("force"),
+          help: "Also stop processes an earlier run left behind (only that task's, in the site's folder).")
+    var force = false
     @OptionGroup var site: SiteOption
 
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
         let (target, _) = try CLI.taskSite(site)
-        let status = try CLI.send(.taskRestart(site: target.name, task: task))
+        let status = try CLI.whileWaiting(for: task) {
+            try CLI.send(force ? .taskForceRestart(site: target.name, task: task) : .taskRestart(site: target.name, task: task))
+        }
+        if force, let report = status.sites.first(where: { $0.name == target.name })?.tasks?.tasks
+            .first(where: { $0.name == task })?.warning {
+            print(report)
+        }
         print(CLI.taskLine(task, site: target.name, in: status))
     }
 }

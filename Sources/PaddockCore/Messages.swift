@@ -443,22 +443,41 @@ public enum Messages {
 
     // MARK: - Site tasks
 
-    /// Whether a command shows exactly as it runs: no control, format (bidirectional overrides among them),
-    /// separator, private-use, surrogate or unassigned characters, no escape sequences, and no whitespace but
-    /// the plain space. A command that doesn't can't be approved: the user would approve text they can't see.
-    public static func isShowable(_ command: String) -> Bool {
-        command.unicodeScalars.allSatisfy { scalar in
-            if scalar == " " { return true }
-            if scalar.properties.isWhitespace { return false }
-            switch scalar.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator, .spaceSeparator, .privateUse, .surrogate,
-                 .unassigned:
-                return false
+    /// The first character of a command that wouldn't show exactly as it runs, by position (in Unicode scalars,
+    /// from 1) and code point; nil when the command is plain text. Refused: control, format (bidirectional
+    /// overrides among them), surrogate, private-use and unassigned characters, line and paragraph separators,
+    /// combining marks (which can lay one character over another), default-ignorable code points (Hangul fillers,
+    /// variation selectors…), the braille blank, any whitespace but the ASCII space, a leading or trailing space,
+    /// and more than 8 spaces in a row.
+    public static func unshowableCharacter(in command: String) -> (position: Int, codePoint: UInt32)? {
+        var spaces = 0
+        let scalars = Array(command.unicodeScalars)
+        for (index, scalar) in scalars.enumerated() {
+            let position = index + 1
+            if scalar == " " {
+                spaces += 1
+                if index == 0 || index == scalars.count - 1 || spaces > 8 { return (position, scalar.value) }
+                continue
+            }
+            spaces = 0
+            let properties = scalar.properties
+            if properties.isWhitespace || properties.isDefaultIgnorableCodePoint || scalar.value == 0x2800 {
+                return (position, scalar.value)
+            }
+            switch properties.generalCategory {
+            case .nonspacingMark, .enclosingMark, .format, .control, .surrogate, .privateUse, .unassigned,
+                 .lineSeparator, .paragraphSeparator, .spaceSeparator:
+                return (position, scalar.value)
             default:
-                return true
+                continue
             }
         }
+        return nil
     }
+
+    /// Whether a command shows exactly as it runs (`unshowableCharacter` finds nothing). A command that doesn't
+    /// can't be approved: the user would approve text they can't see.
+    public static func isShowable(_ command: String) -> Bool { unshowableCharacter(in: command) == nil }
 
     /// A task's command as Paddock shows it: exactly as written when it `isShowable`, else what `displayName`
     /// leaves of it.
@@ -488,18 +507,38 @@ public enum Messages {
         "\(site): paddock.json can't be used: \(reason)."
     }
 
-    public static func commandNotShowable(task: String) -> String {
-        "The command of task \"\(task)\" contains characters that cannot be shown, so Paddock won't approve it. "
-            + "Make it plain text in paddock.json."
+    public static func commandNotShowable(task: String, position: Int, codePoint: UInt32) -> String {
+        "The command of task \"\(task)\" has a character that cannot be shown, at position \(position) "
+            + "(U+\(String(format: "%04X", codePoint))), so Paddock won't approve it. Make it plain text in paddock.json."
     }
 
-    public static let tasksUseBasicEnvironment = "Paddock couldn't read your shell's environment, so tasks run with a "
-        + "basic PATH. Check your shell's startup files, then run: paddock tasks on"
+    /// The notice of a site whose tasks run with the basic environment, and why.
+    public static func tasksUseBasicEnvironment(_ reason: ShellEnvironment.FallbackReason) -> String {
+        let why: String
+        switch reason {
+        case .timedOut: why = "your shell took longer than \(Int(ShellEnvironment.timeout)) seconds to start"
+        case .shellFailed: why = "your shell exited with an error"
+        case .tooLarge: why = "its environment is larger than \(ShellEnvironment.maximumEnvironmentBytes / 1024) KB"
+        case .markerMissing: why = "your shell didn't print its environment"
+        }
+        return "Paddock couldn't read your shell's environment (\(why)), so tasks run with a basic PATH. "
+            + "Check your shell's startup files, then run: paddock tasks on"
+    }
 
     /// A task that kept finishing by itself.
-    public static let taskKeepsExiting = "It finished by itself \(SiteTaskManager.exitedLimit) times within "
-        + "\(Int(SiteTaskManager.exitedWindow)) seconds, so Paddock stopped restarting it. A task should be a command "
-        + "that keeps running."
+    public static func taskKeepsFinishing(task: String) -> String {
+        "\(task) keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running."
+    }
+
+    /// `paddock tasks stop` (or `off`) after a few seconds.
+    public static func waitingForTask(_ task: String) -> String { "Waiting for \(task) to finish…" }
+
+    /// What `paddock tasks restart --force` stopped.
+    public static func leftoversStopped(task: String, pids: [Int32]) -> String {
+        pids.isEmpty ? "Found no processes left from an earlier run of \(task)."
+            : "Stopped \(pids.count) process\(pids.count == 1 ? "" : "es") left from an earlier run of \(task): "
+                + pids.map(String.init).joined(separator: ", ") + "."
+    }
 
     public static func taskRestarting(status: Int32) -> String {
         "exited with status \(status); Paddock restarts it in a moment"
@@ -532,9 +571,11 @@ public enum Messages {
             case .notAutostart?: return "stopped (doesn't start with Paddock)"
             case .unknown?, nil: return "stopped"
             }
+        case .stopping: return "stopping"
         case .crashed(let reason): return "crashed: \(reason)"
         case .waitingForApproval: return "waiting for your approval"
         case .alreadyRunning(let pid): return "already running (pid \(pid)), not started by this Paddock"
+        case .leftFromEarlierRun: return "already running (processes left from an earlier run), not started by this Paddock"
         }
     }
 
@@ -600,8 +641,13 @@ public enum Messages {
             return "\(site)'s tasks aren't approved yet. Review and approve them with: paddock tasks on"
         case .unknownTask(let site, let task):
             return "\(site) has no task named \"\(printable(task) ?? "?")\". See: paddock tasks"
-        case .notShowable(_, let task):
-            return commandNotShowable(task: task)
+        case .notShowable(_, let task, let position, let codePoint):
+            return commandNotShowable(task: task, position: position, codePoint: codePoint)
+        case .stillStopping(let task):
+            return "\(task) is still stopping."
+        case .leftoverProcesses(_, let task):
+            return "\(task) is already running (processes left from an earlier run), not started by this Paddock. "
+                + "Stop them with: paddock tasks restart \(task) --force"
         case .changedSinceShown(let site):
             return "\(site)'s paddock.json changed after it was shown, so Paddock approved nothing. "
                 + "Review it again with: paddock tasks on --show"

@@ -27,6 +27,10 @@ extension Engine {
                 try await ServiceManager.offPool { try tasks.stop(site: site, task: task) }
             case .taskRestart(let site, let task):
                 try await ServiceManager.offPool { try tasks.restart(site: site, task: task) }
+            case .taskForceRestart(let site, let task):
+                try await ServiceManager.offPool { try tasks.restart(site: site, task: task, force: true) }
+            case .tasksStatus(let site):
+                try await ServiceManager.offPool { tasks.reloadFile(site: site) }
             case .tasksInit(let site):
                 try await ServiceManager.offPool { _ = try tasks.writeStarter(site: site) }
             default:
@@ -49,7 +53,8 @@ extension Engine {
         case .notApproved: code = ErrorCode.tasksNotApproved
         case .unknownTask: code = ErrorCode.unknownTask
         case .changedSinceShown: code = ErrorCode.tasksChanged
-        case .alreadyRunning: code = ErrorCode.taskAlreadyRunning
+        case .alreadyRunning, .leftoverProcesses: code = ErrorCode.taskAlreadyRunning
+        case .stillStopping: code = ErrorCode.internal
         case .fileExists: code = ErrorCode.tasksFileExists
         case .notLaravel: code = ErrorCode.invalidArgument
         case .couldNotStart, .couldNotWrite, .shuttingDown: code = ErrorCode.internal

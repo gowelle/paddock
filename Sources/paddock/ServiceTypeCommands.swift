@@ -247,7 +247,7 @@ struct ServiceOpen: ParsableCommand {
 }
 
 /// A line printed only while the work it describes is still going (never after it finished).
-private final class SlowNotice: @unchecked Sendable {
+final class SlowNotice: @unchecked Sendable {
     private let lock = NSLock()
     private var finished = false
 

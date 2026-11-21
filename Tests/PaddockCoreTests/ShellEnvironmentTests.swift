@@ -46,8 +46,8 @@ final class ShellEnvironmentTests: XCTestCase {
                                                 timeout: 5) { shell, arguments, environment, directory, timeout in
             seen.withValue { $0 = [shell] + arguments + [directory.path, "\(timeout)", environment["PADDOCK_HOME"] ?? "none"] }
             let marker = arguments.last!.components(separatedBy: "'")[3]
-            return "noise\n\n\(marker)\nPATH=/opt/tools/bin:/usr/bin\0SHLVL=2\0PWD=/Users/me\0OLDPWD=/\0_=/usr/bin/env\0"
-                + "PADDOCK_HOME=/leak\0SECRET=s3cret\0"
+            return .output("noise\n\n\(marker)\nPATH=/opt/tools/bin:/usr/bin\0SHLVL=2\0PWD=/Users/me\0OLDPWD=/\0_=/usr/bin/env\0"
+                + "PADDOCK_HOME=/leak\0SECRET=s3cret\0")
         }
         XCTAssertFalse(captured.usedFallback)
         XCTAssertEqual(captured.variables, ["PATH": "/opt/tools/bin:/usr/bin", "SECRET": "s3cret"],
@@ -62,9 +62,13 @@ final class ShellEnvironmentTests: XCTestCase {
     func testAShellThatFailsGivesTheFallback() {
         let environment = ["HOME": "/Users/me", "USER": "me", "LOGNAME": "me", "SHELL": "/bin/zsh", "TMPDIR": "/tmp/me/",
                            "SECRET": "x"]
-        for output in [nil, "garbage without a marker"] as [String?] {
-            let captured = ShellEnvironment.capture(shell: "/bin/zsh", environment: environment, timeout: 5) { _, _, _, _, _ in output }
+        let outcomes: [(ShellEnvironment.RunOutcome, ShellEnvironment.FallbackReason)] = [
+            (.failed, .shellFailed), (.timedOut, .timedOut), (.output("garbage without a marker"), .markerMissing),
+        ]
+        for (outcome, reason) in outcomes {
+            let captured = ShellEnvironment.capture(shell: "/bin/zsh", environment: environment, timeout: 5) { _, _, _, _, _ in outcome }
             XCTAssertTrue(captured.usedFallback)
+            XCTAssertEqual(captured.fallbackReason, reason)
             XCTAssertEqual(captured.variables, [
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:/Users/me/.bun/bin",
                 "HOME": "/Users/me", "USER": "me", "LOGNAME": "me", "SHELL": "/bin/zsh", "TMPDIR": "/tmp/me/",
@@ -72,6 +76,34 @@ final class ShellEnvironmentTests: XCTestCase {
             ])
             XCTAssertTrue(captured.description.contains("fallback"), captured.description)
         }
+    }
+
+    /// Only what follows the marker counts toward the size cap: startup-file noise before it never does.
+    func testTheSizeCapCountsOnlyTheEnvironment() {
+        let noise = String(repeating: "n", count: 600_000) + "\n"
+        let big = "BIG=" + String(repeating: "v", count: ShellEnvironment.maximumEnvironmentBytes) + "\0"
+        let noisy = ShellEnvironment.capture(shell: "/bin/zsh", environment: [:], timeout: 5) { _, arguments, _, _, _ in
+            let marker = arguments.last!.components(separatedBy: "'")[3]
+            return .output(noise + "\n\(marker)\nA=1\0")
+        }
+        XCTAssertFalse(noisy.usedFallback, "600 KB of noise before the marker is fine")
+        XCTAssertEqual(noisy.variables["A"], "1")
+        let huge = ShellEnvironment.capture(shell: "/bin/zsh", environment: [:], timeout: 5) { _, arguments, _, _, _ in
+            let marker = arguments.last!.components(separatedBy: "'")[3]
+            return .output("\n\(marker)\n" + big)
+        }
+        XCTAssertTrue(huge.usedFallback)
+        XCTAssertEqual(huge.fallbackReason, .tooLarge)
+        XCTAssertEqual(ShellEnvironment.maximumEnvironmentBytes, 256 * 1024)
+    }
+
+    func testTheFallbackNoticeSaysWhy() {
+        XCTAssertEqual(Messages.tasksUseBasicEnvironment(.timedOut),
+                       "Paddock couldn't read your shell's environment (your shell took longer than 5 seconds to start), "
+                       + "so tasks run with a basic PATH. Check your shell's startup files, then run: paddock tasks on")
+        XCTAssertTrue(Messages.tasksUseBasicEnvironment(.shellFailed).contains("(your shell exited with an error)"))
+        XCTAssertTrue(Messages.tasksUseBasicEnvironment(.tooLarge).contains("(its environment is larger than 256 KB)"))
+        XCTAssertTrue(Messages.tasksUseBasicEnvironment(.markerMissing).contains("(your shell didn't print its environment)"))
     }
 
     func testTheUsersShell() {
@@ -87,7 +119,7 @@ final class ShellEnvironmentTests: XCTestCase {
 
     func testTasksGetPaddocksBinFirstAndTheHomeOnlyForADevelopmentHome() {
         let captured = ShellEnvironment(variables: ["PATH": "/opt/tools/bin:/usr/bin", "LANG": "en_GB.UTF-8"],
-                                        usedFallback: false, shell: "/bin/zsh")
+                                        shell: "/bin/zsh")
         let development = Paths(home: URL(fileURLWithPath: "/tmp/pdk-x/home"))
         let env = captured.forTasks(paths: development)
         XCTAssertEqual(env["PATH"], "/tmp/pdk-x/home/bin:/opt/tools/bin:/usr/bin")
@@ -96,7 +128,7 @@ final class ShellEnvironmentTests: XCTestCase {
         let real = captured.forTasks(paths: .system)
         XCTAssertNil(real["PADDOCK_HOME"])
         XCTAssertEqual(real["PATH"], Paths.system.bin.path + ":/opt/tools/bin:/usr/bin")
-        let noPath = ShellEnvironment(variables: [:], usedFallback: false, shell: "/bin/zsh").forTasks(paths: development)
+        let noPath = ShellEnvironment(variables: [:], shell: "/bin/zsh").forTasks(paths: development)
         XCTAssertEqual(noPath["PATH"], "/tmp/pdk-x/home/bin")
     }
 
@@ -136,6 +168,7 @@ final class ShellEnvironmentTests: XCTestCase {
         let cut = ShellEnvironment.capture(shell: "/bin/zsh", environment: base, timeout: 1)
         XCTAssertLessThan(Date().timeIntervalSince(started), 10, "never waits for a hanging startup file")
         XCTAssertTrue(cut.usedFallback)
+        XCTAssertEqual(cut.fallbackReason, .timedOut)
         XCTAssertEqual(cut.variables["HOME"], hanging.path)
     }
 }

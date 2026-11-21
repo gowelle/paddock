@@ -154,6 +154,11 @@ public enum TaskState: Codable, Equatable, Sendable {
     /// A process an earlier Paddock left running that Paddock can't prove is its own: left alone, and no
     /// second copy is started.
     case alreadyRunning(pid: Int32)
+    /// Its stop was asked for and it is being given its grace.
+    case stopping
+    /// Processes an earlier run left in the task's group (its first process gone) still run: left alone, and no
+    /// second copy is started (`paddock tasks restart <task> --force` stops them).
+    case leftFromEarlierRun
 
     private enum Wire: Codable {
         case running(pid: Int32)
@@ -162,6 +167,8 @@ public enum TaskState: Codable, Equatable, Sendable {
         case crashed(reason: String)
         case waitingForApproval
         case alreadyRunning(pid: Int32)
+        case stopping
+        case leftFromEarlierRun
     }
 
     /// A state this build doesn't know reads as crashed with an "unknown state" reason.
@@ -173,6 +180,8 @@ public enum TaskState: Codable, Equatable, Sendable {
         case .crashed(let reason)?: self = .crashed(reason: reason)
         case .waitingForApproval?: self = .waitingForApproval
         case .alreadyRunning(let pid)?: self = .alreadyRunning(pid: pid)
+        case .stopping?: self = .stopping
+        case .leftFromEarlierRun?: self = .leftFromEarlierRun
         case nil: self = .crashed(reason: "unknown state")
         }
     }
@@ -186,6 +195,8 @@ public enum TaskState: Codable, Equatable, Sendable {
         case .crashed(let reason): wire = .crashed(reason: reason)
         case .waitingForApproval: wire = .waitingForApproval
         case .alreadyRunning(let pid): wire = .alreadyRunning(pid: pid)
+        case .stopping: wire = .stopping
+        case .leftFromEarlierRun: wire = .leftFromEarlierRun
         }
         try wire.encode(to: encoder)
     }
@@ -219,11 +230,16 @@ public struct PendingTask: Codable, Equatable, Sendable {
     public let run: String?
     /// For a proxy line, the port on this Mac the path is forwarded to.
     public let port: Int?
+    /// The command's length in Unicode scalars (as the 2000 limit counts), so a view can always show the whole
+    /// command or say how long it is.
+    public let runLength: Int?
 
-    public init(name: String, run: String?, port: Int?) {
+    /// `runLength` defaults to the length of `run`.
+    public init(name: String, run: String?, port: Int?, runLength: Int? = nil) {
         self.name = name
         self.run = run
         self.port = port
+        self.runLength = runLength ?? run?.unicodeScalars.count
     }
 }
 
@@ -262,7 +278,10 @@ public struct SiteTasksStatus: Codable, Equatable, Sendable {
     /// The pending lines for a file: its tasks by name, then its proxy paths, each shown as `Messages` shows
     /// text from a file.
     public static func pendingLines(_ file: SiteTasksFile) -> [PendingTask] {
-        file.tasks.keys.sorted().map { PendingTask(name: $0, run: Messages.shownCommand(file.tasks[$0]!.run), port: nil) }
+        file.tasks.keys.sorted().map { name in
+            let run = file.tasks[name]!.run
+            return PendingTask(name: name, run: Messages.shownCommand(run), port: nil, runLength: run.unicodeScalars.count)
+        }
             + file.proxy.keys.sorted().map { PendingTask(name: $0, run: nil, port: file.proxy[$0]) }
     }
 }

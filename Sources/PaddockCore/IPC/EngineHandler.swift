@@ -47,6 +47,17 @@ extension Engine {
     /// arriving later) can start the web stack again just before the daemon exits.
     public func handle(_ request: Request) async -> Response {
         if case .status = request { return .ok(status()) }
+        if case .tasksStatus(let site) = request {
+            let tasks = self.tasks
+            await blocking { tasks.reloadFile(site: site) }
+            return .ok(status())
+        }
+        // Site task requests have their own lock and never wait for one another's stops under the request
+        // queue's: a task given five minutes to stop holds up nothing else.
+        if request.isSiteTaskChange {
+            if isShuttingDown { return shuttingDownError }
+            return await performTasks(request)
+        }
         if case .serviceCatalog = request { return .catalog(services.catalogEntries()) }
         if case .shutdown = request { markShuttingDown() }
         return await mutations.withLock {
@@ -155,7 +166,8 @@ extension Engine {
         case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog, .serviceUpdate,
              .serviceCreateDatabase:
             return await performService(request)
-        case .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit:
+        case .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit, .taskForceRestart,
+             .tasksStatus:
             return await performTasks(request)
         }
     }

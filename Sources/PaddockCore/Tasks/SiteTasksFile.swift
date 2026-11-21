@@ -56,6 +56,7 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
     public static let maximumTasks = 16
     public static let maximumProxyPaths = 16
     public static let maximumRunLength = 2000
+    public static let maximumRunBytes = 8000
     public static let proxyPorts = 1024...65535
 
     public var isEmpty: Bool { tasks.isEmpty && proxy.isEmpty }
@@ -276,9 +277,10 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
         }
     }
 
-    /// 1…2000 characters, with no NUL and no line break.
-    static func isRunLine(_ run: String) -> Bool {
-        (1...maximumRunLength).contains(run.count) && !run.unicodeScalars.contains { $0 == "\0" || $0 == "\n" || $0 == "\r" }
+    /// 1…2000 Unicode scalars and at most 8000 bytes, with no NUL and no line break.
+    public static func isRunLine(_ run: String) -> Bool {
+        (1...maximumRunLength).contains(run.unicodeScalars.count) && run.utf8.count <= maximumRunBytes
+            && !run.unicodeScalars.contains { $0 == "\0" || $0 == "\n" || $0 == "\r" }
     }
 
     // MARK: - The canonical form
