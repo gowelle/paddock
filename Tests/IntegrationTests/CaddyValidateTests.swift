@@ -10,9 +10,15 @@ final class CaddyValidateTests: XCTestCase {
         try validate(homeName: "pdk cv \(token())")
     }
 
+    /// Sites with proxy routes, secured and not, validate too.
+    func testHomeWithProxyRoutesValidates() throws {
+        try validate(homeName: "pdk-cv-\(token())", proxies: ["secure": ["/app": 8080, "/app/admin": 9000],
+                                                             "plain": ["/ws": 6001]])
+    }
+
     private func token() -> String { String(UUID().uuidString.prefix(8)) }
 
-    private func validate(homeName: String) throws {
+    private func validate(homeName: String, proxies: [String: [String: Int]] = [:]) throws {
         let caddy = Bundled.resources.appendingPathComponent("caddy")
         guard FileManager.default.isExecutableFile(atPath: caddy.path) else {
             throw XCTSkip("Vendored caddy missing; run Scripts/fetch-vendor.sh")
@@ -30,8 +36,9 @@ final class CaddyValidateTests: XCTestCase {
         let sites = [
             Site(name: "pinned", path: "/s/pinned", kind: .parked, secured: false, php: v83, pinned: true),
             Site(name: "secure", path: "/s/secure", kind: .parked, secured: true, php: v84, pinned: false),
+            Site(name: "plain", path: "/s/plain", kind: .parked, secured: false, php: v84, pinned: false),
         ]
-        let text = Caddyfile.render(sites: sites, defaultPHP: v84, paths: paths, settings: settings)
+        let text = Caddyfile.render(sites: sites, defaultPHP: v84, paths: paths, settings: settings, proxies: proxies)
         try Data(text.utf8).write(to: paths.caddyfile)
 
         let process = Process()

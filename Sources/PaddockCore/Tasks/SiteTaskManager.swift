@@ -49,6 +49,8 @@ public final class SiteTaskManager: @unchecked Sendable {
     let timeScale: TimeInterval
     /// Every process Paddock supervises elsewhere (the web stack, services): never a task's leftover.
     let supervisedPids: @Sendable () -> Set<Int32>
+    /// Paddock's own ports: never a proxy route's target.
+    let reservedPorts: @Sendable () -> Set<Int>
     let log: @Sendable (String) -> Void
 
     /// At daemon shutdown a task gets at most this long to stop (its `stopSeconds` may allow up to 300), so
@@ -195,6 +197,7 @@ public final class SiteTaskManager: @unchecked Sendable {
                 sites: @escaping @Sendable () -> [Site], inspector: ServiceProcessInspector = .live,
                 refreshInterval: TimeInterval? = 30, shutdownGrace: TimeInterval = SiteTaskManager.shutdownGraceCap,
                 timeScale: TimeInterval = 1, supervisedPids: @escaping @Sendable () -> Set<Int32> = { [] },
+                reservedPorts: @escaping @Sendable () -> Set<Int> = { [] },
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.paths = paths
         self.store = store
@@ -206,6 +209,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         self.shutdownGrace = min(shutdownGrace, Self.shutdownGraceCap)
         self.timeScale = timeScale
         self.supervisedPids = supervisedPids
+        self.reservedPorts = reservedPorts
         self.log = log
     }
 

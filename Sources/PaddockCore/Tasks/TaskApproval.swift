@@ -83,6 +83,22 @@ public enum TaskApproval {
     }
 }
 
+extension TaskApproval {
+    /// The proxy routes Paddock serves: for each served site, the routes of an intact approval made for that very
+    /// folder (the approved definition, whatever the file says now), less any to one of `reservedPorts` (Paddock's
+    /// own).
+    public static func routes(state: State, sites: [Site], reservedPorts: Set<Int>) -> [String: [String: Int]] {
+        var routes: [String: [String: Int]] = [:]
+        for site in sites {
+            guard let approval = state.taskApprovals[site.name], approval.isIntact,
+                  approval.sitePath == SiteTasksFile.realPath(site.path) else { continue }
+            let usable = approval.file.proxy.filter { !reservedPorts.contains($0.value) }
+            if !usable.isEmpty { routes[site.name] = usable }
+        }
+        return routes
+    }
+}
+
 // MARK: - Status
 
 /// Where a site's tasks stand with the user's approval.
@@ -253,17 +269,20 @@ public struct SiteTasksStatus: Codable, Equatable, Sendable {
     /// The hash of what `pending` shows: approving names it, so only what was shown is approved.
     public let pendingHash: String?
     public let notice: String?
+    /// The approved proxy routes in effect: path prefix -> port on 127.0.0.1.
+    public let routes: [String: Int]
 
     public init(approval: TaskApprovalState, tasks: [TaskStatus], pending: [PendingTask], pendingHash: String?,
-                notice: String?) {
+                notice: String?, routes: [String: Int] = [:]) {
         self.approval = approval
         self.tasks = tasks
         self.pending = pending
         self.pendingHash = pendingHash
         self.notice = notice
+        self.routes = routes
     }
 
-    private enum CodingKeys: String, CodingKey { case approval, tasks, pending, pendingHash, notice }
+    private enum CodingKeys: String, CodingKey { case approval, tasks, pending, pendingHash, notice, routes }
 
     /// Tolerant: missing lists are empty, and one task this build can't read never costs the rest.
     public init(from decoder: Decoder) throws {
@@ -273,6 +292,7 @@ public struct SiteTasksStatus: Codable, Equatable, Sendable {
         pending = (try? c.decodeIfPresent([Lenient<PendingTask>].self, forKey: .pending))?.compactMap(\.value) ?? []
         pendingHash = try? c.decodeIfPresent(String.self, forKey: .pendingHash)
         notice = try? c.decodeIfPresent(String.self, forKey: .notice)
+        routes = ((try? c.decodeIfPresent([String: Int].self, forKey: .routes)) ?? nil) ?? [:]
     }
 
     /// The pending lines for a file: its tasks by name, then its proxy paths, each shown as `Messages` shows

@@ -3,8 +3,8 @@ import XCTest
 
 /// The sentences Paddock prints about site tasks.
 final class TaskMessagesTests: XCTestCase {
-    private func site(_ name: String, _ tasks: SiteTasksStatus?) -> Site {
-        Site(name: name, path: "/p/\(name)", kind: .parked, secured: false, php: PHPVersion("8.4")!, pinned: false,
+    private func site(_ name: String, _ tasks: SiteTasksStatus?, secured: Bool = false) -> Site {
+        Site(name: name, path: "/p/\(name)", kind: .parked, secured: secured, php: PHPVersion("8.4")!, pinned: false,
              tasks: tasks)
     }
 
@@ -85,9 +85,29 @@ final class TaskMessagesTests: XCTestCase {
     }
 
     func testWhatApprovingShows() {
-        XCTAssertEqual(Messages.approvalLines([PendingTask(name: "queue", run: "php artisan queue:work", port: nil),
-                                               PendingTask(name: "/app", run: nil, port: 8080)]),
-                       ["queue: php artisan queue:work", "proxy /app → 127.0.0.1:8080"])
+        let pending = [PendingTask(name: "queue", run: "php artisan queue:work", port: nil),
+                       PendingTask(name: "/app", run: nil, port: 8080)]
+        XCTAssertEqual(Messages.approvalLines(pending, site: site("shop", nil, secured: true)),
+                       ["queue: php artisan queue:work", "forward https://shop.test/app → 127.0.0.1:8080"])
+        XCTAssertEqual(Messages.approvalLines(pending, site: site("blog", nil)),
+                       ["queue: php artisan queue:work", "forward http://blog.test/app → 127.0.0.1:8080"])
+    }
+
+    /// A site's routes in effect show in `paddock tasks` and `paddock status`; one to Paddock's own port says so.
+    func testRoutesInTheTableAndTheStatus() {
+        let status = SiteTasksStatus(approval: .approved, tasks: [task("queue", .running(pid: 4))], pending: [],
+                                     pendingHash: nil, notice: nil, routes: ["/app": 8080, "/ws": 6001])
+        XCTAssertEqual(Messages.routeLines(status, site: site("shop", status, secured: true)),
+                       ["forward https://shop.test/app → 127.0.0.1:8080", "forward https://shop.test/ws → 127.0.0.1:6001"])
+        XCTAssertEqual(Messages.siteTasksLines([site("shop", status, secured: true)]), [
+            "shop/queue: running (pid 4)",
+            "shop: forward https://shop.test/app → 127.0.0.1:8080",
+            "shop: forward https://shop.test/ws → 127.0.0.1:6001",
+        ])
+        XCTAssertEqual(Messages.routeOnPaddocksPort(prefix: "/app", port: 443),
+                       "The route /app isn't used: port 443 is Paddock's own.")
+        XCTAssertEqual(Messages.proxyRoutesNotApplied("bad config"),
+                       "Paddock couldn't apply this site's proxy routes, so it serves it without them: bad config")
     }
 
     func testErrors() {

@@ -279,16 +279,22 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
             || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) || $0 == UInt8(ascii: "-") }
     }
 
-    /// `^/[A-Za-z0-9._~/-]{1,100}$` without `..` or `//`.
-    static func isProxyPath(_ path: String) -> Bool {
+    /// A path prefix a proxy route may have: at most 64 characters, `/` and then parts of `[A-Za-z0-9._~-]`
+    /// separated by single slashes, none of them `.` or `..`, no slash at the end (so `/` alone isn't one). Nothing
+    /// else, so no route can carry Caddy syntax (braces, wildcards, quotes, spaces) or escape its site.
+    public static func isProxyPath(_ path: String) -> Bool {
         let bytes = Array(path.utf8)
-        guard (2...101).contains(bytes.count), bytes[0] == UInt8(ascii: "/"), !path.contains(".."), !path.contains("//")
-        else { return false }
-        return bytes.allSatisfy { byte in
-            (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte) || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
-                || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) || "._~/-".utf8.contains(byte)
+        guard (2...maximumProxyPathLength).contains(bytes.count), bytes[0] == UInt8(ascii: "/") else { return false }
+        let parts = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        return parts.allSatisfy { part in
+            !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
+                (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte) || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
+                    || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) || "._~-".utf8.contains(byte)
+            }
         }
     }
+
+    public static let maximumProxyPathLength = 64
 
     /// 1…2000 Unicode scalars and at most 8000 bytes, with no NUL and no line break.
     public static func isRunLine(_ run: String) -> Bool {
@@ -391,7 +397,8 @@ enum TasksFileProblem {
         "\"stopSeconds\" of task \"\(name)\" must be a whole number from 1 to 300"
     }
     static func badProxyPath(_ path: String) -> String {
-        "proxy path \"\(shown(path))\" must start with / and use only letters, digits and . _ ~ / -, without .. or //"
+        "proxy path \"\(shown(path))\" must start with / and be at most 64 characters: parts of letters, digits and "
+            + ". _ ~ - between single slashes, not . or .."
     }
     static func badProxyPort(_ path: String) -> String {
         "the port for proxy path \"\(shown(path))\" must be a whole number from 1024 to 65535"

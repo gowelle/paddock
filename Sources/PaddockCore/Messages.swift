@@ -653,17 +653,20 @@ public enum Messages {
             case .invalid(let reason): lines.append(tasksFileInvalid(site: site.name, reason: reason))
             case .approved, .changed:
                 for task in tasks.tasks { lines.append("\(site.name)/\(task.name): \(taskState(task.state))") }
+                lines += routeLines(tasks, site: site).map { "\(site.name): \($0)" }
                 if tasks.approval == .changed, let notice = tasks.notice { lines.append(notice) }
             }
         }
         return lines
     }
 
-    /// Columns: task, state, command; then the site's notice and each task's warning, one line each.
-    public static func taskTable(_ status: SiteTasksStatus) -> String {
+    /// Columns: task, state, command; then which tasks restart when code changes, the site's routes (`routes`,
+    /// as `routeLines` gives them), each task's warning and the site's notice, one line each.
+    public static func taskTable(_ status: SiteTasksStatus, routes: [String] = []) -> String {
         var lines = [table([["TASK", "STATE", "COMMAND"]]
                            + status.tasks.map { [$0.name, taskState($0.state), $0.run] })]
         lines += status.tasks.filter(\.restartOnChange).map { "\($0.name): restarts when code changes" }
+        lines += routes
         lines += status.tasks.compactMap { task in task.warning.map { "\(task.name): \($0)" } }
         if let notice = status.notice { lines.append(notice) }
         return lines.joined(separator: "\n")
@@ -684,12 +687,35 @@ public enum Messages {
 
     public static func nothingToApprove(path: String) -> String { "\(path) has no tasks or proxy paths to approve." }
 
-    /// What approving shows: every task with its command, then every proxy line.
-    public static func approvalLines(_ pending: [PendingTask]) -> [String] {
+    /// What approving shows: every task with its command, then every proxy line, as the site's own address.
+    public static func approvalLines(_ pending: [PendingTask], site: Site) -> [String] {
         pending.map { line in
-            if let port = line.port { return "proxy \(line.name) → 127.0.0.1:\(port)" }
+            if let port = line.port { return forward(site, prefix: line.name, port: port) }
             return "\(line.name): \(line.run ?? "")"
         }
+    }
+
+    /// `forward https://shop.test/app → 127.0.0.1:8080`
+    public static func forward(_ site: Site, prefix: String, port: Int) -> String {
+        "forward \(site.secured ? "https" : "http")://\(site.host)\(prefix) → 127.0.0.1:\(port)"
+    }
+
+    /// A site's routes in effect, shortest prefix first.
+    public static func routeLines(_ status: SiteTasksStatus, site: Site) -> [String] {
+        status.routes.sorted { $0.key < $1.key }.map { forward(site, prefix: $0.key, port: $0.value) }
+    }
+
+    /// Caddy's answer on a route whose port nothing listens on.
+    public static func nothingListening(port: Int, prefix: String) -> String {
+        "Paddock: nothing is listening on port \(port) for \(prefix) (is the task running?)"
+    }
+
+    public static func routeOnPaddocksPort(prefix: String, port: Int) -> String {
+        "The route \(prefix) isn't used: port \(port) is Paddock's own."
+    }
+
+    public static func proxyRoutesNotApplied(_ reason: String) -> String {
+        "Paddock couldn't apply this site's proxy routes, so it serves it without them: \(reason)"
     }
 
     public static func taskError(_ error: SiteTaskError) -> String {

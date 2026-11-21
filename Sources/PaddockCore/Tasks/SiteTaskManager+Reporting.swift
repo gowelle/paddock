@@ -60,10 +60,16 @@ extension SiteTaskManager {
             if evaluation.running != nil, let reason = environment?.fallbackReason {
                 notices.append(Messages.tasksUseBasicEnvironment(reason))
             }
+            let reserved = reservedPorts()
+            let approvedRoutes = evaluation.running?.proxy ?? [:]
+            for (prefix, port) in approvedRoutes.sorted(by: { $0.key < $1.key }) where reserved.contains(port) {
+                notices.append(Messages.routeOnPaddocksPort(prefix: prefix, port: port))
+            }
             result[view.name] = SiteTasksStatus(
                 approval: evaluation.approval, tasks: tasks,
                 pending: pending.map(SiteTasksStatus.pendingLines) ?? [], pendingHash: pending?.hash,
-                notice: notices.isEmpty ? nil : notices.joined(separator: " "))
+                notice: notices.isEmpty ? nil : notices.joined(separator: " "),
+                routes: approvedRoutes.filter { !reserved.contains($0.value) })
         }
         return result
     }

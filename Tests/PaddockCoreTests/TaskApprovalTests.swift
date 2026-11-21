@@ -94,6 +94,27 @@ final class TaskApprovalTests: XCTestCase {
                        "a stored definition must follow the same rules as the file")
     }
 
+    // MARK: - Proxy routes
+
+    /// Routes come only from an intact approval for the served site's very folder, and never to Paddock's own ports.
+    func testRoutesComeOnlyFromApprovalsOfServedSites() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("pdk-routes-\(UUID().uuidString.prefix(6))")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let real = try XCTUnwrap(SiteTasksFile.realPath(folder.path))
+        let routed = file(proxy: ["/app": 8080, "/own": 18443])
+        var state = State(parked: [])
+        state.taskApprovals["shop"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [])
+        state.taskApprovals["moved"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: "/elsewhere", stopped: [])
+        state.taskApprovals["tampered"] = ApprovedTasks(hash: "v1:nope", file: routed, sitePath: real, stopped: [])
+        state.taskApprovals["unserved"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [])
+        let sites = ["shop", "moved", "tampered"].map {
+            Site(name: $0, path: folder.path, kind: .linked, secured: true, php: PHPVersion("8.4")!, pinned: false)
+        }
+        XCTAssertEqual(TaskApproval.routes(state: state, sites: sites, reservedPorts: [18080, 18443, 53]),
+                       ["shop": ["/app": 8080]])
+    }
+
     // MARK: - Commands that can be shown
 
     func testOnlyCommandsThatShowAsTheyRunCanBeApproved() {
@@ -202,7 +223,7 @@ final class TaskApprovalTests: XCTestCase {
                                warning: nil)],
             pending: [PendingTask(name: "queue", run: "php artisan queue:work --tries=3", port: nil),
                       PendingTask(name: "/app", run: nil, port: 8080)],
-            pendingHash: "v1:abc", notice: "n")
+            pendingHash: "v1:abc", notice: "n", routes: ["/app": 8080])
         XCTAssertEqual(try JSONDecoder().decode(SiteTasksStatus.self, from: JSONEncoder().encode(status)), status)
         for state in [TaskState.starting, .stopped(reason: nil), .stopped(reason: .byYou), .waitingForApproval] {
             XCTAssertEqual(try JSONDecoder().decode(TaskState.self, from: JSONEncoder().encode(state)), state)
@@ -215,6 +236,7 @@ final class TaskApprovalTests: XCTestCase {
         let sparse = try JSONDecoder().decode(SiteTasksStatus.self, from: Data(#"{"approval": {"approved": {}}}"#.utf8))
         XCTAssertEqual(sparse.tasks, [])
         XCTAssertEqual(sparse.pending, [])
+        XCTAssertEqual(sparse.routes, [:], "routes from an older daemon: none")
     }
 
     func testASiteFromAnOlderDaemonHasNoTasksAndAnUnreadableTasksStatusIsDropped() throws {
@@ -232,5 +254,6 @@ final class TaskApprovalTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 9, "site tasks are in the status: the build number moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 12, "tasksStatus, forced restarts and new task states: it moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 13, "restart on change and listening warnings in the status")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 14, "proxy routes in the status")
     }
 }

@@ -98,7 +98,8 @@ struct TasksList: ParsableCommand {
         switch tasks.approval {
         case .needsApproval: print(Messages.tasksWaitingForApproval(site: target.name))
         case .invalid(let reason): print(Messages.tasksFileInvalid(site: target.name, reason: reason))
-        case .approved, .changed, .none: print(Messages.taskTable(tasks))
+        case .approved, .changed, .none:
+            print(Messages.taskTable(tasks, routes: Messages.routeLines(tasks, site: target)))
         }
     }
 }
@@ -152,7 +153,7 @@ struct TasksOn: ParsableCommand {
         guard !file.isEmpty else { return print(Messages.nothingToApprove(path: path)) }
         // Exactly what will run, each command as written (a command that can't be shown that way is refused).
         print(show ? "\(path) would run:" : "Approving what \(path) runs:")
-        for line in Messages.approvalLines(SiteTasksStatus.pendingLines(file)) { print("  " + line) }
+        for line in Messages.approvalLines(SiteTasksStatus.pendingLines(file), site: target) { print("  " + line) }
         for task in file.tasks.keys.sorted() {
             if let problem = Messages.commandProblem(in: file.tasks[task]!.run) {
                 throw CLI.failure(Messages.commandNotShowable(task: task, problem: problem))

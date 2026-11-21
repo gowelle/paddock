@@ -19,8 +19,10 @@ extension Engine {
             switch request {
             case .tasksApprove(let site, let hash):
                 try await ServiceManager.offPool { _ = try tasks.approve(site: site, hash: hash) }
+                await applyProxyRoutes()
             case .tasksRevoke(let site):
                 try await ServiceManager.offPool { try tasks.revoke(site: site) }
+                await applyProxyRoutes()
             case .taskStart(let site, let task):
                 try await ServiceManager.offPool { try tasks.start(site: site, task: task) }
             case .taskStop(let site, let task):
@@ -42,6 +44,12 @@ extension Engine {
             return .error(code: ErrorCode.internal, message: error.localizedDescription)
         }
         return .ok(status())
+    }
+
+    /// Approving or withdrawing a site's tasks changes its proxy routes: the web side follows (a route Caddy would
+    /// refuse leaves the config it serves untouched, `writeConfigs`). Never fails the request.
+    func applyProxyRoutes() async {
+        _ = try? await ServiceManager.offPool { try self.reload() }
     }
 
     static func response(for error: SiteTaskError) -> Response {

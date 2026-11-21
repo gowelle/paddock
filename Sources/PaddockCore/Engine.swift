@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 13
+    public static let number = 14
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -154,6 +154,8 @@ public final class Engine: @unchecked Sendable {
     private var shuttingDown = false
     /// The PHP install or service add in progress, if any; shutting down cancels it. Guarded by `flagsLock`.
     private var installInProgress: Task<Void, Error>?
+    /// Why the sites' proxy routes couldn't be applied, and which sites have routes (guarded by `flagsLock`).
+    private var proxyProblem: (reason: String, sites: Set<String>)?
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
     /// Versions whose build update failed in this daemon: not tried (or logged) again. `operationLock`.
@@ -227,6 +229,7 @@ public final class Engine: @unchecked Sendable {
             },
             shutdownGrace: taskShutdownGrace, timeScale: backoffScale,
             supervisedPids: { [supervisor, services] in supervisor.runningPids.union(services.supervisor.runningPids) },
+            reservedPorts: { [settings] in [settings.httpPort, settings.httpsPort, settings.dnsPort] },
             log: log)
     }
 
@@ -408,7 +411,13 @@ public final class Engine: @unchecked Sendable {
             SiteRegistry(state: state, defaultPHP: $0, settings: settings).sites()
         } ?? []).map { site in
             var site = site
-            site.tasks = taskStatuses[site.name]
+            site.tasks = taskStatuses[site.name].map { tasks in
+                guard let problem = proxyNotice(site: site.name) else { return tasks }
+                return SiteTasksStatus(approval: tasks.approval, tasks: tasks.tasks, pending: tasks.pending,
+                                       pendingHash: tasks.pendingHash,
+                                       notice: [tasks.notice, problem].compactMap { $0 }.joined(separator: " "),
+                                       routes: [:])
+            }
             return site
         }
         var processes = services.processes
@@ -476,9 +485,43 @@ public final class Engine: @unchecked Sendable {
         for v in versionsInUse(state) { try FPMConfig.write(version: v, paths: paths) }
         guard let defaultPHP = state.defaultPHP else { return }
         let sites = SiteRegistry(state: state, defaultPHP: defaultPHP, settings: settings).sites()
-        let text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
+        let proxies = TaskApproval.routes(state: state, sites: sites, reservedPorts: reservedPorts)
+        var text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
+                                    namesAuthority: namesCertificateAuthority, proxies: proxies)
+        var problem: String?
+        // Sites' proxy routes are checked before they are used: a config Caddy would refuse never replaces the
+        // one it serves; the sites are served without their routes, and say why.
+        if !proxies.isEmpty, let refusal = validationProblem(text) {
+            problem = refusal
+            log("proxy routes not applied: \(refusal)")
+            text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
                                     namesAuthority: namesCertificateAuthority)
+        }
+        setProxyProblem(problem, sites: problem == nil ? [] : Set(proxies.keys))
         try Data(text.utf8).write(to: paths.caddyfile, options: .atomic)
+    }
+
+    /// Ports of Paddock's own (its web ports and the DNS responder's): never a proxy route's target.
+    var reservedPorts: Set<Int> { [settings.httpPort, settings.httpsPort, settings.dnsPort] }
+
+    /// What `caddy validate` says about a config it refuses (nil when it accepts it, or can't be run).
+    private func validationProblem(_ text: String) -> String? {
+        let file = paths.config.appendingPathComponent("Caddyfile.check")
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard (try? Data(text.utf8).write(to: file, options: .atomic)) != nil else { return nil }
+        let check = Process()
+        check.executableURL = caddyBinary
+        check.arguments = ["validate", "--config", file.path, "--adapter", "caddyfile"]
+        check.environment = ProcessInfo.processInfo.environment.merging(caddyEnvironment) { $1 }
+        let output = Pipe()
+        check.standardOutput = output
+        check.standardError = output
+        guard (try? check.run()) != nil else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        check.waitUntilExit()
+        guard check.terminationStatus != 0 else { return nil }
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+        return Messages.printable(lines.last { $0.contains("Error") } ?? lines.last ?? "", limit: 200) ?? "Caddy refused it"
     }
 
     // MARK: - Processes
@@ -641,6 +684,20 @@ public final class Engine: @unchecked Sendable {
         if let running { isRunning = running }
         if let blockedBy { self.blockedBy = blockedBy }
         if let dnsRunning { dnsUp = dnsRunning }
+    }
+
+    private func setProxyProblem(_ reason: String?, sites: Set<String>) {
+        flagsLock.lock()
+        proxyProblem = reason.map { ($0, sites) }
+        flagsLock.unlock()
+    }
+
+    /// The site notice for routes Paddock couldn't apply, if any.
+    func proxyNotice(site: String) -> String? {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        guard let proxyProblem, proxyProblem.sites.contains(site) else { return nil }
+        return Messages.proxyRoutesNotApplied(proxyProblem.reason)
     }
 
     /// Set once the daemon begins to exit; from then on every request that changes anything is refused.

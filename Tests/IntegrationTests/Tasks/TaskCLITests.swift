@@ -73,7 +73,10 @@ final class TaskCLITests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: plainFile))
 
         // Harmless commands instead of the starter's.
-        try home.writeTasks("shop", #"{"tasks": {"worker": {"run": "echo working; exec sleep 600"}}, "proxy": {"/app": 8080}}"#)
+        // A route to a free high port nothing listens on (no request is ever sent through it here).
+        let routePort = TestSupport.freeTCPPort()
+        let forward = "forward http://shop.test/app → 127.0.0.1:\(routePort)"
+        try home.writeTasks("shop", #"{"tasks": {"worker": {"run": "echo working; exec sleep 600"}}, "proxy": {"/app": \#(routePort)}}"#)
         let waiting = "shop: paddock.json has tasks waiting for your approval. Review them with: paddock tasks on --show\n"
         XCTAssertEqual(try run(["tasks"], in: shop).out, waiting)
         XCTAssertTrue(try run(["status"]).out.hasSuffix("\n" + waiting), "paddock status says so too")
@@ -81,24 +84,25 @@ final class TaskCLITests: XCTestCase {
         let shown = try run(["tasks", "on", "--show"], in: shop)
         XCTAssertEqual(shown.status, 0, shown.err)
         XCTAssertEqual(shown.out, "\(shopFile) would run:\n  worker: echo working; exec sleep 600\n"
-                       + "  proxy /app → 127.0.0.1:8080\nApprove it with: paddock tasks on\n")
+                       + "  \(forward)\nApprove it with: paddock tasks on\n")
         XCTAssertEqual(try run(["tasks"], in: shop).out, waiting, "showing approves nothing")
 
         let approved = try run(["tasks", "on"], in: shop)
         XCTAssertEqual(approved.status, 0, approved.err)
         let lines = approved.out.components(separatedBy: "\n")
         XCTAssertEqual(Array(lines.prefix(4)), ["Approving what \(shopFile) runs:", "  worker: echo working; exec sleep 600",
-                                                "  proxy /app → 127.0.0.1:8080", "Approved."])
+                                                "  \(forward)", "Approved."])
         XCTAssertTrue(lines[4].hasPrefix("  worker: running (pid "), approved.out)
         let worker = try XCTUnwrap(pid(in: lines[4]))
 
         let list = try run(["tasks"], in: shop)
         let running = "running (pid \(worker))"
         XCTAssertEqual(list.out, "TASK    " + "STATE".padding(toLength: running.count + 2, withPad: " ", startingAt: 0)
-                       + "COMMAND\nworker  \(running)  echo working; exec sleep 600\n")
+                       + "COMMAND\nworker  \(running)  echo working; exec sleep 600\n\(forward)\n")
         XCTAssertEqual(try run(["tasks", "--site", "shop.test"]).out, list.out, "--site from anywhere")
-        XCTAssertEqual(try run(["tasks"]).out, "shop/worker: running (pid \(worker))\n", "outside a site: every site")
-        XCTAssertTrue(try run(["status"]).out.hasSuffix("\nshop/worker: running (pid \(worker))\n"))
+        XCTAssertEqual(try run(["tasks"]).out, "shop/worker: running (pid \(worker))\nshop: \(forward)\n",
+                       "outside a site: every site")
+        XCTAssertTrue(try run(["status"]).out.hasSuffix("\nshop/worker: running (pid \(worker))\nshop: \(forward)\n"))
 
         XCTAssertTrue(waitFor(10) { ((try? self.run(["tasks", "logs", "worker"], in: self.shop).out) ?? "").contains("working") })
         let logPath = home.paths.taskLog(site: "shop", task: "worker").path
