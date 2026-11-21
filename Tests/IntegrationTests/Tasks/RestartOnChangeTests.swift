@@ -231,6 +231,23 @@ final class RestartOnChangeTests: XCTestCase {
         XCTAssertEqual(starts("shop", "careful"), 2)
     }
 
+    /// A change whose files are older than the running launch (FSEvents can deliver a write made just before the
+    /// watcher started, seconds later on a loaded machine) needs no restart: that launch already read them.
+    func testAChangeOlderThanTheLaunchCausesNoRestart() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)
+        try touch(folder, "app/Early.php")
+        let before = Date()
+        let engine = await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(running(engine, "shop", "queue"))
+        engine.tasks.siteChanged("shop", SiteWatcher.Changes(code: true, codeChangedAt: before.addingTimeInterval(-1)))
+        try await pause(3)
+        XCTAssertEqual(pid(engine, "shop", "queue"), first)
+        XCTAssertEqual(starts("shop", "queue"), 1)
+        engine.tasks.siteChanged("shop", SiteWatcher.Changes(code: true, codeChangedAt: Date()))
+        XCTAssertNotNil(running(engine, "shop", "queue", otherThan: first), "a newer change does restart it")
+    }
+
     /// Nothing starts once the daemon is shutting down, a change included.
     func testAChangeDuringShutdownStartsNothing() async throws {
         _ = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)

@@ -20,12 +20,39 @@ public final class SiteWatcher: @unchecked Sendable {
         public var tasksFile = false
         /// The watched folder itself changed (moved, deleted): the site may be gone.
         public var rootChanged = false
+        /// When the code changed: the latest of its files' own times. Nil means now (a file that is gone, or
+        /// events FSEvents lost, have no time of their own).
+        public var codeChangedAt: Date?
 
-        public init(code: Bool = false, tasksFile: Bool = false, rootChanged: Bool = false) {
+        public init(code: Bool = false, tasksFile: Bool = false, rootChanged: Bool = false, codeChangedAt: Date? = nil) {
             self.code = code
             self.tasksFile = tasksFile
             self.rootChanged = rootChanged
+            self.codeChangedAt = codeChangedAt
         }
+
+        /// Both runs of changes as one: the later code time, or now if either has none.
+        public func merged(with other: Changes) -> Changes {
+            var result = Changes(code: code || other.code, tasksFile: tasksFile || other.tasksFile,
+                                 rootChanged: rootChanged || other.rootChanged)
+            switch (code, other.code) {
+            case (true, true):
+                if let mine = codeChangedAt, let theirs = other.codeChangedAt { result.codeChangedAt = max(mine, theirs) }
+            case (true, false): result.codeChangedAt = codeChangedAt
+            case (false, true): result.codeChangedAt = other.codeChangedAt
+            case (false, false): break
+            }
+            return result
+        }
+    }
+
+    /// The later of a file's modification and status-change times (a rename into place changes the latter);
+    /// nil if it isn't there.
+    public static func fileTime(_ path: String) -> Date? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        func date(_ spec: timespec) -> Date { Date(timeIntervalSince1970: Double(spec.tv_sec) + Double(spec.tv_nsec) / 1e9) }
+        return max(date(info.st_mtimespec), date(info.st_ctimespec))
     }
 
     /// Folders at the site's root FSEvents is told to leave out (fewer callbacks; `classify` still decides).
@@ -34,24 +61,24 @@ public final class SiteWatcher: @unchecked Sendable {
     /// What a batch of events means. An event FSEvents flags as lost or coalesced (`MustScanSubDirs`,
     /// `UserDropped`, `KernelDropped`) counts as a code change whatever its path, since anything may have
     /// changed under it; the watched folder itself changing (`RootChanged`) too, and says so.
-    public static func changes(for events: [(path: String, flags: FSEventStreamEventFlags)], root: String) -> Changes {
+    public static func changes(for events: [(path: String, flags: FSEventStreamEventFlags)], root: String,
+                               changedAt: (String) -> Date? = fileTime) -> Changes {
         let lost = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
                                            | kFSEventStreamEventFlagKernelDropped)
         let prefix = root.hasSuffix("/") ? root : root + "/"
         var changes = Changes()
         for event in events {
             if event.flags & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 {
-                changes.code = true
-                changes.rootChanged = true
+                changes = changes.merged(with: Changes(code: true, rootChanged: true))
                 continue
             }
             if event.flags & lost != 0 {
-                changes.code = true
+                changes = changes.merged(with: Changes(code: true))
                 continue
             }
             guard event.path.hasPrefix(prefix) else { continue }
             switch classify(String(event.path.dropFirst(prefix.count))) {
-            case .code: changes.code = true
+            case .code: changes = changes.merged(with: Changes(code: true, codeChangedAt: changedAt(event.path)))
             case .tasksFile: changes.tasksFile = true
             case .ignored: continue
             }
@@ -177,9 +204,7 @@ public final class SiteWatcher: @unchecked Sendable {
         guard !stopped else { lateCallbacks += 1; return }
         let changes = Self.changes(for: events.map { (path: $0.0, flags: $0.1) }, root: folder.path)
         guard changes.code || changes.tasksFile || changes.rootChanged else { return }
-        pending.code = pending.code || changes.code
-        pending.tasksFile = pending.tasksFile || changes.tasksFile
-        pending.rootChanged = pending.rootChanged || changes.rootChanged
+        pending = pending.merged(with: changes)
         let now = Date()
         if firstChange == nil { firstChange = now }
         lastChange = now

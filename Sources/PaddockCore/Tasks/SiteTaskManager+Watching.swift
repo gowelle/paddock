@@ -55,8 +55,11 @@ extension SiteTaskManager {
         let view = views[site]
         stateLock.unlock()
         guard let view, let running = view.evaluation.running else { return }
+        // When the change happened: its files' own time when they all have one (a write just before a launch can
+        // reach us after it), else when it was noticed.
+        let changedAt = changes.codeChangedAt.map { min($0, noticed) } ?? noticed
         for (task, definition) in running.tasks where definition.restartsOnChange && !view.stopped.contains(task) {
-            restartForChangeLocked(Self.processName(site: site, task: task), noticed: noticed)
+            restartForChangeLocked(Self.processName(site: site, task: task), noticed: changedAt)
         }
         reconcileLocked(views: views)
     }

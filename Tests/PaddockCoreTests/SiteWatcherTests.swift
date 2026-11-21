@@ -78,6 +78,27 @@ final class SiteWatcherTests: XCTestCase {
         XCTAssertEqual(SiteWatcher.excludedFolders, ["vendor", "node_modules", ".git", "storage"])
     }
 
+    /// When a code change happened: the latest of its files' own times (a rename into place updates ctime); a
+    /// file that is gone, or an event FSEvents flagged as lost, has no time of its own and counts as now (nil).
+    func testWhenACodeChangeHappened() {
+        let root = "/p/shop"
+        let none = FSEventStreamEventFlags(kFSEventStreamEventFlagNone)
+        let t1 = Date(timeIntervalSince1970: 1000), t2 = Date(timeIntervalSince1970: 2000)
+        let times = ["/p/shop/app/A.php": t1, "/p/shop/app/B.php": t2, "/p/shop/README.md": Date(timeIntervalSince1970: 9999)]
+        let both = SiteWatcher.changes(for: [("/p/shop/app/A.php", none), ("/p/shop/app/B.php", none),
+                                             ("/p/shop/README.md", none)], root: root, changedAt: { times[$0] })
+        XCTAssertEqual(both, SiteWatcher.Changes(code: true, codeChangedAt: t2), "only code files count")
+        let gone = SiteWatcher.changes(for: [("/p/shop/app/A.php", none), ("/p/shop/app/Gone.php", none)], root: root,
+                                       changedAt: { times[$0] })
+        XCTAssertEqual(gone, SiteWatcher.Changes(code: true), "a deleted file: now")
+        XCTAssertEqual(SiteWatcher.Changes(code: true, codeChangedAt: t1).merged(with: SiteWatcher.Changes(code: true, codeChangedAt: t2)),
+                       SiteWatcher.Changes(code: true, codeChangedAt: t2))
+        XCTAssertEqual(SiteWatcher.Changes(code: true, codeChangedAt: t1).merged(with: SiteWatcher.Changes(code: true)),
+                       SiteWatcher.Changes(code: true))
+        XCTAssertEqual(SiteWatcher.Changes().merged(with: SiteWatcher.Changes(code: true, codeChangedAt: t1)),
+                       SiteWatcher.Changes(code: true, codeChangedAt: t1))
+    }
+
     func testListeningAddresses() {
         XCTAssertEqual(ListeningAddress("*:8080"), ListeningAddress(host: "*", port: 8080))
         XCTAssertEqual(ListeningAddress("[::]:6001")?.port, 6001)
