@@ -69,7 +69,7 @@ final class TaskCLITests: XCTestCase {
         XCTAssertEqual(example.status, 0, example.err)
         let plainFile = SiteTasksFile.realPath(plain.path)! + "/paddock.json"
         XCTAssertEqual(example.out, "plain isn't a Laravel project, so here is an example to start from. Save it as "
-                       + "\(plainFile):\n\n" + SiteTasksFile.example)
+                       + "\(plainFile):\n\n" + SiteTasksFile.example + Messages.forwardingIgnoresCase + "\n")
         XCTAssertFalse(FileManager.default.fileExists(atPath: plainFile))
 
         // Harmless commands instead of the starter's.

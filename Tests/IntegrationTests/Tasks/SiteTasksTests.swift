@@ -770,6 +770,26 @@ final class SiteTasksTests: XCTestCase {
             .appendingPathComponent("pid"))?.pid, second, "the new launch's record is kept")
     }
 
+    /// An approval stored before today's path rule (a trailing slash) keeps its tasks running; the site says
+    /// that forwarding path is no longer accepted.
+    func testAnOlderApprovalKeepsItsTasksWhenAPathIsNoLongerAccepted() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}, "proxy": {"/app/": 8080}}"#
+        let folder = try home.makeSite("shop", tasks: text)
+        let stored = SiteTasksFile(tasks: ["queue": TaskDefinition(run: "exec sleep 600", restartOnChange: nil, autostart: nil,
+                                                                   stopSeconds: nil)], proxy: ["/app/": 8080])
+        let sitePath = try XCTUnwrap(SiteTasksFile.realPath(folder.path))
+        try StateStore(paths: home.paths).update {
+            $0.taskApprovals["shop"] = ApprovedTasks(hash: stored.hash, file: stored, sitePath: sitePath, stopped: [])
+        }
+        let engine = try await makeEngine()
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"), "its tasks keep running")
+        let tasks = try XCTUnwrap(self.tasks(engine, "shop"))
+        XCTAssertEqual(tasks.approval, .changed)
+        XCTAssertTrue(tasks.notice?.contains(Messages.forwardingPathNoLongerAccepted("/app/")) ?? false,
+                      tasks.notice ?? "no notice")
+        XCTAssertEqual(tasks.routes, [:])
+    }
+
     // MARK: - The daemon
 
     func testTasksComeBackAfterADaemonRestart() throws {

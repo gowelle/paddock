@@ -61,7 +61,8 @@ extension SiteTaskManager {
                 notices.append(Messages.tasksUseBasicEnvironment(reason))
             }
             let reserved = reservedPorts()
-            let approvedRoutes = evaluation.running?.proxy ?? [:]
+            notices += evaluation.refusedPaths.map(Messages.forwardingPathNoLongerAccepted)
+            let approvedRoutes = TaskApproval.usableRoutes(evaluation.running?.proxy ?? [:], reservedPorts: [])
             for (prefix, port) in approvedRoutes.sorted(by: { $0.key < $1.key }) where reserved.contains(port) {
                 notices.append(Messages.routeOnPaddocksPort(prefix: prefix, port: port))
             }

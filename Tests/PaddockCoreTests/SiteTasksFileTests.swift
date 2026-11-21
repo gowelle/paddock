@@ -135,6 +135,17 @@ final class SiteTasksFileTests: XCTestCase {
                        "a name from the file is shown at most 64 characters long")
     }
 
+    /// Forwarding paths match whatever the case, so two that differ only in case are refused.
+    func testTwoPathsDifferingOnlyInCaseAreRefused() throws {
+        XCTAssertEqual(try reason(#"{"proxy": {"/app": 8080, "/App": 9000}}"#),
+                       "Two forwarding paths differ only in upper and lower case: /App and /app")
+        XCTAssertEqual(try reason(#"{"proxy": {"/api/v1": 8080, "/api/V1": 8080}}"#),
+                       "Two forwarding paths differ only in upper and lower case: /api/V1 and /api/v1")
+        try write(#"{"proxy": {"/app": 8080, "/apps": 9000}}"#)
+        guard case .file = load() else { return XCTFail("different paths are fine") }
+        XCTAssertTrue(Messages.forwardingIgnoresCase.contains("upper and lower case"))
+    }
+
     func testAtMostSixteenTasksAndSixteenProxyPaths() throws {
         let sixteen = (1...16).map { "\"t\($0)\": {\"run\": \"x\"}" }.joined(separator: ", ")
         try write("{\"tasks\": {\(sixteen)}}")

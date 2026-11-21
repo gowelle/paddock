@@ -516,7 +516,7 @@ public final class SiteTaskManager: @unchecked Sendable {
                     beginReclaimLocked(name, task, record)
                     return
                 case .gone:
-                    if holdsTask(sortLeftovers(of: record, in: task.folder)) {
+                    if sortLeftovers(of: record, in: task.folder).holds {
                         log("task \(task.site)/\(task.task): processes left from an earlier run are still running; "
                             + "leaving them alone")
                         update { $0[name, default: Runtime()].held = .leftovers }

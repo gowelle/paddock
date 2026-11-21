@@ -710,6 +710,15 @@ public enum Messages {
         "Paddock: nothing is listening on port \(port) for \(prefix) (is the task running?)"
     }
 
+    /// For `paddock tasks on` and the example file: how forwarding paths match.
+    public static let forwardingIgnoresCase = "Forwarding paths (\"proxy\") match whatever the upper and lower case: "
+        + "/app also forwards /App."
+
+    public static func forwardingPathNoLongerAccepted(_ path: String) -> String {
+        "A forwarding path in the approved file is no longer accepted: \(printable(path, limit: 120) ?? "?"). "
+            + "Edit paddock.json and approve again."
+    }
+
     public static func routeOnPaddocksPort(prefix: String, port: Int) -> String {
         "The route \(prefix) isn't used: port \(port) is Paddock's own."
     }

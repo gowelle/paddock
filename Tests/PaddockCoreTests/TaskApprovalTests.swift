@@ -115,6 +115,52 @@ final class TaskApprovalTests: XCTestCase {
                        ["shop": ["/app": 8080]])
     }
 
+    /// An approval stored before today's path rule, with a path the rule now refuses, keeps its tasks running:
+    /// only that route is dropped, and the site says why and that it needs approving again.
+    func testAnOlderApprovalWithARefusedPathKeepsItsTasks() {
+        let stored = SiteTasksFile(tasks: ["queue": TaskDefinition(run: "php artisan queue:work", restartOnChange: nil,
+                                                                   autostart: nil, stopSeconds: nil)],
+                                   proxy: ["/app/": 8080, "/ws": 6001])
+        let approval = ApprovedTasks(hash: stored.hash, file: stored, sitePath: path, stopped: [])
+        XCTAssertTrue(approval.isIntact, "its tasks still follow every rule")
+        let evaluation = TaskApproval.evaluate(current: .invalid(reason: "a path the rule refuses"), approved: approval,
+                                               sitePath: path)
+        XCTAssertEqual(evaluation.running, stored, "its tasks keep running")
+        XCTAssertEqual(evaluation.approval, .changed)
+        XCTAssertEqual(evaluation.refusedPaths, ["/app/"])
+        XCTAssertEqual(Messages.forwardingPathNoLongerAccepted("/app/"),
+                       "A forwarding path in the approved file is no longer accepted: /app/. Edit paddock.json and approve again.")
+        var state = State(parked: [])
+        state.taskApprovals["shop"] = approval
+        let site = Site(name: "shop", path: path, kind: .linked, secured: false, php: PHPVersion("8.4")!, pinned: false)
+        _ = site
+        XCTAssertEqual(TaskApproval.usableRoutes(stored.proxy, reservedPorts: []), ["/ws": 6001], "only that route goes")
+    }
+
+    // MARK: - Leftovers
+
+    /// Who a member of a task's recorded group is, as `restart --force` sorts it: only provable leftovers are ever
+    /// stopped; another user's process in the site's folder (a sudo child, say) holds the task but is never touched.
+    func testHowLeftoversAreSorted() {
+        let record = ServiceProcessRecord(pid: 100, pgid: 100, startSeconds: 1000, startMicroseconds: 0, executable: "/bin/sh",
+                                          bootSeconds: 50)
+        func classify(uid: uid_t = 501, start: Int64 = 1001, directory: String? = "/s/shop", pid: Int32 = 200,
+                      boot: Int64? = 50) -> (LeftoverReason?, Bool) {
+            let facts = LeftoverFacts(pid: pid, uid: uid, startSeconds: start, startMicroseconds: 0, directory: directory)
+            let result = SiteTaskManager.classifyLeftover(facts, record: record, folder: "/s/shop", currentBoot: boot,
+                                                          me: 501, paddock: [300])
+            return (result.reason, result.holds)
+        }
+        XCTAssert(classify() == (nil, true), "ours: stopped by --force")
+        XCTAssert(classify(directory: "/s/shop/sub") == (nil, true))
+        XCTAssert(classify(directory: "/elsewhere") == (.notInSiteFolder, true), "may be from that run: holds")
+        XCTAssert(classify(uid: 0) == (.anotherUser, true), "another user's, in the folder: holds, never stopped")
+        XCTAssert(classify(uid: 0, directory: "/elsewhere") == (.anotherUser, false))
+        XCTAssert(classify(start: 999) == (.startedEarlier, false))
+        XCTAssert(classify(pid: 300) == (.runByPaddock, false))
+        XCTAssert(classify(boot: 51) == (.anotherBoot, false))
+    }
+
     // MARK: - Commands that can be shown
 
     func testOnlyCommandsThatShowAsTheyRunCanBeApproved() {

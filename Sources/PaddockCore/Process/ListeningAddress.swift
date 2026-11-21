@@ -24,7 +24,14 @@ public struct ListeningAddress: Equatable, Sendable {
     /// Only this Mac can reach it: anywhere in 127.0.0.0/8, or ::1.
     public var isLoopback: Bool {
         if host == "[::1]" || host == "::1" { return true }
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        // An IPv4-mapped IPv6 address (::ffff:127.0.0.1) is its IPv4 address.
+        var v4 = host
+        for prefix in ["[::ffff:", "::ffff:"] where host.lowercased().hasPrefix(prefix) {
+            v4 = String(host.dropFirst(prefix.count))
+            if v4.hasSuffix("]") { v4.removeLast() }
+            break
+        }
+        let parts = v4.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4, parts.allSatisfy({ UInt8($0) != nil }) else { return false }
         return parts[0] == "127"
     }

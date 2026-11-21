@@ -21,12 +21,13 @@ final class RestartOnChangeTests: XCTestCase {
         home?.cleanUp()
     }
 
-    private func makeEngine(backoffScale: TimeInterval = 0.02) async -> Engine {
+    private func makeEngine(backoffScale: TimeInterval = 0.02, shutdownGrace: TimeInterval = SiteTaskManager.shutdownGraceCap)
+        async -> Engine {
         let engine = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: backoffScale,
                             managesPortHelper: true, portHelper: TestSupport.portHelper,
                             portHolders: TestSupport.portHoldersWithoutProbes,
                             serviceSetup: ServiceSetup(catalog: ServiceCatalog(recipes: [])),
-                            taskEnvironment: { [home] in home!.environment }, log: { _ in })
+                            taskEnvironment: { [home] in home!.environment }, taskShutdownGrace: shutdownGrace, log: { _ in })
         self.engine = engine
         await engine.startTasks()
         return engine
@@ -248,17 +249,42 @@ final class RestartOnChangeTests: XCTestCase {
         XCTAssertNotNil(running(engine, "shop", "queue", otherThan: first), "a newer change does restart it")
     }
 
-    /// Nothing starts once the daemon is shutting down, a change included.
+    /// Nothing starts once the daemon is shutting down: a change delivered while shutdown waits on a slow stop
+    /// starts nothing.
     func testAChangeDuringShutdownStartsNothing() async throws {
+        // The slow stop is another site's, so nothing but the shutdown rule keeps "shop" from starting again.
         _ = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)
-        let engine = await makeEngine()
+        _ = try home.makeSite("blog", tasks: """
+        {"tasks": {"slow": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 300}}}
+        """)
+        let engine = await makeEngine(shutdownGrace: 3)
         try await approve(engine, "shop")
+        try await approve(engine, "blog")
         _ = try XCTUnwrap(running(engine, "shop", "queue"))
-        await engine.shutDownAfterPendingWork()
+        _ = try XCTUnwrap(running(engine, "blog", "slow"))
+        try await pause(0.5)
+        let shutdown = Task { await engine.shutDownAfterPendingWork() }
+        XCTAssertTrue(waitFor(10) { self.task(engine, "blog", "slow")?.state == .stopping }, "shutdown waits on the slow stop")
+        XCTAssertTrue(waitFor(10) { self.pid(engine, "shop", "queue") == nil }, "shop's task has stopped")
         engine.tasks.siteChanged("shop", SiteWatcher.Changes(code: true))
         engine.tasks.refresh()
+        await shutdown.value
         try await pause(2)
         XCTAssertEqual(home.leftoverProcesses(), [], "nothing of the site runs")
+    }
+
+    /// A folder renamed into place (`mv app.new app`) restarts the task.
+    func testAFolderRenamedIntoPlaceRestarts() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)
+        try touch(folder, "app/Foo.php")
+        try touch(folder, "app.new/Foo.php")
+        let engine = await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(running(engine, "shop", "queue"))
+        try await pause(1.5)
+        try FileManager.default.moveItem(at: folder.appendingPathComponent("app"), to: folder.appendingPathComponent("app.old"))
+        XCTAssertEqual(rename(folder.appendingPathComponent("app.new").path, folder.appendingPathComponent("app").path), 0)
+        XCTAssertNotNil(running(engine, "shop", "queue", otherThan: first))
     }
 
     /// A site whose folder goes away loses its watcher with its tasks.

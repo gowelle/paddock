@@ -77,7 +77,14 @@ public final class SiteWatcher: @unchecked Sendable {
                 continue
             }
             guard event.path.hasPrefix(prefix) else { continue }
-            switch classify(String(event.path.dropFirst(prefix.count))) {
+            let relative = String(event.path.dropFirst(prefix.count))
+            // A folder created or renamed into place (`mv app.new app`): its files changed, with no time of their own.
+            if event.flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0 {
+                let moved = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRenamed)
+                if event.flags & moved != 0, isWatchedFolder(relative) { changes = changes.merged(with: Changes(code: true)) }
+                continue
+            }
+            switch classify(relative) {
             case .code: changes = changes.merged(with: Changes(code: true, codeChangedAt: changedAt(event.path)))
             case .tasksFile: changes.tasksFile = true
             case .ignored: continue
@@ -145,6 +152,13 @@ public final class SiteWatcher: @unchecked Sendable {
             return .code
         }
         return .ignored
+    }
+
+    /// Whether a folder (relative to the site's root) can hold the site's code: not under an ignored path.
+    static func isWatchedFolder(_ relative: String) -> Bool {
+        guard !relative.isEmpty else { return false }
+        if ignoredPaths.contains(where: { relative == $0 || relative.hasPrefix($0 + "/") }) { return false }
+        return !relative.split(separator: "/").contains { $0.hasPrefix(".") || ignoredAnywhere.contains(String($0)) }
     }
 
     // MARK: - Running

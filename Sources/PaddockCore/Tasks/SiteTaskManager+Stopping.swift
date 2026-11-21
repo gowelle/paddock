@@ -98,41 +98,44 @@ extension SiteTaskManager {
         sortLeftovers(of: record, in: folder).ours
     }
 
-    /// The live members of the recorded group, sorted: those provably left from that run (`ours`), and the
-    /// others with why not. Never this daemon, nor anything Paddock supervises.
-    func sortLeftovers(of record: ServiceProcessRecord, in folder: String)
-        -> (ours: [Int32], others: [(Int32, LeftoverReason)]) {
+    /// The live members of the recorded group, sorted: those provably left from that run (`ours`, the only ones
+    /// `restart --force` ever signals), the others with why not, and whether anything holds the task back.
+    func sortLeftovers(of record: ServiceProcessRecord, in folder: String) -> Leftovers {
         let members = (ServiceProcessRecord.members(ofGroup: record.pgid) ?? []).filter { $0 > 1 }.sorted()
         let paddocks = supervisedPids().union(supervisor.runningPids).union([getpid()])
-        let sameBoot = record.bootSeconds != nil && record.bootSeconds == ServiceProcessRecord.currentBoot()
-        var ours: [Int32] = []
-        var others: [(Int32, LeftoverReason)] = []
+        let boot = ServiceProcessRecord.currentBoot()
+        var sorted = Leftovers()
         for pid in members {
             var info = proc_bsdinfo()
             let size = Int32(MemoryLayout<proc_bsdinfo>.size)
             guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, getpgid(pid) == record.pgid else { continue }
-            if paddocks.contains(pid) { others.append((pid, .runByPaddock)); continue }
-            guard sameBoot else { others.append((pid, .anotherBoot)); continue }
-            guard info.pbi_uid == getuid() else { others.append((pid, .anotherUser)); continue }
-            let started = (Int64(info.pbi_start_tvsec), Int64(info.pbi_start_tvusec))
-            guard started >= (record.startSeconds, record.startMicroseconds) else {
-                others.append((pid, .startedEarlier))
-                continue
-            }
-            let directory = inspector.workingDirectory(pid).flatMap(SiteTasksFile.realPath)
-            guard let directory, directory == folder || directory.hasPrefix(folder + "/") else {
-                others.append((pid, .notInSiteFolder))
-                continue
-            }
-            ours.append(pid)
+            let facts = LeftoverFacts(pid: pid, uid: info.pbi_uid, startSeconds: Int64(info.pbi_start_tvsec),
+                                      startMicroseconds: Int64(info.pbi_start_tvusec),
+                                      directory: inspector.workingDirectory(pid).flatMap(SiteTasksFile.realPath))
+            let (reason, holds) = Self.classifyLeftover(facts, record: record, folder: folder, currentBoot: boot,
+                                                        me: getuid(), paddock: paddocks)
+            if let reason { sorted.others.append((pid, reason)) } else { sorted.ours.append(pid) }
+            if holds { sorted.holds = true }
         }
-        return (ours, others)
+        return sorted
     }
 
-    /// Whether the group still holds the task back: something provably from that run, or something that may be
-    /// (this user's, started with that run, but working outside the site's folder).
-    func holdsTask(_ sorted: (ours: [Int32], others: [(Int32, LeftoverReason)])) -> Bool {
-        !sorted.ours.isEmpty || sorted.others.contains { $0.1 == .notInSiteFolder }
+    /// Who one member of a task's recorded group is. Not from that run, never holding the task: anything Paddock
+    /// runs, anything from another boot, anything started before the record. Then, in the site's folder: this
+    /// user's is provably left from that run (nil: it may be stopped); another user's (a sudo child, say) holds the
+    /// task but is never signalled. Outside the folder: this user's may be from that run and holds the task;
+    /// another user's doesn't.
+    static func classifyLeftover(_ facts: LeftoverFacts, record: ServiceProcessRecord, folder: String,
+                                 currentBoot: Int64?, me: uid_t, paddock: Set<Int32>) -> (reason: LeftoverReason?, holds: Bool) {
+        if paddock.contains(facts.pid) { return (.runByPaddock, false) }
+        guard record.bootSeconds != nil, record.bootSeconds == currentBoot else { return (.anotherBoot, false) }
+        guard (facts.startSeconds, facts.startMicroseconds) >= (record.startSeconds, record.startMicroseconds) else {
+            return (.startedEarlier, false)
+        }
+        let inFolder = facts.directory.map { $0 == folder || $0.hasPrefix(folder + "/") } ?? false
+        guard facts.uid == me else { return (.anotherUser, inFolder) }
+        guard inFolder else { return (.notInSiteFolder, true) }
+        return (nil, true)
     }
 
     /// Brings a running task's pid record up to date: the shell usually hands over to the command (`exec`), so
@@ -186,7 +189,7 @@ extension SiteTaskManager {
             while stopped.contains(where: { kill($0, 0) == 0 }) && Date() < end { Thread.sleep(forTimeInterval: 0.05) }
             let after = sortLeftovers(of: record, in: folder)
             left = after.others
-            holding = holdsTask(after)
+            holding = after.holds
             operationLock.lock()
             if !holding, ServiceProcessRecord.read(from: file).map({ $0.pid == record.pid && $0.pgid == record.pgid }) == true {
                 try? FileManager.default.removeItem(at: file)
@@ -201,4 +204,20 @@ extension SiteTaskManager {
             $0[process]?.report = report
         }
     }
+}
+
+/// What Paddock knows of a member of a task's recorded group.
+struct LeftoverFacts {
+    let pid: Int32
+    let uid: uid_t
+    let startSeconds: Int64
+    let startMicroseconds: Int64
+    let directory: String?
+}
+
+/// The members of a task's recorded group, as `sortLeftovers` sorts them.
+struct Leftovers {
+    var ours: [Int32] = []
+    var others: [(Int32, LeftoverReason)] = []
+    var holds = false
 }

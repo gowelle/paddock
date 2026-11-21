@@ -99,15 +99,52 @@ final class SiteWatcherTests: XCTestCase {
                        SiteWatcher.Changes(code: true, codeChangedAt: t1))
     }
 
+    /// A folder renamed into place (`mv app.new app`) or created is a code change with no time of its own (now),
+    /// unless it is under an ignored path.
+    func testAFolderRenamedIntoPlaceIsAChange() {
+        let root = "/p/shop"
+        let renamedDir = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemRenamed)
+        let createdDir = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemCreated)
+        let modifiedDir = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemInodeMetaMod)
+        XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop/app", renamedDir)], root: root, changedAt: { _ in Date() }),
+                       SiteWatcher.Changes(code: true))
+        XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop/app/Http", createdDir)], root: root, changedAt: { _ in Date() }),
+                       SiteWatcher.Changes(code: true))
+        for ignored in ["/p/shop/vendor/laravel", "/p/shop/storage/framework", "/p/shop/.git/refs", "/p/shop/node_modules",
+                        "/p/shop/public/build"] {
+            XCTAssertEqual(SiteWatcher.changes(for: [(ignored, renamedDir)], root: root), SiteWatcher.Changes(), ignored)
+        }
+        XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop/app", modifiedDir)], root: root), SiteWatcher.Changes(),
+                       "only a folder created or renamed")
+    }
+
+    /// A file renamed into place has the time of the rename, however old its contents.
+    func testAnOldFileRenamedIntoPlaceHasTheRenamesTime() throws {
+        let dir = URL(fileURLWithPath: "/tmp/pdk-ft-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let temp = dir.appendingPathComponent("Foo.php.tmp")
+        try Data("<?php\n".utf8).write(to: temp)
+        let old = Date(timeIntervalSince1970: 1_577_836_800) // 2020-01-01
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: temp.path)
+        Thread.sleep(forTimeInterval: 1.1)
+        let before = Date()
+        XCTAssertEqual(rename(temp.path, dir.appendingPathComponent("Foo.php").path), 0)
+        let time = try XCTUnwrap(SiteWatcher.fileTime(dir.appendingPathComponent("Foo.php").path))
+        XCTAssertGreaterThanOrEqual(time, before.addingTimeInterval(-0.05), "the rename's time, not 2020's")
+    }
+
     func testListeningAddresses() {
         XCTAssertEqual(ListeningAddress("*:8080"), ListeningAddress(host: "*", port: 8080))
         XCTAssertEqual(ListeningAddress("[::]:6001")?.port, 6001)
         XCTAssertEqual(ListeningAddress("[fe80::1]:6001")?.host, "[fe80::1]")
         XCTAssertNil(ListeningAddress("nonsense"))
-        for local in ["127.0.0.1:80", "127.0.0.2:80", "127.255.0.9:1", "[::1]:80"] {
+        for local in ["127.0.0.1:80", "127.0.0.2:80", "127.255.0.9:1", "[::1]:80", "[::ffff:127.0.0.1]:80",
+                      "[::ffff:127.9.8.7]:80"] {
             XCTAssertTrue(ListeningAddress(local)!.isLoopback, local)
         }
-        for open in ["*:80", "0.0.0.0:80", "[::]:80", "192.168.1.5:80", "128.0.0.1:80", "[fe80::1]:80"] {
+        for open in ["*:80", "0.0.0.0:80", "[::]:80", "192.168.1.5:80", "128.0.0.1:80", "[fe80::1]:80",
+                     "[::ffff:10.0.0.1]:80"] {
             XCTAssertFalse(ListeningAddress(open)!.isLoopback, open)
         }
         XCTAssertTrue(ListeningAddress("0.0.0.0:80")!.isEverywhere)

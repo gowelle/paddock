@@ -121,6 +121,7 @@ struct TasksInit: ParsableCommand {
             print(Messages.tasksExample(site: target.name, path: file.path))
             print("")
             print(SiteTasksFile.example, terminator: "")
+            print(Messages.forwardingIgnoresCase)
             return
         }
         try CLI.refuseChangesFromDevelopmentBuild()
@@ -132,7 +133,8 @@ struct TasksInit: ParsableCommand {
 struct TasksOn: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "on",
-        abstract: "Show every command in the site's paddock.json and approve them, so they run with Paddock.")
+        abstract: "Show every command in the site's paddock.json and approve them, so they run with Paddock.",
+        discussion: Messages.forwardingIgnoresCase)
     @OptionGroup var site: SiteOption
     @Flag(name: .customLong("show"), help: "Only show what would be approved.") var show = false
 

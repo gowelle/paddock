@@ -35,7 +35,8 @@ public struct ApprovedTasks: Codable, Equatable, Sendable {
 
     /// The stored definition follows the file's rules and hashes (with this build's canonical form) to `hash`.
     /// Anything else approves nothing: a hand-edited state file, or an approval made with another form.
-    public var isIntact: Bool { file.problem() == nil && file.hash == hash }
+    /// (Forwarding paths that today's rules refuse don't count against it: `TaskApproval.refusedPaths`.)
+    public var isIntact: Bool { file.problem(checkingPaths: false) == nil && file.hash == hash }
 
     /// How long an approval is kept after its site went away, in case the folder comes back.
     public static let keptAfterSiteGone: TimeInterval = 30 * 24 * 60 * 60
@@ -51,6 +52,17 @@ public enum TaskApproval {
         public let pending: SiteTasksFile?
         /// Why the current file can't be used, when it can't.
         public let problem: String?
+        /// Forwarding paths of the running (approved) definition that today's rules refuse: left out.
+        public var refusedPaths: [String] = []
+
+        init(approval: TaskApprovalState, running: SiteTasksFile?, pending: SiteTasksFile?, problem: String?,
+             refusedPaths: [String] = []) {
+            self.approval = approval
+            self.running = running
+            self.pending = pending
+            self.problem = problem
+            self.refusedPaths = refusedPaths
+        }
     }
 
     /// The one rule: only an intact approval made for this very folder runs anything, and it runs its stored
@@ -58,6 +70,31 @@ public enum TaskApproval {
     /// Without such an approval nothing runs.
     public static func evaluate(current: SiteTasksFile.LoadResult, approved: ApprovedTasks?,
                                 sitePath: String) -> Evaluation {
+        var evaluation = evaluateFile(current: current, approved: approved, sitePath: sitePath)
+        // An approval made before today's path rules: its tasks run, the paths those rules refuse are left out,
+        // and it needs approving again.
+        if let running = evaluation.running {
+            evaluation.refusedPaths = refusedPaths(running.proxy)
+            if !evaluation.refusedPaths.isEmpty && evaluation.approval == .approved {
+                evaluation = Evaluation(approval: .changed, running: running, pending: nil, problem: nil,
+                                        refusedPaths: evaluation.refusedPaths)
+            }
+        }
+        return evaluation
+    }
+
+    /// The paths of `routes` that today's rules refuse (one that is not plain, or a case twin of another).
+    public static func refusedPaths(_ routes: [String: Int]) -> [String] {
+        var refused = Set(routes.keys.filter { !SiteTasksFile.isProxyPath($0) })
+        var seen: [String: String] = [:]
+        for path in routes.keys.sorted() where !refused.contains(path) {
+            if seen[path.lowercased()] != nil { refused.insert(path) } else { seen[path.lowercased()] = path }
+        }
+        return refused.sorted()
+    }
+
+    private static func evaluateFile(current: SiteTasksFile.LoadResult, approved: ApprovedTasks?,
+                                     sitePath: String) -> Evaluation {
         if let approved, approved.isIntact, approved.sitePath == sitePath {
             switch current {
             case .file(_, let hash) where hash == approved.hash:
@@ -84,6 +121,12 @@ public enum TaskApproval {
 }
 
 extension TaskApproval {
+    /// The routes that can be used: the paths today's rules accept, to a port that isn't Paddock's own.
+    public static func usableRoutes(_ routes: [String: Int], reservedPorts: Set<Int>) -> [String: Int] {
+        let refused = Set(refusedPaths(routes))
+        return routes.filter { !refused.contains($0.key) && !reservedPorts.contains($0.value) }
+    }
+
     /// The proxy routes Paddock serves: for each served site, the routes of an intact approval made for that very
     /// folder (the approved definition, whatever the file says now), less any to one of `reservedPorts` (Paddock's
     /// own).
@@ -92,7 +135,7 @@ extension TaskApproval {
         for site in sites {
             guard let approval = state.taskApprovals[site.name], approval.isIntact,
                   approval.sitePath == SiteTasksFile.realPath(site.path) else { continue }
-            let usable = approval.file.proxy.filter { !reservedPorts.contains($0.value) }
+            let usable = usableRoutes(approval.file.proxy, reservedPorts: reservedPorts)
             if !usable.isEmpty { routes[site.name] = usable }
         }
         return routes

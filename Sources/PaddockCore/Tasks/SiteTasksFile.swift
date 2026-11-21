@@ -210,6 +210,9 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
                 proxy[path] = port
             }
         }
+        if let (first, second) = caseTwins(Array(proxy.keys)) {
+            return .invalid(reason: TasksFileProblem.caseTwins(first, second))
+        }
         let file = SiteTasksFile(tasks: tasks, proxy: proxy)
         if let problem = file.problem() { return .invalid(reason: problem) }
         return .file(file, hash: file.hash)
@@ -253,7 +256,20 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
     }
 
     /// The rules for the values themselves; also applied to an approved definition read back from state.json.
-    public func problem() -> String? {
+    /// The first two paths that differ only in ASCII upper and lower case (forwarding matches either way).
+    static func caseTwins(_ paths: [String]) -> (String, String)? {
+        var seen: [String: String] = [:]
+        for path in paths.sorted() {
+            if let earlier = seen[path.lowercased()] { return (earlier, path) }
+            seen[path.lowercased()] = path
+        }
+        return nil
+    }
+
+    /// The rules for the values themselves; also applied to an approved definition read back from state.json, but
+    /// there without today's forwarding-path rules (`checkingPaths: false`): an approval made before those rules
+    /// keeps its tasks, and only the paths they refuse are left out.
+    public func problem(checkingPaths: Bool = true) -> String? {
         if tasks.count > Self.maximumTasks { return TasksFileProblem.tooManyTasks }
         for name in tasks.keys.sorted() {
             guard Self.isTaskName(name) else { return TasksFileProblem.badTaskName(name) }
@@ -265,8 +281,11 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
         }
         if proxy.count > Self.maximumProxyPaths { return TasksFileProblem.tooManyProxyPaths }
         for path in proxy.keys.sorted() {
-            guard Self.isProxyPath(path) else { return TasksFileProblem.badProxyPath(path) }
+            guard !checkingPaths || Self.isProxyPath(path) else { return TasksFileProblem.badProxyPath(path) }
             guard Self.proxyPorts.contains(proxy[path]!) else { return TasksFileProblem.badProxyPort(path) }
+        }
+        if checkingPaths, let (first, second) = Self.caseTwins(Array(proxy.keys)) {
+            return TasksFileProblem.caseTwins(first, second)
         }
         return nil
     }
@@ -399,6 +418,9 @@ enum TasksFileProblem {
     static func badProxyPath(_ path: String) -> String {
         "proxy path \"\(shown(path))\" must start with / and be at most 64 characters: parts of letters, digits and "
             + ". _ ~ - between single slashes, not . or .."
+    }
+    static func caseTwins(_ first: String, _ second: String) -> String {
+        "Two forwarding paths differ only in upper and lower case: \(shown(first)) and \(shown(second))"
     }
     static func badProxyPort(_ path: String) -> String {
         "the port for proxy path \"\(shown(path))\" must be a whole number from 1024 to 65535"
