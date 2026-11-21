@@ -18,6 +18,45 @@ public final class SiteWatcher: @unchecked Sendable {
     public struct Changes: Equatable, Sendable {
         public var code = false
         public var tasksFile = false
+        /// The watched folder itself changed (moved, deleted): the site may be gone.
+        public var rootChanged = false
+
+        public init(code: Bool = false, tasksFile: Bool = false, rootChanged: Bool = false) {
+            self.code = code
+            self.tasksFile = tasksFile
+            self.rootChanged = rootChanged
+        }
+    }
+
+    /// Folders at the site's root FSEvents is told to leave out (fewer callbacks; `classify` still decides).
+    public static let excludedFolders = ["vendor", "node_modules", ".git", "storage"]
+
+    /// What a batch of events means. An event FSEvents flags as lost or coalesced (`MustScanSubDirs`,
+    /// `UserDropped`, `KernelDropped`) counts as a code change whatever its path, since anything may have
+    /// changed under it; the watched folder itself changing (`RootChanged`) too, and says so.
+    public static func changes(for events: [(path: String, flags: FSEventStreamEventFlags)], root: String) -> Changes {
+        let lost = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
+                                           | kFSEventStreamEventFlagKernelDropped)
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        var changes = Changes()
+        for event in events {
+            if event.flags & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 {
+                changes.code = true
+                changes.rootChanged = true
+                continue
+            }
+            if event.flags & lost != 0 {
+                changes.code = true
+                continue
+            }
+            guard event.path.hasPrefix(prefix) else { continue }
+            switch classify(String(event.path.dropFirst(prefix.count))) {
+            case .code: changes.code = true
+            case .tasksFile: changes.tasksFile = true
+            case .ignored: continue
+            }
+        }
+        return changes
     }
 
     /// When a run of changes fires.
@@ -81,12 +120,6 @@ public final class SiteWatcher: @unchecked Sendable {
         return .ignored
     }
 
-    /// The port of an `lsof` listening address (`*:8080`, `[::]:6001`).
-    static func port(of address: String) -> Int? {
-        guard let colon = address.lastIndex(of: ":") else { return nil }
-        return Int(address[address.index(after: colon)...])
-    }
-
     // MARK: - Running
 
     public func start() {
@@ -94,18 +127,22 @@ public final class SiteWatcher: @unchecked Sendable {
             guard stream == nil, !stopped else { return }
             var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
                                                retain: nil, release: nil, copyDescription: nil)
-            let callback: FSEventStreamCallback = { _, info, count, paths, _, _ in
+            let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
                 guard let info else { return }
                 let watcher = Unmanaged<SiteWatcher>.fromOpaque(info).takeUnretainedValue()
                 let array = unsafeBitCast(paths, to: NSArray.self)
-                watcher.received((0..<count).compactMap { array[$0] as? String })
+                watcher.received((0..<count).compactMap { index in
+                    (array[index] as? String).map { ($0, flags[index]) }
+                })
             }
             let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer
-                                                 | kFSEventStreamCreateFlagUseCFTypes)
+                                                 | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot)
             guard let created = FSEventStreamCreate(nil, callback, &context, [folder.path] as CFArray,
                                                     FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2, flags) else {
                 return
             }
+            let excluded = Self.excludedFolders.map { folder.appendingPathComponent($0).path }
+            _ = FSEventStreamSetExclusionPaths(created, excluded as CFArray)
             FSEventStreamSetDispatchQueue(created, queue)
             FSEventStreamStart(created)
             stream = created
@@ -136,20 +173,13 @@ public final class SiteWatcher: @unchecked Sendable {
     public var callbacksAfterStop: Int { queue.sync { lateCallbacks } }
 
     /// On `queue`.
-    private func received(_ paths: [String]) {
+    private func received(_ events: [(String, FSEventStreamEventFlags)]) {
         guard !stopped else { lateCallbacks += 1; return }
-        let root = folder.path + "/"
-        var changes = Changes()
-        for path in paths where path.hasPrefix(root) {
-            switch Self.classify(String(path.dropFirst(root.count))) {
-            case .code: changes.code = true
-            case .tasksFile: changes.tasksFile = true
-            case .ignored: continue
-            }
-        }
-        guard changes.code || changes.tasksFile else { return }
+        let changes = Self.changes(for: events.map { (path: $0.0, flags: $0.1) }, root: folder.path)
+        guard changes.code || changes.tasksFile || changes.rootChanged else { return }
         pending.code = pending.code || changes.code
         pending.tasksFile = pending.tasksFile || changes.tasksFile
+        pending.rootChanged = pending.rootChanged || changes.rootChanged
         let now = Date()
         if firstChange == nil { firstChange = now }
         lastChange = now

@@ -154,8 +154,8 @@ struct TasksOn: ParsableCommand {
         print(show ? "\(path) would run:" : "Approving what \(path) runs:")
         for line in Messages.approvalLines(SiteTasksStatus.pendingLines(file)) { print("  " + line) }
         for task in file.tasks.keys.sorted() {
-            if let (position, codePoint) = Messages.unshowableCharacter(in: file.tasks[task]!.run) {
-                throw CLI.failure(Messages.commandNotShowable(task: task, position: position, codePoint: codePoint))
+            if let problem = Messages.commandProblem(in: file.tasks[task]!.run) {
+                throw CLI.failure(Messages.commandNotShowable(task: task, problem: problem))
             }
         }
         guard !show else { return print("Approve it with: paddock tasks on") }
@@ -211,7 +211,7 @@ struct TaskRestart: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "restart", abstract: "Restart a task.")
     @Argument(help: "The task's name, such as queue.") var task: String
     @Flag(name: .customLong("force"),
-          help: "Also stop processes an earlier run left behind (only that task's, in the site's folder).")
+          help: "Also stop the processes an earlier run of this task left behind in the site's folder (and only those).")
     var force = false
     @OptionGroup var site: SiteOption
 
@@ -260,33 +260,14 @@ struct TaskLogs: ParsableCommand {
             .map(String.init).dropLast(text.hasSuffix("\n") ? 1 : 0).suffix(count))
     }
 
-    /// Prints what is appended to the file from now on, until interrupted; starts over when the file is
-    /// rotated (replaced or emptied). Reads the file only: the daemon isn't involved.
+    /// Prints what is appended to the file from now on, until interrupted, across rotations (`LogFollower`).
+    /// Reads the file only: the daemon isn't involved.
     static func follow(_ url: URL) -> Never {
-        var handle = try? FileHandle(forReadingFrom: url)
-        var offset = (try? handle?.seekToEnd()) ?? 0
-        var identity = fileIdentity(url)
+        let follower = LogFollower(url: url)
         while true {
             Thread.sleep(forTimeInterval: 0.25)
-            let now = fileIdentity(url)
-            if handle == nil || now?.inode != identity?.inode || (now?.size ?? 0) < offset {
-                try? handle?.close()
-                handle = try? FileHandle(forReadingFrom: url)
-                offset = 0
-                identity = now
-            }
-            guard let handle else { continue }
-            try? handle.seek(toOffset: offset)
-            let data = (try? handle.readToEnd()) ?? Data()
-            guard !data.isEmpty else { continue }
-            offset += UInt64(data.count)
-            FileHandle.standardOutput.write(data)
+            let data = follower.read()
+            if !data.isEmpty { FileHandle.standardOutput.write(data) }
         }
-    }
-
-    private static func fileIdentity(_ url: URL) -> (inode: UInt64, size: UInt64)? {
-        var info = stat()
-        guard stat(url.path, &info) == 0 else { return nil }
-        return (UInt64(info.st_ino), UInt64(info.st_size))
     }
 }

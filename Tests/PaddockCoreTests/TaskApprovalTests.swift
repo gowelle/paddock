@@ -116,23 +116,36 @@ final class TaskApprovalTests: XCTestCase {
         }
     }
 
-    /// A refusal says where the problem is: the position (in Unicode scalars, from 1) and the code point.
-    func testTheRefusalNamesThePositionAndCodePoint() {
-        XCTAssertEqual(Messages.unshowableCharacter(in: "ab\u{3164}c")?.position, 3)
-        XCTAssertEqual(Messages.unshowableCharacter(in: "ab\u{3164}c")?.codePoint, 0x3164)
-        XCTAssertEqual(Messages.unshowableCharacter(in: "a" + String(repeating: " ", count: 9) + "b")?.position, 10,
-                       "the ninth space")
-        XCTAssertEqual(Messages.unshowableCharacter(in: "echo ")?.position, 5)
-        XCTAssertNil(Messages.unshowableCharacter(in: "echo hi"))
-        XCTAssertEqual(Messages.commandNotShowable(task: "queue", position: 3, codePoint: 0x3164),
+    /// A refusal says what the problem is: a character (by position, in Unicode scalars from 1, and code point),
+    /// decomposed characters, a space at either end, or too many spaces in a row.
+    func testTheRefusalSaysWhatIsWrong() {
+        XCTAssertEqual(Messages.commandProblem(in: "ab\u{3164}c"), .character(position: 3, codePoint: 0x3164))
+        XCTAssertEqual(Messages.commandProblem(in: "a\u{2028}b"), .character(position: 2, codePoint: 0x2028), "Zl")
+        XCTAssertEqual(Messages.commandProblem(in: "a\u{2029}b"), .character(position: 2, codePoint: 0x2029), "Zp")
+        XCTAssertEqual(Messages.commandProblem(in: "a\u{0378}b"), .character(position: 2, codePoint: 0x378), "unassigned")
+        XCTAssertEqual(Messages.commandProblem(in: "a" + String(repeating: " ", count: 9) + "b"), .spaceRun(position: 10))
+        XCTAssertEqual(Messages.commandProblem(in: "echo "), .edgeSpace)
+        XCTAssertEqual(Messages.commandProblem(in: " echo"), .edgeSpace)
+        XCTAssertEqual(Messages.commandProblem(in: "e\u{0301}cho"), .decomposed, "an accent typed separately")
+        XCTAssertEqual(Messages.commandProblem(in: "x\u{20DD}"), .character(position: 2, codePoint: 0x20DD),
+                       "a mark that is already NFC is still refused")
+        XCTAssertNil(Messages.commandProblem(in: "echo 'Café' hi"))
+        XCTAssertEqual(Messages.commandNotShowable(task: "queue", problem: .character(position: 3, codePoint: 0x3164)),
                        #"The command of task "queue" has a character that cannot be shown, at position 3 (U+3164), "#
                        + "so Paddock won't approve it. Make it plain text in paddock.json.")
+        XCTAssertEqual(Messages.commandNotShowable(task: "queue", problem: .decomposed),
+                       #"Paddock won't approve the command of task "queue". This command contains decomposed characters "#
+                       + "(for example an accent typed separately). Retype that part.")
+        XCTAssertEqual(Messages.commandNotShowable(task: "queue", problem: .edgeSpace),
+                       #"Paddock won't approve the command of task "queue": it starts or ends with a space."#)
+        XCTAssertEqual(Messages.commandNotShowable(task: "queue", problem: .spaceRun(position: 10)),
+                       #"Paddock won't approve the command of task "queue": it has more than 8 spaces in a row at position 10."#)
     }
 
     /// The 2000-character limit counts Unicode scalars, and the command is at most 8000 bytes.
     func testTheLengthLimitCountsScalars() {
         let accented = String(repeating: "e\u{0301}", count: 1000)
-        XCTAssertTrue(SiteTasksFile.isRunLine(accented), "2000 scalars")
+        XCTAssertTrue(SiteTasksFile.isRunLine(accented), "2000 scalars (a file rule; showing it is another matter)")
         XCTAssertFalse(SiteTasksFile.isRunLine(accented + "x"), "2001 scalars, though only 1001 characters")
         XCTAssertTrue(SiteTasksFile.isRunLine(String(repeating: "😀", count: 2000)), "8000 bytes")
         let pending = SiteTasksStatus.pendingLines(SiteTasksFile(tasks: ["q": TaskDefinition(

@@ -16,6 +16,8 @@ extension SiteTaskManager {
         log("site tasks: \(captured.description)")
         operationLock.lock()
         defer { operationLock.unlock() }
+        // The daemon may have begun shutting down while the shell was being read.
+        guard !isShuttingDown else { throw SiteTaskError.shuttingDown }
         let (folder, file) = try approvable(site: name, hash: hash)
         update { _ in self.environment = captured }
         try store.update { state in
@@ -38,8 +40,8 @@ extension SiteTaskManager {
         case .file(let current, let currentHash):
             guard currentHash == hash else { throw SiteTaskError.changedSinceShown(site: name) }
             for task in current.tasks.keys.sorted() {
-                if let (position, codePoint) = Messages.unshowableCharacter(in: current.tasks[task]!.run) {
-                    throw SiteTaskError.notShowable(site: name, task: task, position: position, codePoint: codePoint)
+                if let problem = Messages.commandProblem(in: current.tasks[task]!.run) {
+                    throw SiteTaskError.notShowable(site: name, task: task, problem: problem)
                 }
             }
             return (folder, current)
@@ -127,7 +129,8 @@ extension SiteTaskManager {
         operationLock.lock()
         refreshLocked()
         operationLock.unlock()
-        try checkStarted(process, site: name, task: task)
+        // A forced restart answers with what it did (the task's warning), even when the task stays held back.
+        if !force { try checkStarted(process, site: name, task: task) }
     }
 
     /// Writes the starter `paddock.json` into a Laravel site that has none (never over one, never through a

@@ -37,6 +37,7 @@ extension SiteTaskManager {
     /// Stops an earlier daemon's orphan (provably ours) in the background: SIGTERM to its group, its grace (cut
     /// to the shutdown deadline if the daemon is exiting), then SIGKILL. The task starts when it is gone.
     func beginReclaimLocked(_ name: String, _ task: Launched, _ record: ServiceProcessRecord) {
+        guard !isShuttingDown else { return }
         let grace = TimeInterval(task.definition.stopGrace)
         let flight = Flight(kind: .reclaim, grace: grace)
         update { $0[name, default: Runtime()].flight = flight }
@@ -94,18 +95,44 @@ extension SiteTaskManager {
     /// recorded process, in the same boot (the record must say which), working in the site's folder, and this
     /// user's. Nothing else is ever counted, or signalled.
     func leftovers(of record: ServiceProcessRecord, in folder: String) -> [Int32] {
-        guard let made = record.bootSeconds, made == ServiceProcessRecord.currentBoot(),
-              let members = ServiceProcessRecord.members(ofGroup: record.pgid) else { return [] }
-        return members.filter { pid in
+        sortLeftovers(of: record, in: folder).ours
+    }
+
+    /// The live members of the recorded group, sorted: those provably left from that run (`ours`), and the
+    /// others with why not. Never this daemon, nor anything Paddock supervises.
+    func sortLeftovers(of record: ServiceProcessRecord, in folder: String)
+        -> (ours: [Int32], others: [(Int32, LeftoverReason)]) {
+        let members = (ServiceProcessRecord.members(ofGroup: record.pgid) ?? []).filter { $0 > 1 }.sorted()
+        let paddocks = supervisedPids().union(supervisor.runningPids).union([getpid()])
+        let sameBoot = record.bootSeconds != nil && record.bootSeconds == ServiceProcessRecord.currentBoot()
+        var ours: [Int32] = []
+        var others: [(Int32, LeftoverReason)] = []
+        for pid in members {
             var info = proc_bsdinfo()
             let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-            guard pid > 1, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, info.pbi_uid == getuid(),
-                  getpgid(pid) == record.pgid else { return false }
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, getpgid(pid) == record.pgid else { continue }
+            if paddocks.contains(pid) { others.append((pid, .runByPaddock)); continue }
+            guard sameBoot else { others.append((pid, .anotherBoot)); continue }
+            guard info.pbi_uid == getuid() else { others.append((pid, .anotherUser)); continue }
             let started = (Int64(info.pbi_start_tvsec), Int64(info.pbi_start_tvusec))
-            guard started >= (record.startSeconds, record.startMicroseconds),
-                  let directory = inspector.workingDirectory(pid).flatMap(SiteTasksFile.realPath) else { return false }
-            return directory == folder || directory.hasPrefix(folder + "/")
+            guard started >= (record.startSeconds, record.startMicroseconds) else {
+                others.append((pid, .startedEarlier))
+                continue
+            }
+            let directory = inspector.workingDirectory(pid).flatMap(SiteTasksFile.realPath)
+            guard let directory, directory == folder || directory.hasPrefix(folder + "/") else {
+                others.append((pid, .notInSiteFolder))
+                continue
+            }
+            ours.append(pid)
         }
+        return (ours, others)
+    }
+
+    /// Whether the group still holds the task back: something provably from that run, or something that may be
+    /// (this user's, started with that run, but working outside the site's folder).
+    func holdsTask(_ sorted: (ours: [Int32], others: [(Int32, LeftoverReason)])) -> Bool {
+        !sorted.ours.isEmpty || sorted.others.contains { $0.1 == .notInSiteFolder }
     }
 
     /// Brings a running task's pid record up to date: the shell usually hands over to the command (`exec`), so
@@ -133,22 +160,35 @@ extension SiteTaskManager {
         }
     }
 
+    /// `restart --force`, as a flight (no launch can happen meanwhile): SIGKILL to the recorded group's
+    /// members that are provably left from that run, then, if nothing that may be from it is left, the record goes
+    /// and the task can start; otherwise the record stays and the task stays held back. Says what it stopped and
+    /// what it left, and why.
     func stopLeftovers(_ process: String, site: String, task: String, folder: String) {
+        let flight = Flight(kind: .reclaim, grace: 10)
+        update { $0[process, default: Runtime()].flight = flight }
         let file = recordFile(site: site, task: task)
         var stopped: [Int32] = []
+        var left: [(Int32, LeftoverReason)] = []
+        var holding = false
         if let record = ServiceProcessRecord.read(from: file) {
-            stopped = leftovers(of: record, in: folder).sorted()
+            let sorted = sortLeftovers(of: record, in: folder)
+            stopped = sorted.ours
             for pid in stopped { kill(pid, SIGKILL) }
             let end = Date().addingTimeInterval(5)
             while stopped.contains(where: { kill($0, 0) == 0 }) && Date() < end { Thread.sleep(forTimeInterval: 0.05) }
-            try? FileManager.default.removeItem(at: file)
+            let after = sortLeftovers(of: record, in: folder)
+            left = after.others
+            holding = holdsTask(after)
+            if !holding { try? FileManager.default.removeItem(at: file) }
         }
-        let report = Messages.leftoversStopped(task: task, pids: stopped)
+        let report = Messages.leftoversStopped(task: task, stopped: stopped, left: left)
         logWriter(site: site, task: task).append(Self.noteLine(report))
         log("task \(site)/\(task): \(report)")
         update {
-            $0[process, default: Runtime()].held = nil
+            $0[process, default: Runtime()].held = holding ? .leftovers : nil
             $0[process]?.report = report
         }
+        endFlight(process, flight)
     }
 }

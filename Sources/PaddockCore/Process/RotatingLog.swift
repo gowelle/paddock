@@ -120,3 +120,54 @@ public final class RotatingLog: ProcessOutput, @unchecked Sendable {
         size = fd >= 0 && fstat(fd, &info) == 0 ? UInt64(info.st_size) : 0
     }
 }
+
+/// Follows a log file that may be rotated (renamed away, a new one started): each `read` returns what was
+/// appended since the last one. When the file at `url` is a new one, what was still written to the old one is
+/// read to its end first, then the new file from its start.
+public final class LogFollower {
+    public let url: URL
+    private var handle: FileHandle?
+    private var inode: UInt64?
+    private var offset: UInt64 = 0
+
+    /// Starts at the current end of the file.
+    public init(url: URL) {
+        self.url = url
+        open(atEnd: true)
+    }
+
+    deinit { try? handle?.close() }
+
+    public func read() -> Data {
+        var data = Data()
+        let current = Self.identity(url)
+        if handle == nil || current?.inode != inode || (current?.size ?? 0) < offset {
+            data.append(drain())
+            try? handle?.close()
+            handle = nil
+            open(atEnd: false)
+        }
+        data.append(drain())
+        return data
+    }
+
+    private func drain() -> Data {
+        guard let handle else { return Data() }
+        try? handle.seek(toOffset: offset)
+        let data = (try? handle.readToEnd()) ?? Data()
+        offset += UInt64(data.count)
+        return data
+    }
+
+    private func open(atEnd: Bool) {
+        handle = try? FileHandle(forReadingFrom: url)
+        inode = Self.identity(url)?.inode
+        offset = atEnd ? ((try? handle?.seekToEnd()) ?? 0) : 0
+    }
+
+    private static func identity(_ url: URL) -> (inode: UInt64, size: UInt64)? {
+        var info = stat()
+        guard stat(url.path, &info) == 0 else { return nil }
+        return (UInt64(info.st_ino), UInt64(info.st_size))
+    }
+}

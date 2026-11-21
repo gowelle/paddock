@@ -52,8 +52,8 @@ extension SiteTaskManager {
             }
             if let pending {
                 for task in pending.tasks.keys.sorted() {
-                    guard let (position, codePoint) = Messages.unshowableCharacter(in: pending.tasks[task]!.run) else { continue }
-                    notices.append(Messages.commandNotShowable(task: task, position: position, codePoint: codePoint))
+                    guard let problem = Messages.commandProblem(in: pending.tasks[task]!.run) else { continue }
+                    notices.append(Messages.commandNotShowable(task: task, problem: problem))
                     break
                 }
             }

@@ -40,34 +40,76 @@ extension SiteTaskManager {
         for watcher in fresh { watcher.start() }
     }
 
-    /// The site's `paddock.json` changed: read it again. Its code changed: restart (gracefully, in the
-    /// background) every task with restart-on-change that isn't stopped by the user; a task given up on runs
-    /// again (fixing the code is how it recovers); one still stopping or starting is restarted once more after.
-    func siteChanged(_ site: String, _ changes: SiteWatcher.Changes) {
+    /// The site's `paddock.json` changed (or its folder did): look at the site again. Its code changed: restart
+    /// (gracefully, in the background) every task with restart-on-change that isn't stopped by the user. A task
+    /// given up on runs again (fixing the code is how it recovers). A task already stopping or starting needs
+    /// nothing: its next launch reads the new code. At most one restart per task in `changeRestartWindow`
+    /// seconds; changes inside it make one restart at its end.
+    func siteChanged(_ site: String, _ changes: SiteWatcher.Changes, at noticed: Date = Date()) {
         operationLock.lock()
         defer { operationLock.unlock() }
         guard !isShuttingDown else { return }
-        if changes.tasksFile { refreshLocked() }
+        if changes.tasksFile || changes.rootChanged { refreshLocked() }
         guard changes.code else { return }
         stateLock.lock()
         let view = views[site]
         stateLock.unlock()
         guard let view, let running = view.evaluation.running else { return }
         for (task, definition) in running.tasks where definition.restartsOnChange && !view.stopped.contains(task) {
-            let name = Self.processName(site: site, task: task)
-            if flight(name) != nil {
-                update { $0[name, default: Runtime()].changePending = true }
-                continue
-            }
-            let gaveUp: Bool
-            if case .gaveUp? = settledState(name) { gaveUp = true } else { gaveUp = supervisor.hasGivenUp(name) }
-            if gaveUp { clearSettled(name) }
-            if let launch = launched[name] {
-                if case .stopped = supervisor.status(name), !gaveUp { continue }
-                beginStopLocked(name, launch, note: Messages.taskRestartingForChange)
-            }
+            restartForChangeLocked(Self.processName(site: site, task: task), noticed: noticed)
         }
         reconcileLocked(views: views)
+    }
+
+    /// One task's restart for a change noticed at `noticed` (operation lock held).
+    func restartForChangeLocked(_ name: String, noticed: Date) {
+        stateLock.lock()
+        let state = runtime[name] ?? Runtime()
+        stateLock.unlock()
+        if let launchedAt = state.launchedAt, noticed < launchedAt { return }
+        if state.flight != nil { return }
+        let gaveUp: Bool
+        if case .gaveUp? = state.settled { gaveUp = true } else { gaveUp = supervisor.hasGivenUp(name) }
+        if gaveUp {
+            clearSettled(name)
+            if let launch = launched[name] { beginStopLocked(name, launch, note: Messages.taskRestartingForChange) }
+            return
+        }
+        guard let launch = launched[name] else { return }
+        if case .stopped = supervisor.status(name) { return }
+        let now = Date()
+        let window = Self.changeRestartWindow * timeScale
+        if let last = state.lastChangeRestart, now.timeIntervalSince(last) < window {
+            guard state.deferredChange == nil else { return }
+            update { $0[name]?.deferredChange = noticed }
+            refreshQueue.asyncAfter(deadline: .now() + window - now.timeIntervalSince(last)) { [weak self] in
+                self?.deferredChangeRestart(name)
+            }
+            return
+        }
+        update {
+            $0[name]?.lastChangeRestart = now
+            $0[name]?.deferredChange = nil
+        }
+        beginStopLocked(name, launch, note: Messages.taskRestartingForChange)
+    }
+
+    /// The end of a task's change window, with a change waiting.
+    func deferredChangeRestart(_ name: String) {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard !isShuttingDown else { return }
+        stateLock.lock()
+        let noticed = runtime[name]?.deferredChange
+        runtime[name]?.deferredChange = nil
+        let view = views.values.first { view in
+            view.evaluation.running?.tasks.keys.contains { Self.processName(site: view.name, task: $0) == name } ?? false
+        }
+        stateLock.unlock()
+        guard let noticed, let view, let task = view.evaluation.running?.tasks
+                .first(where: { Self.processName(site: view.name, task: $0.key) == name }),
+              task.value.restartsOnChange, !view.stopped.contains(task.key) else { return }
+        restartForChangeLocked(name, noticed: noticed)
     }
 
     func settledState(_ name: String) -> Settled? {
@@ -76,21 +118,23 @@ extension SiteTaskManager {
         return runtime[name]?.settled
     }
 
-    /// Five and thirty seconds after a launch (and only for that launch): whether the task listens on anything
-    /// but 127.0.0.1 or [::1]. It is warned, not stopped; a check that can't list the listeners warns nothing.
-    func checkListeners(_ name: String, generation: Int) {
+    /// Five and thirty seconds after each spawn (a launch, or the supervisor's restart; only for that launch and
+    /// that process): whether the task listens on anything only this Mac can't reach. It is warned, not stopped;
+    /// a check that can't list the listeners warns nothing.
+    func checkListeners(_ name: String, generation: Int, pid: Int32) {
         operationLock.lock()
-        guard launched[name]?.generation == generation, case .running(let pid) = supervisor.status(name) else {
+        guard launched[name]?.generation == generation, case .running(let current) = supervisor.status(name),
+              current == pid else {
             operationLock.unlock()
             return
         }
         operationLock.unlock()
-        let addresses = try? ServiceManager.listeningAddresses(processGroup: pid, runner: SystemCommandRunner())
-        let warning = addresses?.first { !ServiceManager.isLoopback($0) }
-            .map { Messages.listeningEverywhere(port: SiteWatcher.port(of: $0) ?? 0) }
+        let addresses = (try? ServiceManager.listeningAddresses(processGroup: pid, runner: SystemCommandRunner())) ?? []
+        let warning = addresses.compactMap(ListeningAddress.init).lazy.compactMap(Messages.listening).first
         operationLock.lock()
         defer { operationLock.unlock() }
-        guard launched[name]?.generation == generation else { return }
+        guard launched[name]?.generation == generation, case .running(let still) = supervisor.status(name), still == pid
+        else { return }
         update { $0[name, default: Runtime()].listening = warning }
     }
 }

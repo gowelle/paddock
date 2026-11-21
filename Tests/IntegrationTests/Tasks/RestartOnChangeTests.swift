@@ -21,8 +21,8 @@ final class RestartOnChangeTests: XCTestCase {
         home?.cleanUp()
     }
 
-    private func makeEngine() async -> Engine {
-        let engine = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: 0.02,
+    private func makeEngine(backoffScale: TimeInterval = 0.02) async -> Engine {
+        let engine = Engine(paths: home.paths, settings: home.settings, installAction: nil, backoffScale: backoffScale,
                             managesPortHelper: true, portHelper: TestSupport.portHelper,
                             portHolders: TestSupport.portHoldersWithoutProbes,
                             serviceSetup: ServiceSetup(catalog: ServiceCatalog(recipes: [])),
@@ -192,6 +192,71 @@ final class RestartOnChangeTests: XCTestCase {
         XCTAssertEqual(shopWatcher.callbacksAfterStop + blogWatcher.callbacksAfterStop, 0)
     }
 
+    /// At most one change-triggered restart per task every 10 seconds (scaled with the restart delays: 5 seconds
+    /// here); changes inside that window become one restart at its end.
+    func testChangeRestartsAreRateLimitedAndCoalesced() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)
+        let engine = await makeEngine(backoffScale: 0.5)
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(running(engine, "shop", "queue"))
+        try await pause(1.5)
+        try touch(folder, "app/A.php")
+        let second = try XCTUnwrap(running(engine, "shop", "queue", otherThan: first))
+        try touch(folder, "app/B.php")
+        try await pause(1.2)
+        try touch(folder, "app/C.php")
+        try await pause(1.5)
+        XCTAssertEqual(pid(engine, "shop", "queue"), second, "not again within the window")
+        _ = try XCTUnwrap(running(engine, "shop", "queue", otherThan: second), "once, at the end of the window")
+        try await pause(7)
+        XCTAssertEqual(starts("shop", "queue"), 3, "B and C made one restart")
+    }
+
+    /// A change while the task is stopping for a restart needs no second restart: the new launch reads the new
+    /// code anyway.
+    func testAChangeDuringARestartCausesNoSecondOne() async throws {
+        let folder = try home.makeSite("shop", tasks: """
+        {"tasks": {"careful": {"run": "trap 'sleep 2; exit 0' TERM; while :; do sleep 0.1; done",
+                               "restartOnChange": true, "stopSeconds": 10}}}
+        """)
+        let engine = await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(running(engine, "shop", "careful"))
+        try await pause(1.5)
+        try touch(folder, "app/A.php")
+        XCTAssertTrue(waitFor(20) { self.task(engine, "shop", "careful")?.state == .stopping })
+        try touch(folder, "app/B.php")
+        _ = try XCTUnwrap(running(engine, "shop", "careful", otherThan: first))
+        try await pause(6)
+        XCTAssertEqual(starts("shop", "careful"), 2)
+    }
+
+    /// Nothing starts once the daemon is shutting down, a change included.
+    func testAChangeDuringShutdownStartsNothing() async throws {
+        _ = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)
+        let engine = await makeEngine()
+        try await approve(engine, "shop")
+        _ = try XCTUnwrap(running(engine, "shop", "queue"))
+        await engine.shutDownAfterPendingWork()
+        engine.tasks.siteChanged("shop", SiteWatcher.Changes(code: true))
+        engine.tasks.refresh()
+        try await pause(2)
+        XCTAssertEqual(home.leftoverProcesses(), [], "nothing of the site runs")
+    }
+
+    /// A site whose folder goes away loses its watcher with its tasks.
+    func testTheWatcherGoesWithTheSitesFolder() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600", "restartOnChange": true}}}"#)
+        let engine = await makeEngine()
+        try await approve(engine, "shop")
+        _ = try XCTUnwrap(running(engine, "shop", "queue"))
+        let watcher = try XCTUnwrap(engine.tasks.watcher(site: "shop"))
+        try FileManager.default.moveItem(at: folder, to: home.root.appendingPathComponent("aside"))
+        engine.tasks.refresh()
+        XCTAssertNil(engine.tasks.watcher(site: "shop"))
+        XCTAssertTrue(watcher.isStopped)
+    }
+
     // MARK: - Listening
 
     func testATaskListeningEverywhereIsWarnedButKeepsRunning() async throws {
@@ -213,10 +278,10 @@ final class RestartOnChangeTests: XCTestCase {
         try await approve(engine, "shop")
         let pid = try XCTUnwrap(running(engine, "shop", "open"))
         XCTAssertTrue(waitFor(30) { self.task(engine, "shop", "open")?.warning != nil }, "checked 5 seconds after it started")
-        XCTAssertEqual(task(engine, "shop", "open")?.warning, Messages.listeningEverywhere(port: open))
+        XCTAssertEqual(task(engine, "shop", "open")?.warning, Messages.listening(ListeningAddress(host: "*", port: open))!)
         XCTAssertEqual(self.pid(engine, "shop", "open"), pid, "not stopped")
         XCTAssertNil(task(engine, "shop", "local")?.warning)
         XCTAssertTrue(Messages.taskTable(engine.status().sites.first { $0.name == "shop" }!.tasks!)
-            .contains("open: \(Messages.listeningEverywhere(port: open))"))
+            .contains("open: \(Messages.listening(ListeningAddress(host: "*", port: open))!)"))
     }
 }

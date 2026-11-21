@@ -76,6 +76,36 @@ final class RotatingLogTests: XCTestCase {
         XCTAssertTrue(waitFor(30) { FileManager.default.fileExists(atPath: self.dir.appendingPathComponent("finished").path) })
     }
 
+    /// Following a log across a rotation: what was written to the old file before it was renamed is read to its
+    /// end, then the new file from its start.
+    func testFollowingReadsTheOldFileToItsEndBeforeTheNewOne() throws {
+        let file = dir.appendingPathComponent("follow.log")
+        try Data("before\n".utf8).write(to: file)
+        let follower = LogFollower(url: file)
+        XCTAssertEqual(follower.read(), Data(), "starts at the end")
+        let old = try FileHandle(forWritingTo: file)
+        old.seekToEndOfFile()
+        old.write(Data("one\n".utf8))
+        XCTAssertEqual(String(decoding: follower.read(), as: UTF8.self), "one\n")
+        old.write(Data("last of the old file\n".utf8))
+        try FileManager.default.moveItem(at: file, to: file.appendingPathExtension("1"))
+        try Data("first of the new file\n".utf8).write(to: file)
+        XCTAssertEqual(String(decoding: follower.read(), as: UTF8.self), "last of the old file\nfirst of the new file\n")
+        try old.close()
+    }
+
+    /// The read end of an output pipe is never inherited by another program Paddock starts.
+    func testTheOutputPipeIsCloseOnExec() throws {
+        let supervisor = Supervisor()
+        self.supervisor = supervisor
+        let sink = CloseOnExecProbe()
+        var spec = ProcessSpec(name: "p", executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", "exec sleep 60"],
+                               logFile: dir.appendingPathComponent("unused.log"))
+        spec.output = sink
+        try supervisor.start(spec)
+        XCTAssertEqual(sink.closeOnExec, true)
+    }
+
     private func waitFor(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
@@ -83,5 +113,14 @@ final class RotatingLogTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.05)
         }
         return condition()
+    }
+}
+
+/// Records whether the pipe it is handed is close-on-exec.
+final class CloseOnExecProbe: ProcessOutput, @unchecked Sendable {
+    private(set) var closeOnExec: Bool?
+    func attach(_ fd: Int32) {
+        closeOnExec = fcntl(fd, F_GETFD) & FD_CLOEXEC != 0
+        close(fd)
     }
 }

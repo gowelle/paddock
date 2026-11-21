@@ -10,7 +10,7 @@ public enum SiteTaskError: Error, Equatable, Sendable {
     case unknownTask(site: String, task: String)
     /// A command that would show other than it runs: the first such character, by position (in Unicode scalars,
     /// from 1) and code point.
-    case notShowable(site: String, task: String, position: Int, codePoint: UInt32)
+    case notShowable(site: String, task: String, problem: CommandProblem)
     /// The file's hash isn't the one the user was shown.
     case changedSinceShown(site: String)
     case alreadyRunning(site: String, task: String, pid: Int32)
@@ -47,6 +47,8 @@ public final class SiteTaskManager: @unchecked Sendable {
     let shutdownGrace: TimeInterval
     /// Multiplies the windows in which clean exits are counted (tests shorten them with the restart delays).
     let timeScale: TimeInterval
+    /// Every process Paddock supervises elsewhere (the web stack, services): never a task's leftover.
+    let supervisedPids: @Sendable () -> Set<Int32>
     let log: @Sendable (String) -> Void
 
     /// At daemon shutdown a task gets at most this long to stop (its `stopSeconds` may allow up to 300), so
@@ -62,8 +64,11 @@ public final class SiteTaskManager: @unchecked Sendable {
     public static let logLimit: UInt64 = 5 * 1024 * 1024
     /// After a spawn, when the pid record is brought up to date with the program the shell handed over to.
     static let recordUpdates: [TimeInterval] = [0.5, 2, 10]
-    /// After a launch, when Paddock looks at what the task listens on.
+    /// After each spawn (a launch, or the supervisor's restart), when Paddock looks at what the task listens on.
     static let listenerChecks: [TimeInterval] = [5, 30]
+    /// At most one restart for a code change per task in this many seconds; changes inside it make one restart
+    /// at its end.
+    static let changeRestartWindow: TimeInterval = 10
 
     /// Short-lived: held for decisions, never while a process is given its grace.
     let operationLock = NSLock()
@@ -119,8 +124,12 @@ public final class SiteTaskManager: @unchecked Sendable {
         var flight: Flight?
         /// What a forced restart stopped, until the task is next stopped.
         var report: String?
-        /// The code changed while it was stopping or starting: restart it once more when it is running.
-        var changePending = false
+        /// When its current launch started: a change noticed before it is already in the code it runs.
+        var launchedAt: Date?
+        /// When it was last restarted for a code change.
+        var lastChangeRestart: Date?
+        /// A change noticed inside the window, waiting for its end (the time it was noticed).
+        var deferredChange: Date?
         /// It listens beyond this Mac (the last check said so).
         var listening: String?
     }
@@ -185,7 +194,8 @@ public final class SiteTaskManager: @unchecked Sendable {
                 environment: @escaping @Sendable () -> ShellEnvironment,
                 sites: @escaping @Sendable () -> [Site], inspector: ServiceProcessInspector = .live,
                 refreshInterval: TimeInterval? = 30, shutdownGrace: TimeInterval = SiteTaskManager.shutdownGraceCap,
-                timeScale: TimeInterval = 1, log: @escaping @Sendable (String) -> Void = { _ in }) {
+                timeScale: TimeInterval = 1, supervisedPids: @escaping @Sendable () -> Set<Int32> = { [] },
+                log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.paths = paths
         self.store = store
         self.supervisor = supervisor
@@ -195,6 +205,7 @@ public final class SiteTaskManager: @unchecked Sendable {
         self.refreshInterval = refreshInterval
         self.shutdownGrace = min(shutdownGrace, Self.shutdownGraceCap)
         self.timeScale = timeScale
+        self.supervisedPids = supervisedPids
         self.log = log
     }
 
@@ -293,8 +304,11 @@ public final class SiteTaskManager: @unchecked Sendable {
         stateLock.lock()
         let flights = runtime.values.compactMap(\.flight)
         stateLock.unlock()
+        let supervised = supervisor.names
         operationLock.unlock()
         for flight in flights { flight.wait(shutdownGrace + 10) }
+        // Anything else the supervisor knows (a task waiting to be restarted, say) is told to stay stopped.
+        for name in supervised { supervisor.stop(name, grace: 1) }
     }
 
     // MARK: - Refreshing
@@ -434,7 +448,15 @@ public final class SiteTaskManager: @unchecked Sendable {
         update { runtime in
             for (name, state) in runtime where wanted[name] == nil && state.held != nil { runtime[name]?.held = nil }
         }
+        // A site's new launches wait while any of its tasks is stopping (the end of that stop refreshes again):
+        // a task renamed in a new definition must not race the old one for its port.
+        stateLock.lock()
+        let sitesStopping = Set(runtime.compactMap { name, state in
+            state.flight?.kind == .stop ? name.split(separator: "/").dropFirst().first.map(String.init) : nil
+        })
+        stateLock.unlock()
         for (name, task) in wanted.sorted(by: { $0.key < $1.key }) where flight(name) == nil {
+            if launched[name] == nil && sitesStopping.contains(task.site) { continue }
             guard launched[name] != nil else {
                 prepareLaunchLocked(name, task)
                 continue
@@ -459,6 +481,8 @@ public final class SiteTaskManager: @unchecked Sendable {
     /// provably Paddock's own is stopped first (in the background; the task starts after); a process that
     /// isn't provably ours, or processes left in the recorded group, are left alone and the task doesn't start.
     func prepareLaunchLocked(_ name: String, _ task: Launched) {
+        // Nothing starts once the daemon is on its way out, whoever asks.
+        guard !isShuttingDown else { return }
         let file = recordFile(site: task.site, task: task.task)
         if let record = ServiceProcessRecord.read(from: file) {
             if let made = record.bootSeconds, let boot = ServiceProcessRecord.currentBoot(), made != boot {
@@ -478,7 +502,7 @@ public final class SiteTaskManager: @unchecked Sendable {
                     beginReclaimLocked(name, task, record)
                     return
                 case .gone:
-                    if !leftovers(of: record, in: task.folder).isEmpty {
+                    if holdsTask(sortLeftovers(of: record, in: task.folder)) {
                         log("task \(task.site)/\(task.task): processes left from an earlier run are still running; "
                             + "leaving them alone")
                         update { $0[name, default: Runtime()].held = .leftovers }
@@ -493,7 +517,10 @@ public final class SiteTaskManager: @unchecked Sendable {
     }
 
     func launchLocked(_ name: String, _ task: Launched) {
+        guard !isShuttingDown else { return }
         let environment = environmentLocked()
+        // Capturing the environment may have taken a while: check again.
+        guard !isShuttingDown else { return }
         let writer = logWriter(site: task.site, task: task.task)
         let record = recordFile(site: task.site, task: task.task)
         do {
@@ -517,6 +544,11 @@ public final class SiteTaskManager: @unchecked Sendable {
                         self?.updateRecord(name, generation: generation)
                     }
                 }
+                for delay in Self.listenerChecks {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                        self?.checkListeners(name, generation: generation, pid: pid)
+                    }
+                }
             })
         spec.output = writer
         spec.workingDirectory = URL(fileURLWithPath: task.folder, isDirectory: true)
@@ -528,20 +560,11 @@ public final class SiteTaskManager: @unchecked Sendable {
         do {
             try supervisor.start(spec)
             launched[name] = launch
-            var changedMeanwhile = false
             update {
                 $0[name, default: Runtime()].startFailure = nil
                 $0[name]?.listening = nil
-                changedMeanwhile = $0[name]?.changePending ?? false
-                $0[name]?.changePending = false
+                $0[name]?.launchedAt = Date()
             }
-            for delay in Self.listenerChecks {
-                DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
-                    self?.checkListeners(name, generation: generation)
-                }
-            }
-            // The code changed again while it was restarting: once more, so it runs the newest code.
-            if changedMeanwhile { beginStopLocked(name, launch, note: Messages.taskRestartingForChange) }
         } catch {
             update { $0[name, default: Runtime()].startFailure = Messages.taskCouldNotRun(shell: environment.shell) }
             log("task \(task.site)/\(task.task) could not be started: \(error)")
@@ -558,6 +581,8 @@ public final class SiteTaskManager: @unchecked Sendable {
         var state = runtime[name] ?? Runtime()
         defer { runtime[name] = state }
         state.lastExit = status
+        // The daemon is on its way out: no restart.
+        if shutdownStarted != nil { return .stop }
         guard status == 0 else { return .restart }
         let now = Date()
         state.cleanExits = state.cleanExits.filter { now.timeIntervalSince($0) < Self.exitedLongWindow * timeScale } + [now]

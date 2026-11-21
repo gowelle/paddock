@@ -183,6 +183,13 @@ public final class Supervisor: @unchecked Sendable {
         return kill(-pid, signal) == 0
     }
 
+    /// The pids of every process running now.
+    public var runningPids: Set<Int32> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(entries.values.compactMap(\.pid))
+    }
+
     /// True once the process failed too often and is left crashed (until the next `start`).
     public func hasGivenUp(_ name: String) -> Bool {
         lock.lock()
@@ -300,7 +307,15 @@ public final class Supervisor: @unchecked Sendable {
 
     /// posix_spawn into a new process group, with stdin from /dev/null, stdout and stderr appended
     /// to the log file, default signal handling, and no other inherited descriptors.
+    /// Held (by every supervisor) from creating an output pipe until the spawn that uses it: so no other program
+    /// Paddock spawns meanwhile can inherit a pipe end before it is close-on-exec. (Spawns also close every
+    /// descriptor they aren't given: POSIX_SPAWN_CLOEXEC_DEFAULT.) When the daemon dies, a task writing to its
+    /// pipe then gets SIGPIPE and exits rather than being left running with nobody reading.
+    private static let spawnLock = NSLock()
+
     private static func spawn(_ spec: ProcessSpec) throws -> Int32 {
+        spawnLock.lock()
+        defer { spawnLock.unlock() }
         var pipeFDs: [Int32] = [-1, -1]
         if spec.output != nil {
             guard pipe(&pipeFDs) == 0 else { throw SupervisorError.spawnFailed(name: spec.name, errno: errno) }

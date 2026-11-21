@@ -1,3 +1,4 @@
+import CoreServices
 import XCTest
 @testable import PaddockCore
 
@@ -57,11 +58,50 @@ final class SiteWatcherTests: XCTestCase {
         XCTAssertTrue(on.restartsOnChange, "and on")
     }
 
+    /// Events FSEvents flags as lost or coalesced (or the folder itself changing) count as a code change, whatever
+    /// the path; the folder itself changing also says so, so the manager can look at the site again.
+    func testFlaggedEventsCountAsChanges() {
+        let root = "/p/shop"
+        let none = FSEventStreamEventFlags(kFSEventStreamEventFlagNone)
+        XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop/README.md", none)], root: root), SiteWatcher.Changes())
+        XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop/app/A.php", none)], root: root), SiteWatcher.Changes(code: true))
+        XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop/paddock.json", none)], root: root),
+                       SiteWatcher.Changes(tasksFile: true))
+        for flag in [kFSEventStreamEventFlagMustScanSubDirs, kFSEventStreamEventFlagUserDropped,
+                     kFSEventStreamEventFlagKernelDropped] {
+            XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop/vendor", FSEventStreamEventFlags(flag))], root: root),
+                           SiteWatcher.Changes(code: true), "flag \(flag)")
+        }
+        XCTAssertEqual(SiteWatcher.changes(for: [("/p/shop", FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged))],
+                                           root: root),
+                       SiteWatcher.Changes(code: true, rootChanged: true))
+        XCTAssertEqual(SiteWatcher.excludedFolders, ["vendor", "node_modules", ".git", "storage"])
+    }
+
+    func testListeningAddresses() {
+        XCTAssertEqual(ListeningAddress("*:8080"), ListeningAddress(host: "*", port: 8080))
+        XCTAssertEqual(ListeningAddress("[::]:6001")?.port, 6001)
+        XCTAssertEqual(ListeningAddress("[fe80::1]:6001")?.host, "[fe80::1]")
+        XCTAssertNil(ListeningAddress("nonsense"))
+        for local in ["127.0.0.1:80", "127.0.0.2:80", "127.255.0.9:1", "[::1]:80"] {
+            XCTAssertTrue(ListeningAddress(local)!.isLoopback, local)
+        }
+        for open in ["*:80", "0.0.0.0:80", "[::]:80", "192.168.1.5:80", "128.0.0.1:80", "[fe80::1]:80"] {
+            XCTAssertFalse(ListeningAddress(open)!.isLoopback, open)
+        }
+        XCTAssertTrue(ListeningAddress("0.0.0.0:80")!.isEverywhere)
+        XCTAssertFalse(ListeningAddress("192.168.1.5:80")!.isEverywhere)
+        XCTAssertFalse(ServiceManager.isLoopback("127.0.0.2:80"), "services keep their own, stricter rule")
+    }
+
     func testTheSentences() {
-        XCTAssertEqual(Messages.listeningEverywhere(port: 8080),
+        XCTAssertEqual(Messages.listening(ListeningAddress("*:8080")!),
                        "Listening on all network interfaces (port 8080). Add --host=127.0.0.1 or similar to keep it on this Mac.")
-        XCTAssertEqual(SiteWatcher.port(of: "*:8080"), 8080)
-        XCTAssertEqual(SiteWatcher.port(of: "[::]:6001"), 6001)
-        XCTAssertNil(SiteWatcher.port(of: "nonsense"))
+        XCTAssertEqual(Messages.listening(ListeningAddress("192.168.1.5:3000")!),
+                       "Listening on 192.168.1.5 (port 3000), which other devices can reach.")
+        XCTAssertEqual(Messages.listening(ListeningAddress("*:0")!),
+                       "Listening on all network interfaces. Add --host=127.0.0.1 or similar to keep it on this Mac.",
+                       "never port 0")
+        XCTAssertNil(Messages.listening(ListeningAddress("127.0.0.1:80")!))
     }
 }

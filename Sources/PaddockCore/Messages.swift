@@ -1,5 +1,22 @@
 import Foundation
 
+/// Why a process of a task's recorded group isn't provably left from that task's earlier run.
+public enum LeftoverReason: Equatable, Sendable {
+    case notInSiteFolder, startedEarlier, anotherUser, anotherBoot, runByPaddock
+}
+
+/// Why a task's command can't be approved (`Messages.commandProblem`).
+public enum CommandProblem: Equatable, Sendable {
+    /// A character that would show other than it runs, by position (Unicode scalars, from 1) and code point.
+    case character(position: Int, codePoint: UInt32)
+    /// Characters not in NFC.
+    case decomposed
+    /// A space at the start or the end.
+    case edgeSpace
+    /// A ninth space in a row, at this position.
+    case spaceRun(position: Int)
+}
+
 /// The plain sentences Paddock's clients print. Pure functions, so they can be tested without a daemon.
 public enum Messages {
     public static let notRunning = "Paddock isn't running."
@@ -443,31 +460,34 @@ public enum Messages {
 
     // MARK: - Site tasks
 
-    /// The first character of a command that wouldn't show exactly as it runs, by position (in Unicode scalars,
-    /// from 1) and code point; nil when the command is plain text. Refused: control, format (bidirectional
-    /// overrides among them), surrogate, private-use and unassigned characters, line and paragraph separators,
-    /// combining marks (which can lay one character over another), default-ignorable code points (Hangul fillers,
-    /// variation selectors…), the braille blank, any whitespace but the ASCII space, a leading or trailing space,
-    /// and more than 8 spaces in a row.
-    public static func unshowableCharacter(in command: String) -> (position: Int, codePoint: UInt32)? {
-        var spaces = 0
+    /// Why a command wouldn't show exactly as it runs: nil when it is plain text. In order: a space at either
+    /// end; characters not in NFC (an accent typed as a separate mark: Paddock never changes the bytes it shows,
+    /// hashes and runs, so it asks for them to be retyped); then, by position (in Unicode scalars, from 1), the
+    /// first control, format (bidirectional overrides among them), surrogate, private-use or unassigned character,
+    /// line or paragraph separator, combining mark (which can lay one character over another), default-ignorable
+    /// code point (Hangul fillers, variation selectors…), braille blank, whitespace other than the ASCII space, or
+    /// a ninth space in a row.
+    public static func commandProblem(in command: String) -> CommandProblem? {
         let scalars = Array(command.unicodeScalars)
+        if scalars.first == " " || scalars.last == " " { return .edgeSpace }
+        if Array(command.precomposedStringWithCanonicalMapping.unicodeScalars) != scalars { return .decomposed }
+        var spaces = 0
         for (index, scalar) in scalars.enumerated() {
             let position = index + 1
             if scalar == " " {
                 spaces += 1
-                if index == 0 || index == scalars.count - 1 || spaces > 8 { return (position, scalar.value) }
+                if spaces > 8 { return .spaceRun(position: position) }
                 continue
             }
             spaces = 0
             let properties = scalar.properties
             if properties.isWhitespace || properties.isDefaultIgnorableCodePoint || scalar.value == 0x2800 {
-                return (position, scalar.value)
+                return .character(position: position, codePoint: scalar.value)
             }
             switch properties.generalCategory {
             case .nonspacingMark, .enclosingMark, .format, .control, .surrogate, .privateUse, .unassigned,
                  .lineSeparator, .paragraphSeparator, .spaceSeparator:
-                return (position, scalar.value)
+                return .character(position: position, codePoint: scalar.value)
             default:
                 continue
             }
@@ -475,9 +495,9 @@ public enum Messages {
         return nil
     }
 
-    /// Whether a command shows exactly as it runs (`unshowableCharacter` finds nothing). A command that doesn't
-    /// can't be approved: the user would approve text they can't see.
-    public static func isShowable(_ command: String) -> Bool { unshowableCharacter(in: command) == nil }
+    /// Whether a command shows exactly as it runs (`commandProblem` finds nothing). A command that doesn't can't
+    /// be approved: the user would approve text they can't see.
+    public static func isShowable(_ command: String) -> Bool { commandProblem(in: command) == nil }
 
     /// A task's command as Paddock shows it: exactly as written when it `isShowable`, else what `displayName`
     /// leaves of it.
@@ -507,9 +527,20 @@ public enum Messages {
         "\(site): paddock.json can't be used: \(reason)."
     }
 
-    public static func commandNotShowable(task: String, position: Int, codePoint: UInt32) -> String {
-        "The command of task \"\(task)\" has a character that cannot be shown, at position \(position) "
-            + "(U+\(String(format: "%04X", codePoint))), so Paddock won't approve it. Make it plain text in paddock.json."
+    public static func commandNotShowable(task: String, problem: CommandProblem) -> String {
+        switch problem {
+        case .character(let position, let codePoint):
+            return "The command of task \"\(task)\" has a character that cannot be shown, at position \(position) "
+                + "(U+\(String(format: "%04X", codePoint))), so Paddock won't approve it. Make it plain text in paddock.json."
+        case .decomposed:
+            return "Paddock won't approve the command of task \"\(task)\". This command contains decomposed characters "
+                + "(for example an accent typed separately). Retype that part."
+        case .edgeSpace:
+            return "Paddock won't approve the command of task \"\(task)\": it starts or ends with a space."
+        case .spaceRun(let position):
+            return "Paddock won't approve the command of task \"\(task)\": it has more than 8 spaces in a row at "
+                + "position \(position)."
+        }
     }
 
     /// The notice of a site whose tasks run with the basic environment, and why.
@@ -530,9 +561,15 @@ public enum Messages {
         "\(task) keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running."
     }
 
-    /// A task listening beyond this Mac (it keeps running).
-    public static func listeningEverywhere(port: Int) -> String {
-        "Listening on all network interfaces (port \(port)). Add --host=127.0.0.1 or similar to keep it on this Mac."
+    /// The warning of a task listening beyond this Mac (it keeps running); nil for an address only this Mac can
+    /// reach. A port Paddock doesn't know is left out.
+    public static func listening(_ address: ListeningAddress) -> String? {
+        guard !address.isLoopback else { return nil }
+        let port = address.port.map { " (port \($0))" } ?? ""
+        if address.isEverywhere {
+            return "Listening on all network interfaces\(port). Add --host=127.0.0.1 or similar to keep it on this Mac."
+        }
+        return "Listening on \(printable(address.host) ?? "?")\(port), which other devices can reach."
     }
 
     /// The line in a task's log when the site's code changed.
@@ -541,11 +578,28 @@ public enum Messages {
     /// `paddock tasks stop` (or `off`) after a few seconds.
     public static func waitingForTask(_ task: String) -> String { "Waiting for \(task) to finish…" }
 
-    /// What `paddock tasks restart --force` stopped.
-    public static func leftoversStopped(task: String, pids: [Int32]) -> String {
-        pids.isEmpty ? "Found no processes left from an earlier run of \(task)."
-            : "Stopped \(pids.count) process\(pids.count == 1 ? "" : "es") left from an earlier run of \(task): "
-                + pids.map(String.init).joined(separator: ", ") + "."
+    /// What `paddock tasks restart --force` stopped, and what it left (and why).
+    public static func leftoversStopped(task: String, stopped: [Int32], left: [(Int32, LeftoverReason)]) -> String {
+        let leftList = left.map { "\($0.0) (\(leftoverReason($0.1)))" }.joined(separator: ", ")
+        if stopped.isEmpty {
+            guard !left.isEmpty else { return "Found no processes left from an earlier run of \(task)." }
+            return "Found no processes left from an earlier run of \(task) that are provably that task's. "
+                + "Left \(left.count): \(leftList)."
+        }
+        var text = "Stopped \(stopped.count) process\(stopped.count == 1 ? "" : "es") left from an earlier run of \(task): "
+            + stopped.map(String.init).joined(separator: ", ") + "."
+        if !left.isEmpty { text += " Left \(left.count) that aren't provably that task's: \(leftList)." }
+        return text
+    }
+
+    static func leftoverReason(_ reason: LeftoverReason) -> String {
+        switch reason {
+        case .notInSiteFolder: return "not in the site's folder"
+        case .startedEarlier: return "started before the task's record"
+        case .anotherUser: return "another user's"
+        case .anotherBoot: return "the record is from another boot"
+        case .runByPaddock: return "run by Paddock"
+        }
     }
 
     public static func taskRestarting(status: Int32) -> String {
@@ -650,8 +704,8 @@ public enum Messages {
             return "\(site)'s tasks aren't approved yet. Review and approve them with: paddock tasks on"
         case .unknownTask(let site, let task):
             return "\(site) has no task named \"\(printable(task) ?? "?")\". See: paddock tasks"
-        case .notShowable(_, let task, let position, let codePoint):
-            return commandNotShowable(task: task, position: position, codePoint: codePoint)
+        case .notShowable(_, let task, let problem):
+            return commandNotShowable(task: task, problem: problem)
         case .stillStopping(let task):
             return "\(task) is still stopping."
         case .leftoverProcesses(_, let task):

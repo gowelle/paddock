@@ -225,7 +225,9 @@ public final class Engine: @unchecked Sendable {
                 let php = state.defaultPHP ?? installer.installed().max() ?? PHPVersion(major: 8, minor: 1)
                 return SiteRegistry(state: state, defaultPHP: php, settings: settings).sites()
             },
-            shutdownGrace: taskShutdownGrace, timeScale: backoffScale, log: log)
+            shutdownGrace: taskShutdownGrace, timeScale: backoffScale,
+            supervisedPids: { [supervisor, services] in supervisor.runningPids.union(services.supervisor.runningPids) },
+            log: log)
     }
 
     deinit { shutdown() }

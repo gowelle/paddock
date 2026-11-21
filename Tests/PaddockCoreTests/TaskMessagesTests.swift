@@ -101,15 +101,24 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.taskError(.changedSinceShown(site: "shop")),
                        "shop's paddock.json changed after it was shown, so Paddock approved nothing. "
                        + "Review it again with: paddock tasks on --show")
-        XCTAssertEqual(Messages.taskError(.notShowable(site: "shop", task: "queue", position: 7, codePoint: 0x9)),
+        XCTAssertEqual(Messages.taskError(.notShowable(site: "shop", task: "queue",
+                                                       problem: .character(position: 7, codePoint: 0x9))),
                        #"The command of task "queue" has a character that cannot be shown, at position 7 (U+0009), "#
                        + "so Paddock won't approve it. Make it plain text in paddock.json.")
         XCTAssertEqual(Messages.taskError(.stillStopping(task: "queue")), "queue is still stopping.")
         XCTAssertEqual(Messages.waitingForTask("queue"), "Waiting for queue to finish…")
-        XCTAssertEqual(Messages.leftoversStopped(task: "queue", pids: [12, 34]),
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [12, 34], left: []),
                        "Stopped 2 processes left from an earlier run of queue: 12, 34.")
-        XCTAssertEqual(Messages.leftoversStopped(task: "queue", pids: []),
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [], left: []),
                        "Found no processes left from an earlier run of queue.")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [12],
+                                                 left: [(56, .notInSiteFolder), (78, .startedEarlier), (90, .runByPaddock)]),
+                       "Stopped 1 process left from an earlier run of queue: 12. Left 3 that aren't provably that "
+                       + "task's: 56 (not in the site's folder), 78 (started before the task's record), "
+                       + "90 (run by Paddock).")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [], left: [(5, .anotherUser), (6, .anotherBoot)]),
+                       "Found no processes left from an earlier run of queue that are provably that task's. "
+                       + "Left 2: 5 (another user's), 6 (the record is from another boot).")
         XCTAssertEqual(Messages.taskError(.alreadyRunning(site: "shop", task: "queue", pid: 7)),
                        "queue is already running (pid 7), not started by this Paddock. Stop that process first.")
         XCTAssertEqual(Messages.taskError(.notLaravel(site: "shop")),
