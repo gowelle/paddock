@@ -739,3 +739,289 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.statusLine, "Running")
     }
 }
+
+// MARK: - Services
+
+/// What the model put on the pasteboard and asked the system to open.
+@MainActor
+private final class Outside {
+    var copied: [String] = []
+    var opened: [URL] = []
+}
+
+private func service(_ id: String, name: String, kind: String = "mail", state: ServiceState = .running,
+                     ports: [String: Int] = ["main": 1025], openURL: String? = nil, notice: String? = nil,
+                     notes: [String]? = nil, env: [String] = ["MAIL_PORT=1025"], secrets: [String]? = nil) -> ServiceStatus {
+    ServiceStatus(id: id, name: name, kind: kind, version: "1.0", displayName: name, state: state, ports: ports,
+                  env: env, openURL: openURL, dataPath: "/h/services/\(id)/data", autostart: true,
+                  mainPort: ports["main"], notice: notice, notes: notes, secretEnvNames: secrets)
+}
+
+private func statusWith(services: [ServiceStatus] = [], sites: [Site]? = nil) -> EngineStatus {
+    var status = sampleStatus(sites: sites)
+    status.services = services
+    return status
+}
+
+private let mail = service("mail", name: "Mail", ports: ["smtp": 1025, "http": 8025], openURL: "http://127.0.0.1:8025")
+private let postgres = service("postgres-18", name: "PostgreSQL 18", kind: "postgres", state: .stopped,
+                               ports: ["main": 5432], env: ["DB_CONNECTION=pgsql", "DB_PORT=5432"])
+private let meili = service("meilisearch-1-57", name: "Meilisearch 1.57", kind: "meilisearch",
+                            state: .portInUse(holder: "nc (pid 7)"), ports: ["main": 7700],
+                            openURL: "http://127.0.0.1:7700",
+                            notes: ["Search indexes are tied to Meilisearch 1.57; export a dump before changing version."],
+                            env: ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700"],
+                            secrets: ["MEILISEARCH_KEY"])
+
+private let secretKey = "Zm9vYmFyLXNlY3JldC1rZXktdGhhdC1tdXN0LW5ldmVyLWxlYWs"
+
+extension AppModelTests {
+    private func servicesModel(_ handler: @escaping @Sendable (Request) throws -> Response,
+                               refusal: Error? = nil) -> (AppModel, FakeClient, Outside) {
+        let client = FakeClient(handler)
+        let outside = Outside()
+        let services = FakeServices()
+        services.refusal = refusal
+        let model = AppModel(client: client, services: services,
+                             copyText: { outside.copied.append($0) }, open: { outside.opened.append($0) })
+        return (model, client, outside)
+    }
+
+    func testServiceRowsSayWhatEachServiceIsDoingInTheCLIsWords() async {
+        let (model, _, _) = servicesModel { _ in .ok(statusWith(services: [mail, postgres, meili])) }
+        XCTAssertEqual(model.serviceRows, [], "nothing before the first status")
+        await model.refresh()
+        let rows = model.serviceRows
+        XCTAssertEqual(rows.map(\.id), ["mail", "postgres-18", "meilisearch-1-57"])
+        XCTAssertEqual(rows.map(\.name), ["Mail", "PostgreSQL 18", "Meilisearch 1.57"])
+        XCTAssertEqual(rows.map(\.stateText), ["running", "stopped", "port in use by nc (pid 7)"])
+        XCTAssertEqual(rows.map(\.portText), ["1025 (smtp), 8025 (http)", "5432 (main)", "7700 (main)"])
+        XCTAssertEqual(rows.map(\.notes), [[], [], ["Search indexes are tied to Meilisearch 1.57; export a dump before changing version."]])
+        XCTAssertEqual(rows.map(\.canStart), [false, true, true])
+        XCTAssertEqual(rows.map(\.canStop), [true, false, false])
+        XCTAssertEqual(rows.map(\.canOpen), [true, false, false], "a page opens only while the service runs")
+        XCTAssertEqual(rows.map(\.canCreateDatabase), [false, false, false], "PostgreSQL only, and only while it runs")
+        XCTAssertEqual(rows[2].envText, "SCOUT_DRIVER=meilisearch\nMEILISEARCH_HOST=http://127.0.0.1:7700\n"
+                       + "# MEILISEARCH_KEY: run \"paddock service env meilisearch-1-57\"")
+
+        var running = postgres
+        running.state = .running
+        let noticed = service("mail", name: "Mail", notice: "Found existing data for Mail; using it.")
+        let fresh = statusWith(services: [noticed, running])
+        model.status = fresh
+        XCTAssertEqual(model.serviceRows.map(\.canCreateDatabase), [false, true])
+        XCTAssertEqual(model.serviceRows.first?.notes, ["Found existing data for Mail; using it."])
+    }
+
+    func testStartStopAndRestartSendTheServiceRequests() async {
+        let (model, client, _) = servicesModel { _ in .ok(statusWith(services: [mail])) }
+        await model.startService("mail")
+        await model.stopService("mail")
+        await model.restartService("mail")
+        XCTAssertEqual(client.requests.filter { $0 != .status },
+                       [.serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail")])
+    }
+
+    func testRemoveKeepsTheDataAndSaysWhereItIsInTheCLIsWords() async {
+        let (model, client, _) = servicesModel { request in
+            if case .serviceRemove = request { return .removed(dataPath: "/h/services/mail/data", status: statusWith()) }
+            return .ok(statusWith(services: [mail]))
+        }
+        await model.refresh()
+        await model.removeService("mail", deleteData: false)
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.serviceRemove(name: "mail", deleteData: false)])
+        XCTAssertEqual(model.serviceNotice, "Removed Mail. Its data is still at /h/services/mail/data.")
+        XCTAssertNil(model.lastError)
+    }
+
+    /// Deleting data needs the model's own confirmation flag, set by asking first: a view can't skip it.
+    func testDeletingDataNeedsOneConfirmationNamingTheService() async {
+        let (model, client, _) = servicesModel { request in
+            if case .serviceRemove = request { return .removed(dataPath: "/h/services/mail/data", status: statusWith()) }
+            return .ok(statusWith(services: [mail, postgres]))
+        }
+        await model.refresh()
+        await model.removeService("mail", deleteData: true)
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [], "never without asking first")
+        XCTAssertNil(model.deleteDataQuestion)
+
+        model.askToRemoveAndDeleteData("mail")
+        XCTAssertEqual(model.deleteDataQuestion, "Remove Mail and delete its data? This can't be undone.")
+        await model.removeService("postgres-18", deleteData: true)
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [], "the confirmation is for that service only")
+        model.cancelRemoveAndDeleteData()
+        XCTAssertNil(model.deleteDataQuestion)
+        await model.removeService("mail", deleteData: true)
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [], "a cancelled question confirms nothing")
+
+        model.askToRemoveAndDeleteData("mail")
+        await model.removeService("mail", deleteData: true)
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.serviceRemove(name: "mail", deleteData: true)])
+        XCTAssertEqual(model.serviceNotice, "Removed Mail and deleted its data.")
+        XCTAssertNil(model.deleteDataQuestion, "used once")
+        await model.removeService("mail", deleteData: true)
+        XCTAssertEqual(client.requests.filter { $0 != .status }.count, 1, "and only once")
+    }
+
+    /// Copy .env fetches the full lines at the click and hands them to the pasteboard; the secret is never kept
+    /// in the model's state or put in a message.
+    func testCopyEnvFetchesTheSecretAtTheClickAndKeepsItNowhere() async throws {
+        let full = ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700", "MEILISEARCH_KEY=\(secretKey)"]
+        let (model, client, outside) = servicesModel { request in
+            if case .serviceEnv = request { return .envLines(full) }
+            return .ok(statusWith(services: [meili]))
+        }
+        await model.refresh()
+        await model.copyEnv("meilisearch-1-57")
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.serviceEnv(id: "meilisearch-1-57")])
+        XCTAssertEqual(outside.copied, [full.joined(separator: "\n") + "\n"])
+        XCTAssertEqual(model.serviceNotice, "Copied the .env lines of Meilisearch 1.57.")
+        let published = [String(describing: model.status), String(describing: model.serviceRows),
+                         model.serviceNotice ?? "", model.lastError ?? "", String(describing: model.catalog),
+                         String(describing: model.busy)].joined()
+        XCTAssertFalse(published.contains(secretKey), "the secret is in no published state")
+
+        // An error never carries the lines; nothing is copied.
+        client.handler = { request in
+            if case .serviceEnv = request { return .error(code: ErrorCode.unknownService, message: "No service named \"x\".") }
+            return .ok(statusWith(services: [meili]))
+        }
+        await model.copyEnv("x")
+        XCTAssertEqual(model.lastError, "No service named \"x\".")
+        XCTAssertEqual(outside.copied.count, 1)
+    }
+
+    func testCopyEnvFromADevelopmentBuildIsRefusedWithItsSentence() async {
+        let (model, client, outside) = servicesModel({ _ in .ok(statusWith(services: [meili])) },
+                                                     refusal: DaemonLaunchError.developmentBuild)
+        await model.copyEnv("meilisearch-1-57")
+        XCTAssertEqual(model.lastError, Messages.developmentBuild)
+        XCTAssertEqual(outside.copied, [])
+        XCTAssertFalse(client.requests.contains(.serviceEnv(id: "meilisearch-1-57")))
+
+        // And the client's own refusal reads the same.
+        let (other, otherClient, _) = servicesModel { request in
+            if case .serviceEnv = request { throw ClientError.developmentBuild }
+            return .ok(statusWith(services: [meili]))
+        }
+        await other.copyEnv("meilisearch-1-57")
+        XCTAssertEqual(other.lastError, Messages.developmentBuild)
+        XCTAssertTrue(otherClient.requests.contains(.serviceEnv(id: "meilisearch-1-57")))
+    }
+
+    func testOpenOpensTheServicesPageOnlyWhenItHasOne() async {
+        let (model, _, outside) = servicesModel { _ in .ok(statusWith(services: [mail, postgres])) }
+        await model.refresh()
+        model.openService("mail")
+        model.openService("postgres-18")
+        XCTAssertEqual(outside.opened, [URL(string: "http://127.0.0.1:8025")!])
+    }
+
+    func testCreateDatabaseChecksTheNameAsTheDaemonDoesThenSendsTheRequest() async {
+        var running = postgres
+        running.state = .running
+        let current = statusWith(services: [running])
+        let (model, client, _) = servicesModel { request in
+            if case .serviceCreateDatabase(_, let database) = request {
+                return .databaseCreated(database: database, alreadyExisted: database == "shop", status: current)
+            }
+            return .ok(current)
+        }
+        await model.refresh()
+        XCTAssertTrue(AppModel.isValidDatabaseName("tmarket_2"))
+        XCTAssertFalse(AppModel.isValidDatabaseName("my-shop"))
+        XCTAssertFalse(AppModel.isValidDatabaseName(""))
+        XCTAssertFalse(AppModel.isValidDatabaseName(String(repeating: "a", count: 64)))
+
+        await model.createDatabase(in: "postgres-18", named: "my-shop")
+        XCTAssertEqual(model.lastError, "Database names can use letters, numbers and underscores.")
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [], "an invalid name is never sent")
+
+        await model.createDatabase(in: "postgres-18", named: "tmarket")
+        XCTAssertEqual(client.requests.filter { $0 != .status },
+                       [.serviceCreateDatabase(name: "postgres-18", database: "tmarket")])
+        XCTAssertEqual(model.serviceNotice, "Created database tmarket in PostgreSQL 18.")
+        XCTAssertNil(model.lastError)
+        await model.createDatabase(in: "postgres-18", named: "shop")
+        XCTAssertEqual(model.serviceNotice, "shop already exists in PostgreSQL 18.")
+    }
+
+    func testCatalogRowsListEverySeriesWithItsLicence() async {
+        let entries = [
+            CatalogEntry(kind: "mail", displayName: "Mail", licence: "MIT", versions: ["1.34.0"], downloadBytes: 11_000_000,
+                         series: [CatalogSeries(series: "1", version: "1.34.0", downloadBytes: 11_000_000, needsDownload: true)]),
+            CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18.7.0", "17.12.0"],
+                         downloadBytes: nil,
+                         series: [CatalogSeries(series: "18", version: "18.7.0", downloadBytes: nil, needsDownload: false),
+                                  CatalogSeries(series: "17", version: "17.12.0", downloadBytes: nil, needsDownload: true)]),
+        ]
+        let (model, client, _) = servicesModel { request in
+            if case .serviceCatalog = request { return .catalog(entries) }
+            return .ok(statusWith())
+        }
+        XCTAssertEqual(model.catalog, [])
+        await model.loadCatalog()
+        XCTAssertEqual(client.requests, [.serviceCatalog], "read-only, and no refresh needed")
+        XCTAssertEqual(model.catalog.map(\.title), ["Mail 1.34.0", "PostgreSQL 18.7.0", "PostgreSQL 17.12.0"])
+        XCTAssertEqual(model.catalog.map(\.licence), ["MIT", "PostgreSQL", "PostgreSQL"])
+        XCTAssertEqual(model.catalog.map(\.kind), ["mail", "postgres", "postgres"])
+        XCTAssertEqual(model.catalog.map(\.version), ["1", "18", "17"])
+        XCTAssertEqual(model.catalog.map(\.isAdding), [false, false, false])
+    }
+
+    /// An add downloads and may take minutes: while it is in flight its entry says so, status polling goes on,
+    /// and other actions still work.
+    func testAnAddInFlightLeavesPollingAndOtherActionsAlive() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let after = statusWith(services: [mail, postgres])
+        let polled = Locked<EngineStatus>(statusWith(services: [mail]))
+        let entries = [CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL",
+                                    versions: ["18.7.0"], downloadBytes: nil,
+                                    series: [CatalogSeries(series: "18", version: "18.7.0", downloadBytes: nil,
+                                                           needsDownload: true)])]
+        let (model, client, _) = servicesModel { request in
+            switch request {
+            case .serviceAdd:
+                release.wait()
+                return .ok(after)
+            case .serviceCatalog:
+                return .catalog(entries)
+            default:
+                return .ok(polled.value)
+            }
+        }
+        await model.loadCatalog()
+        let add = Task { await model.addService(kind: "postgres", version: "18") }
+        let deadline = Date().addingTimeInterval(5)
+        while !model.isAdding(kind: "postgres", version: "18") && Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(model.isAdding(kind: "postgres", version: "18"))
+        XCTAssertEqual(model.catalog.map(\.isAdding), [true])
+
+        polled.withValue { $0.services[0].state = .stopped }
+        await model.refresh()
+        XCTAssertEqual(model.serviceRows.map(\.stateText), ["stopped"], "polling goes on during the add")
+        await model.startService("mail")
+        XCTAssertTrue(client.requests.contains(.serviceStart(name: "mail")), "other actions still work")
+        XCTAssertTrue(model.isAdding(kind: "postgres", version: "18"))
+
+        release.signal()
+        await add.value
+        XCTAssertFalse(model.isAdding(kind: "postgres", version: "18"))
+        XCTAssertTrue(client.requests.contains(.serviceAdd(kind: "postgres", version: "18")))
+        let addTimeout = zip(client.requests, client.timeouts).first { $0.0 == .serviceAdd(kind: "postgres", version: "18") }?.1
+        XCTAssertEqual(addTimeout, 3600, "as long as the CLI waits for a download")
+    }
+
+    func testAFailedAddGoesToTheErrorLine() async {
+        let (model, _, _) = servicesModel { request in
+            if case .serviceAdd = request {
+                return .error(code: ErrorCode.serviceUnavailable, message: "PostgreSQL 18 needs macOS 15 or later.")
+            }
+            return .ok(statusWith())
+        }
+        await model.addService(kind: "postgres", version: "18")
+        XCTAssertEqual(model.lastError, "PostgreSQL 18 needs macOS 15 or later.")
+    }
+}

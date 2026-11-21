@@ -324,6 +324,11 @@ public enum Messages {
         "# \(name): run \"paddock service env \(id)\""
     }
 
+    /// What `paddock service remove` prints (and the app shows).
+    public static func serviceRemoved(_ name: String, dataPath: String, deletedData: Bool) -> String {
+        deletedData ? "Removed \(name) and deleted its data." : "Removed \(name). Its data is still at \(dataPath)."
+    }
+
     /// What `paddock service create-db` prints.
     public static func databaseCreated(_ database: String, in name: String, alreadyExisted: Bool) -> String {
         alreadyExisted ? "\(database) already exists in \(name)." : "Created database \(database) in \(name)."

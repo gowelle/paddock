@@ -66,6 +66,14 @@ public final class AppModel: ObservableObject {
     /// On the real system: who held ports 80/443 when the last start checked them before the setup prompt
     /// (no prompt was shown). Cleared by the next start that gets past the check.
     @Published public private(set) var setupBlockedBy: [PortHolder] = []
+    /// The services Paddock can add, as the daemon last listed them (`loadCatalog`).
+    @Published public internal(set) var catalogEntries: [CatalogEntry] = []
+    /// What the last service action reported (where a removed service's data is, a database created); shown
+    /// under the services list.
+    @Published public internal(set) var serviceNotice: String?
+    /// The service whose `Remove and Delete Data…` the user was asked to confirm; only it may be removed with
+    /// its data, once.
+    @Published public internal(set) var dataDeletionAsked: String?
 
     /// Every PHP version Paddock can install.
     public let availablePHP: [PHPVersion]
@@ -80,7 +88,11 @@ public final class AppModel: ObservableObject {
     /// The action offered while secured sites need trusting; it sends the `trust` request.
     public static let trustCertificateTitle = "Trust Certificate\u{2026}"
 
-    private let client: ClientProtocol
+    let client: ClientProtocol
+    /// Puts text on the pasteboard (the app's; nil in tests that don't look).
+    let copyText: (@MainActor (String) -> Void)?
+    /// Opens a URL or file with the system's default handler.
+    let openItem: (@MainActor (URL) -> Void)?
     private let services: AppServices?
     private let quitter: ApplicationQuitter?
     private let paths: Paths?
@@ -94,8 +106,11 @@ public final class AppModel: ObservableObject {
 
     public init(client: ClientProtocol, services: AppServices? = nil, quitter: ApplicationQuitter? = nil,
                 availablePHP: [PHPVersion] = [], paths: Paths? = nil,
-                ownExecutable: String? = PaddockBuild.runningExecutable) {
+                ownExecutable: String? = PaddockBuild.runningExecutable,
+                copyText: (@MainActor (String) -> Void)? = nil, open: (@MainActor (URL) -> Void)? = nil) {
         self.client = client
+        self.copyText = copyText
+        self.openItem = open
         self.ownExecutable = ownExecutable
         self.paths = paths
         self.services = services
@@ -255,7 +270,7 @@ public final class AppModel: ObservableObject {
 
     /// Whether this program may change the system; if not, says why in `lastError`. Every action that
     /// starts, stops or restarts Paddock, changes setup, trust or the shell file asks this first.
-    private func mayChangeSystem() -> Bool {
+    func mayChangeSystem() -> Bool {
         do {
             try services?.checkMayChangeSystem()
             return true
@@ -297,6 +312,32 @@ public final class AppModel: ObservableObject {
         await refresh()
     }
 
+    /// Sends one request as `perform` does (refused first from a development build unless it only reads; busy
+    /// while in flight; a failure to reach the daemon on the error line), without refreshing after. Returns the
+    /// answer (its status already published), or nil when there was none.
+    func send(_ r: Request, timeout: TimeInterval = 600) async -> Response? {
+        guard r.isReadOnly || mayChangeSystem() else { return nil }
+        let key = Self.busyKey(r)
+        busy.insert(key)
+        defer { busy.remove(key) }
+        let client = client
+        let result = await Task.detached { Result { try client.send(r, timeout: timeout) } }.value
+        switch result {
+        case .success(let response):
+            switch response {
+            case .ok(let fresh), .removed(_, let fresh), .databaseCreated(_, _, let fresh): status = fresh
+            case .error, .catalog, .envLines: break
+            }
+            return response
+        case .failure(ClientError.daemonNotRunning):
+            status = nil
+            lastError = Messages.notRunning
+        case .failure(let error):
+            lastError = Self.describe(error)
+        }
+        return nil
+    }
+
     private static func isTrustRequest(_ r: Request) -> Bool {
         switch r {
         case .secure, .unsecure, .trust: return true
@@ -304,7 +345,7 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private static func describe(_ error: Error) -> String {
+    static func describe(_ error: Error) -> String {
         switch error {
         case ClientError.daemonNotRunning: return Messages.notRunning
         case ClientError.timedOut: return Messages.didNotAnswer

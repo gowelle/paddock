@@ -152,8 +152,7 @@ struct ServiceRemove: ParsableCommand {
         let service = try CLI.service(named: name, in: try CLI.send(.status, timeout: 30))
         switch try CLI.sendRaw(.serviceRemove(name: service.id, deleteData: deleteData)) {
         case .removed(let path, _):
-            print(deleteData ? "Removed \(service.name) and deleted its data."
-                             : "Removed \(service.name). Its data is still at \(path).")
+            print(Messages.serviceRemoved(service.name, dataPath: path, deletedData: deleteData))
         case .error(_, let message):
             throw CLI.failure(message)
         case .ok, .catalog, .databaseCreated, .envLines:
