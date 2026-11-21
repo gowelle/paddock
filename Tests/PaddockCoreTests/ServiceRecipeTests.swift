@@ -225,11 +225,49 @@ final class ServiceRecipeTests: XCTestCase {
         let builds = try ServiceCatalog.bundled().recipes.flatMap { recipe in
             recipe.assets.filter { $0.artifact.url.scheme == BuildSource.scheme }.map { (recipe, $0) }
         }
-        XCTAssertEqual(builds.count, 3, "the PostGIS add-on of each PostgreSQL series")
+        XCTAssertEqual(builds.count, 4, "the PostGIS add-on of each PostgreSQL series, and Valkey")
         for (recipe, asset) in builds {
-            XCTAssertEqual(lines.first { $0.first == "postgis-pg\(recipe.series)" },
-                           ["postgis-pg\(recipe.series)", asset.artifact.url.absoluteString, asset.artifact.sha256])
+            let name = recipe.kind == "redis" ? "valkey" : "postgis-pg\(recipe.series)"
+            XCTAssertEqual(lines.first { $0.first == name }, [name, asset.artifact.url.absoluteString, asset.artifact.sha256])
         }
+    }
+
+    /// Redis is Valkey, built by Paddock (Scripts/build-valkey.sh) and shipped in the app; one line, id redis.
+    func testBundledCatalogHasRedisAsValkey() throws {
+        let recipes = try ServiceCatalog.bundled().recipes(of: "redis")
+        XCTAssertEqual(recipes.map(\.version), ["9.2.0"])
+        let redis = try XCTUnwrap(recipes.first)
+        XCTAssertEqual(redis.displayName, "Redis (Valkey)")
+        XCTAssertEqual(redis.series, "9", "data files are compatible within a Valkey major")
+        XCTAssertFalse(redis.seriesInID, "its id stays redis")
+        XCTAssertEqual(redis.licence, "BSD-3-Clause")
+        XCTAssertEqual(redis.minimumMacOS, "13.0", "LC_BUILD_VERSION minos of valkey-server and valkey-cli")
+        XCTAssertEqual(redis.assets.map(\.artifact.url.absoluteString), ["paddock-builds://valkey-9.2.0-macos-x86_64.tar.gz"])
+        XCTAssertEqual(redis.assets.map(\.archive), ["tar.gz"])
+        XCTAssertEqual(redis.assets.map(\.stripComponents), [0])
+        XCTAssertEqual(redis.initialise, [])
+        XCTAssertEqual(redis.start, RecipeCommand(executable: "{bin}/valkey-server", arguments: ["{config}/valkey.conf"]))
+        XCTAssertEqual(redis.ready, .command(RecipeCommand(executable: "{bin}/valkey-cli",
+                                                           arguments: ["-h", "127.0.0.1", "-p", "{port.main}", "-e", "ping"])),
+                       "-e: an error reply such as LOADING is a failure, not a PONG")
+        XCTAssertEqual(redis.stopSignal, "TERM")
+        XCTAssertEqual(redis.stopGraceSeconds, 30, "time to write the AOF and RDB on shutdown")
+        XCTAssertEqual(redis.ports, [RecipePort(name: "main", preferred: 6379)])
+        XCTAssertEqual(redis.socket, "{run}/redis.sock")
+        XCTAssertEqual(redis.lockFiles, [], "Valkey's pidfile never blocks a restart")
+        XCTAssertEqual(redis.env, ["REDIS_CLIENT=phpredis", "REDIS_HOST=127.0.0.1", "REDIS_PORT={port.main}",
+                                   "REDIS_PASSWORD=null"])
+        XCTAssertNil(redis.openURL)
+        XCTAssertEqual(redis.notes, ["Valkey 9.2.0, a Redis-compatible server."])
+        XCTAssertEqual(redis.configFiles.map(\.path), ["{config}/valkey.conf"])
+        let lines = redis.configFiles[0].contents.split(separator: "\n").map(String.init).filter { !$0.hasPrefix("#") }
+        for line in ["bind 127.0.0.1 -::1", "port {port.main}", "protected-mode yes", "daemonize no",
+                     "dir \"{data}\"", "appendonly yes", "appendfsync everysec", "dbfilename \"dump.rdb\"",
+                     "appenddirname \"appendonlydir\"", "pidfile \"{run}/valkey.pid\"", "unixsocket \"{socket}\"",
+                     "unixsocketperm 700", "logfile \"\""] {
+            XCTAssertTrue(lines.contains(line), "valkey.conf has \(line)")
+        }
+        XCTAssertFalse(lines.contains { $0.hasPrefix("requirepass") || $0.hasPrefix("include") })
     }
 
     /// Readiness keeps its JSON form for the existing kinds, and a command is the command itself.

@@ -332,6 +332,72 @@
           "alreadyDone": "database \"{database}\" already exists"
         }
       }
+    },
+    {
+      "kind": "redis",
+      "displayName": "Redis (Valkey)",
+      "version": "9.2.0",
+      "series": "9",
+      "seriesInID": false,
+      "licence": "BSD-3-Clause",
+      "minimumMacOS": "13.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "paddock-builds://valkey-9.2.0-macos-x86_64.tar.gz",
+            "sha256": "4231250197fa568a4699a171afc5617135ea6691e4adf4b92b7277a66e2b6b6e",
+            "size": 2094063
+          },
+          "archive": "tar.gz",
+          "stripComponents": 0
+        }
+      ],
+      "initialise": [],
+      "start": {
+        "executable": "{bin}/valkey-server",
+        "arguments": [
+          "{config}/valkey.conf"
+        ]
+      },
+      "ready": {
+        "command": {
+          "executable": "{bin}/valkey-cli",
+          "arguments": [
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "{port.main}",
+            "-e",
+            "ping"
+          ]
+        }
+      },
+      "stopSignal": "TERM",
+      "stopGraceSeconds": 30,
+      "ports": [
+        {
+          "name": "main",
+          "preferred": 6379
+        }
+      ],
+      "socket": "{run}/redis.sock",
+      "env": [
+        "REDIS_CLIENT=phpredis",
+        "REDIS_HOST=127.0.0.1",
+        "REDIS_PORT={port.main}",
+        "REDIS_PASSWORD=null"
+      ],
+      "needsPHP": false,
+      "notes": [
+        "Valkey 9.2.0, a Redis-compatible server."
+      ],
+      "configFiles": [
+        {
+          "path": "{config}/valkey.conf",
+          "contents": "# Written by Paddock on every start: changes here are replaced.\n# This Mac only: loopback (IPv6 loopback where the Mac has it) and the instance's own Unix socket.\nbind 127.0.0.1 -::1\nport {port.main}\nprotected-mode yes\ntcp-backlog 128\nunixsocket \"{socket}\"\nunixsocketperm 700\ndaemonize no\nsupervised no\npidfile \"{run}/valkey.pid\"\nlogfile \"\"\nalways-show-logo no\ndir \"{data}\"\ndbfilename \"dump.rdb\"\nappendonly yes\nappendfsync everysec\nappenddirname \"appendonlydir\"\nenable-protected-configs no\nenable-debug-command no\nenable-module-command no\n"
+        }
+      ],
+      "readyTimeoutSeconds": 60
     }
   ]
 }

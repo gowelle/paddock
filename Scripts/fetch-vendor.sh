@@ -154,6 +154,8 @@ esac
   "(a few minutes), or copy the archive there."
 actual="$(sha256 "$BUILDS/$file")"
 [ "$actual" = "$sha" ] || fail "Vendor/builds/$file has checksum $actual; Scripts/versions.lock expects $sha."
+grep -q "\"$sha\"" "$ROOT/Resources/services-catalog.json" \
+  || fail "Resources/services-catalog.json does not list $file with checksum $sha."
 echo "Valkey build $file verified."
 
 # Router and manifest
