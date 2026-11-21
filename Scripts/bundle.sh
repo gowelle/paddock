@@ -3,7 +3,7 @@
 #   Contents/MacOS/{PaddockApp,paddockd,paddock,paddock-ports}
 # (The app's executable is not called "Paddock": on a case-insensitive disk it would be the same file
 # as the "paddock" command.)
-#   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,builds/,php-manifest.json,services-catalog.json,THIRD-PARTY-NOTICES,AppIcon.icns}
+#   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,builds/,php-manifest.json,services-catalog.json,LICENSE,THIRD-PARTY-NOTICES,AppIcon.icns}
 # builds/ holds Paddock's own PHP archives (every version in the manifest, from Vendor/builds/), so
 # installing another version needs no network, and its PostGIS add-ons for PostgreSQL (postgis-pg<series>
 # in the lock) and its Valkey build for the Redis (Valkey) service (valkey in the lock); php/<bundled>/default/
@@ -62,6 +62,7 @@ install -m 644 "$VENDOR/php-manifest.json" "$RES/php-manifest.json"
 plutil -convert json -o /dev/null "$ROOT/Resources/services-catalog.json" \
   || fail "Resources/services-catalog.json is not valid JSON."
 install -m 644 "$ROOT/Resources/services-catalog.json" "$RES/services-catalog.json"
+install -m 644 "$ROOT/LICENSE" "$RES/LICENSE"
 install -m 644 "$ROOT/THIRD-PARTY-NOTICES" "$RES/THIRD-PARTY-NOTICES"
 # Built from Resources/AppIcon.svg by Scripts/make-icon.swift.
 install -m 644 "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
@@ -109,5 +110,8 @@ for exe in "$RES/caddy" "$RES/php/$PHP_SERIES/default/php" "$RES/php/$PHP_SERIES
 done
 codesign --force -s - --deep "$APP"
 codesign --verify --deep --strict "$APP"
+
+cp "$ROOT/LICENSE" "$ROOT/dist/LICENSE.txt"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$ROOT/dist/Paddock-$VERSION.zip"
 
 echo "dist/Paddock.app is ready (version $VERSION, PHP $PHP_SERIES)."
