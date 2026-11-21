@@ -745,6 +745,31 @@ final class SiteTasksTests: XCTestCase {
         XCTAssertTrue(engine.tasks.supervisor.names.isEmpty, "no second copy")
     }
 
+    /// A refresh between the end of a forced restart's stop and its pass over leftovers can't relaunch the task
+    /// in between, so the pass never mistakes a live launch (or its children) for leftovers.
+    func testAForcedRestartNeverTouchesALiveLaunch() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "sleep 600 & wait"}}}"#)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        XCTAssertTrue(waitFor(5) { (ServiceProcessRecord.members(ofGroup: first) ?? []).count == 2 }, "the shell and its child")
+        engine.tasks.beforeForcePassForTesting = { [weak engine] in
+            engine?.tasks.refresh()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        guard case .ok = await engine.handle(.taskForceRestart(site: "shop", task: "queue")) else { return XCTFail("force") }
+        engine.tasks.beforeForcePassForTesting = nil
+        let second = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        XCTAssertNotEqual(second, first)
+        XCTAssertTrue(waitFor(5) { (ServiceProcessRecord.members(ofGroup: second) ?? []).count == 2 })
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(pid(engine, "shop", "queue"), second, "the new launch was never signalled")
+        XCTAssertEqual(ServiceProcessRecord.members(ofGroup: second)?.count, 2, "nor its child")
+        XCTAssertEqual(log("shop", "queue").components(separatedBy: "] Starting.").count - 1, 2, "relaunched once")
+        XCTAssertEqual(ServiceProcessRecord.read(from: home.paths.taskRun(site: "shop", task: "queue")
+            .appendingPathComponent("pid"))?.pid, second, "the new launch's record is kept")
+    }
+
     // MARK: - The daemon
 
     func testTasksComeBackAfterADaemonRestart() throws {

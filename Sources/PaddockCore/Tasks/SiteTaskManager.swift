@@ -49,6 +49,8 @@ public final class SiteTaskManager: @unchecked Sendable {
     let timeScale: TimeInterval
     /// Every process Paddock supervises elsewhere (the web stack, services): never a task's leftover.
     let supervisedPids: @Sendable () -> Set<Int32>
+    /// Called (tests) in a forced restart between the end of the task's stop and the pass over leftovers.
+    var beforeForcePassForTesting: (@Sendable () -> Void)?
     /// Paddock's own ports: never a proxy route's target.
     let reservedPorts: @Sendable () -> Set<Int>
     let log: @Sendable (String) -> Void
@@ -132,6 +134,8 @@ public final class SiteTaskManager: @unchecked Sendable {
         var lastChangeRestart: Date?
         /// A change noticed inside the window, waiting for its end (the time it was noticed).
         var deferredChange: Date?
+        /// A forced restart is in progress: nothing launches the task until it is over.
+        var forcePending = false
         /// It listens beyond this Mac (the last check said so).
         var listening: String?
     }
@@ -459,7 +463,10 @@ public final class SiteTaskManager: @unchecked Sendable {
             state.flight?.kind == .stop ? name.split(separator: "/").dropFirst().first.map(String.init) : nil
         })
         stateLock.unlock()
-        for (name, task) in wanted.sorted(by: { $0.key < $1.key }) where flight(name) == nil {
+        stateLock.lock()
+        let forcing = Set(runtime.filter(\.value.forcePending).keys)
+        stateLock.unlock()
+        for (name, task) in wanted.sorted(by: { $0.key < $1.key }) where flight(name) == nil && !forcing.contains(name) {
             if launched[name] == nil && sitesStopping.contains(task.site) { continue }
             guard launched[name] != nil else {
                 prepareLaunchLocked(name, task)

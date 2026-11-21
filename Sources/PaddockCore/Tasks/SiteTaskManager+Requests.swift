@@ -119,18 +119,31 @@ extension SiteTaskManager {
             try setStopped(false, site: name, task: task)
             folder = try self.folder(of: name)
         } catch { operationLock.unlock(); throw error }
+        // A forced restart holds the task from here until its pass over leftovers is over (whatever happens):
+        // no refresh can launch it in between, so the pass never meets a live launch.
+        let expected = force ? ServiceProcessRecord.read(from: recordFile(site: name, task: task)) : nil
+        if force { update { $0[process, default: Runtime()].forcePending = true } }
+        defer {
+            if force {
+                operationLock.lock()
+                update { $0[process]?.forcePending = false }
+                if !isShuttingDown { refreshLocked() }
+                operationLock.unlock()
+            }
+        }
         if let running = launched[process] { beginStopLocked(process, running, note: "Restarting.") }
         clearSettled(process)
         update { _ in self.startedByHand.insert(process) }
         let pending = flight(process)
         operationLock.unlock()
         if let pending { wait(for: [pending]) }
-        if force { stopLeftovers(process, site: name, task: task, folder: folder) }
+        beforeForcePassForTesting?()
+        if force { stopLeftovers(process, site: name, task: task, folder: folder, expected: expected) }
+        guard !force else { return }
         operationLock.lock()
         refreshLocked()
         operationLock.unlock()
-        // A forced restart answers with what it did (the task's warning), even when the task stays held back.
-        if !force { try checkStarted(process, site: name, task: task) }
+        try checkStarted(process, site: name, task: task)
     }
 
     /// Writes the starter `paddock.json` into a Laravel site that has none (never over one, never through a

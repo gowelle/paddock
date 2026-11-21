@@ -160,27 +160,38 @@ extension SiteTaskManager {
         }
     }
 
-    /// `restart --force`, as a flight (no launch can happen meanwhile): SIGKILL to the recorded group's
-    /// members that are provably left from that run, then, if nothing that may be from it is left, the record goes
-    /// and the task can start; otherwise the record stays and the task stays held back. Says what it stopped and
-    /// what it left, and why.
-    func stopLeftovers(_ process: String, site: String, task: String, folder: String) {
-        let flight = Flight(kind: .reclaim, grace: 10)
-        update { $0[process, default: Runtime()].flight = flight }
+    /// `restart --force`'s pass, while the task is held (`forcePending`): under the operation lock, only if
+    /// nothing of the task is launched and its record is still the one read when the request began, SIGKILL to the
+    /// recorded group's members that are provably left from that run. Then, if nothing that may be from it is left,
+    /// the record goes and the task can start; otherwise the record stays and the task stays held back. Says what
+    /// it stopped and what it left, and why.
+    func stopLeftovers(_ process: String, site: String, task: String, folder: String, expected: ServiceProcessRecord?) {
         let file = recordFile(site: site, task: task)
         var stopped: [Int32] = []
         var left: [(Int32, LeftoverReason)] = []
         var holding = false
-        if let record = ServiceProcessRecord.read(from: file) {
-            let sorted = sortLeftovers(of: record, in: folder)
-            stopped = sorted.ours
+        operationLock.lock()
+        let current = ServiceProcessRecord.read(from: file)
+        let unchanged = current != nil && expected != nil && current!.pid == expected!.pid
+            && current!.pgid == expected!.pgid && current!.startSeconds == expected!.startSeconds
+            && current!.startMicroseconds == expected!.startMicroseconds
+        let record = launched[process] == nil && unchanged ? current : nil
+        if let record {
+            stopped = sortLeftovers(of: record, in: folder).ours
             for pid in stopped { kill(pid, SIGKILL) }
+        }
+        operationLock.unlock()
+        if let record {
             let end = Date().addingTimeInterval(5)
             while stopped.contains(where: { kill($0, 0) == 0 }) && Date() < end { Thread.sleep(forTimeInterval: 0.05) }
             let after = sortLeftovers(of: record, in: folder)
             left = after.others
             holding = holdsTask(after)
-            if !holding { try? FileManager.default.removeItem(at: file) }
+            operationLock.lock()
+            if !holding, ServiceProcessRecord.read(from: file).map({ $0.pid == record.pid && $0.pgid == record.pgid }) == true {
+                try? FileManager.default.removeItem(at: file)
+            }
+            operationLock.unlock()
         }
         let report = Messages.leftoversStopped(task: task, stopped: stopped, left: left)
         logWriter(site: site, task: task).append(Self.noteLine(report))
@@ -189,6 +200,5 @@ extension SiteTaskManager {
             $0[process, default: Runtime()].held = holding ? .leftovers : nil
             $0[process]?.report = report
         }
-        endFlight(process, flight)
     }
 }
