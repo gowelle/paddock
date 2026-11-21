@@ -59,6 +59,46 @@
             "target": "PaddockApp",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release PaddockApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Debug paddock-ports",
+            "target": "paddock-ports",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug paddock-ports"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Release paddock-ports",
+            "target": "paddock-ports",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release paddock-ports"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Debug paddock-fake-service",
+            "target": "paddock-fake-service",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug paddock-fake-service"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:paddock}",
+            "name": "Release paddock-fake-service",
+            "target": "paddock-fake-service",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release paddock-fake-service"
         }
     ]
 }
