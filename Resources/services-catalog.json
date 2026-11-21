@@ -50,6 +50,240 @@
       ],
       "openURL": "http://127.0.0.1:{port.http}",
       "needsPHP": false
+    },
+    {
+      "kind": "postgres",
+      "displayName": "PostgreSQL",
+      "version": "18.7.0",
+      "series": "18",
+      "licence": "PostgreSQL",
+      "minimumMacOS": "15.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.7.0/postgresql-18.7.0-x86_64-apple-darwin.tar.gz",
+            "sha256": "9cd649259d6bf4af60a235e772c83853df215b63f4c1967c2eed7f9376aefb89",
+            "size": 92187545
+          },
+          "archive": "tar.gz",
+          "stripComponents": 1
+        }
+      ],
+      "initialise": [
+        {
+          "executable": "{bin}/bin/initdb",
+          "arguments": [
+            "--pgdata={data}", "--username=root", "--auth=trust", "--encoding=UTF8", "--locale=en_US.UTF-8",
+            "--no-instructions"
+          ]
+        }
+      ],
+      "start": {
+        "executable": "{bin}/bin/postgres",
+        "arguments": [
+          "-D", "{data}",
+          "-p", "{port.main}",
+          "-c", "listen_addresses=127.0.0.1",
+          "-c", "unix_socket_directories={socketDir}",
+          "-c", "hba_file={config}/pg_hba.conf",
+          "-c", "logging_collector=off",
+          "-c", "log_destination=stderr"
+        ]
+      },
+      "ready": { "tcp": { "port": "{port.main}" } },
+      "stopSignal": "INT",
+      "stopGraceSeconds": 20,
+      "ports": [
+        { "name": "main", "preferred": 5432 }
+      ],
+      "socket": "{run}/.s.PGSQL.{port.main}",
+      "env": [
+        "DB_CONNECTION=pgsql",
+        "DB_HOST=127.0.0.1",
+        "DB_PORT={port.main}",
+        "DB_DATABASE=laravel",
+        "DB_USERNAME=root",
+        "DB_PASSWORD="
+      ],
+      "needsPHP": false,
+      "configFiles": [
+        {
+          "path": "{config}/pg_hba.conf",
+          "contents": "# Written by Paddock on every start: changes here are replaced.\n# Only this Mac: the instance's own Unix socket and loopback, without a password.\nlocal   all   all                  trust\nhost    all   all   127.0.0.1/32   trust\nhost    all   all   ::1/128        trust\n"
+        }
+      ],
+      "readyTimeoutSeconds": 60,
+      "initialiseTimeoutSeconds": 300,
+      "actions": {
+        "createDatabase": {
+          "command": {
+            "executable": "{bin}/bin/createdb",
+            "arguments": [
+              "--host=127.0.0.1", "--port={port.main}", "--username=root", "--no-password", "--", "{database}"
+            ]
+          },
+          "parameters": [
+            { "name": "database", "pattern": "^[A-Za-z0-9_]{1,63}$" }
+          ],
+          "alreadyDone": "database \"{database}\" already exists"
+        }
+      }
+    },
+    {
+      "kind": "postgres",
+      "displayName": "PostgreSQL",
+      "version": "17.12.0",
+      "series": "17",
+      "licence": "PostgreSQL",
+      "minimumMacOS": "15.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/17.12.0/postgresql-17.12.0-x86_64-apple-darwin.tar.gz",
+            "sha256": "34ba0eca0f15776b4ab9a07b2decc6fb0b1910a57870ad7d7dacb7399b43c9bd",
+            "size": 93377231
+          },
+          "archive": "tar.gz",
+          "stripComponents": 1
+        }
+      ],
+      "initialise": [
+        {
+          "executable": "{bin}/bin/initdb",
+          "arguments": [
+            "--pgdata={data}", "--username=root", "--auth=trust", "--encoding=UTF8", "--locale=en_US.UTF-8",
+            "--no-instructions"
+          ]
+        }
+      ],
+      "start": {
+        "executable": "{bin}/bin/postgres",
+        "arguments": [
+          "-D", "{data}",
+          "-p", "{port.main}",
+          "-c", "listen_addresses=127.0.0.1",
+          "-c", "unix_socket_directories={socketDir}",
+          "-c", "hba_file={config}/pg_hba.conf",
+          "-c", "logging_collector=off",
+          "-c", "log_destination=stderr"
+        ]
+      },
+      "ready": { "tcp": { "port": "{port.main}" } },
+      "stopSignal": "INT",
+      "stopGraceSeconds": 20,
+      "ports": [
+        { "name": "main", "preferred": 5432 }
+      ],
+      "socket": "{run}/.s.PGSQL.{port.main}",
+      "env": [
+        "DB_CONNECTION=pgsql",
+        "DB_HOST=127.0.0.1",
+        "DB_PORT={port.main}",
+        "DB_DATABASE=laravel",
+        "DB_USERNAME=root",
+        "DB_PASSWORD="
+      ],
+      "needsPHP": false,
+      "configFiles": [
+        {
+          "path": "{config}/pg_hba.conf",
+          "contents": "# Written by Paddock on every start: changes here are replaced.\n# Only this Mac: the instance's own Unix socket and loopback, without a password.\nlocal   all   all                  trust\nhost    all   all   127.0.0.1/32   trust\nhost    all   all   ::1/128        trust\n"
+        }
+      ],
+      "readyTimeoutSeconds": 60,
+      "initialiseTimeoutSeconds": 300,
+      "actions": {
+        "createDatabase": {
+          "command": {
+            "executable": "{bin}/bin/createdb",
+            "arguments": [
+              "--host=127.0.0.1", "--port={port.main}", "--username=root", "--no-password", "--", "{database}"
+            ]
+          },
+          "parameters": [
+            { "name": "database", "pattern": "^[A-Za-z0-9_]{1,63}$" }
+          ],
+          "alreadyDone": "database \"{database}\" already exists"
+        }
+      }
+    },
+    {
+      "kind": "postgres",
+      "displayName": "PostgreSQL",
+      "version": "16.16.0",
+      "series": "16",
+      "licence": "PostgreSQL",
+      "minimumMacOS": "15.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/16.16.0/postgresql-16.16.0-x86_64-apple-darwin.tar.gz",
+            "sha256": "6bcc3f98c76fdb4b52bf4e59781308ea996058941566579a0961b3a25626b6bb",
+            "size": 92163354
+          },
+          "archive": "tar.gz",
+          "stripComponents": 1
+        }
+      ],
+      "initialise": [
+        {
+          "executable": "{bin}/bin/initdb",
+          "arguments": [
+            "--pgdata={data}", "--username=root", "--auth=trust", "--encoding=UTF8", "--locale=en_US.UTF-8",
+            "--no-instructions"
+          ]
+        }
+      ],
+      "start": {
+        "executable": "{bin}/bin/postgres",
+        "arguments": [
+          "-D", "{data}",
+          "-p", "{port.main}",
+          "-c", "listen_addresses=127.0.0.1",
+          "-c", "unix_socket_directories={socketDir}",
+          "-c", "hba_file={config}/pg_hba.conf",
+          "-c", "logging_collector=off",
+          "-c", "log_destination=stderr"
+        ]
+      },
+      "ready": { "tcp": { "port": "{port.main}" } },
+      "stopSignal": "INT",
+      "stopGraceSeconds": 20,
+      "ports": [
+        { "name": "main", "preferred": 5432 }
+      ],
+      "socket": "{run}/.s.PGSQL.{port.main}",
+      "env": [
+        "DB_CONNECTION=pgsql",
+        "DB_HOST=127.0.0.1",
+        "DB_PORT={port.main}",
+        "DB_DATABASE=laravel",
+        "DB_USERNAME=root",
+        "DB_PASSWORD="
+      ],
+      "needsPHP": false,
+      "configFiles": [
+        {
+          "path": "{config}/pg_hba.conf",
+          "contents": "# Written by Paddock on every start: changes here are replaced.\n# Only this Mac: the instance's own Unix socket and loopback, without a password.\nlocal   all   all                  trust\nhost    all   all   127.0.0.1/32   trust\nhost    all   all   ::1/128        trust\n"
+        }
+      ],
+      "readyTimeoutSeconds": 60,
+      "initialiseTimeoutSeconds": 300,
+      "actions": {
+        "createDatabase": {
+          "command": {
+            "executable": "{bin}/bin/createdb",
+            "arguments": [
+              "--host=127.0.0.1", "--port={port.main}", "--username=root", "--no-password", "--", "{database}"
+            ]
+          },
+          "parameters": [
+            { "name": "database", "pattern": "^[A-Za-z0-9_]{1,63}$" }
+          ],
+          "alreadyDone": "database \"{database}\" already exists"
+        }
+      }
     }
   ]
 }

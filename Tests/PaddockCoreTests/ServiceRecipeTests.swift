@@ -161,6 +161,50 @@ final class ServiceRecipeTests: XCTestCase {
         }
     }
 
+    /// PostgreSQL 18, 17 and 16 from theseus-rs, each pinned to one archive; the integration tests run them.
+    func testBundledCatalogHasPostgreSQL18To16() throws {
+        let catalog = try ServiceCatalog.bundled()
+        XCTAssertEqual(catalog.recipes(of: "postgres").map(\.version), ["18.7.0", "17.12.0", "16.16.0"])
+        XCTAssertEqual(catalog.recipe(kind: "postgres", version: nil)?.series, "18", "the newest by default")
+        for recipe in catalog.recipes(of: "postgres") {
+            let label = recipe.version
+            XCTAssertEqual(recipe.displayName, "PostgreSQL")
+            XCTAssertEqual(recipe.series, String(recipe.version.prefix(2)))
+            XCTAssertTrue(recipe.seriesInID, "postgres-18, PostgreSQL 18")
+            XCTAssertEqual(recipe.licence, "PostgreSQL")
+            XCTAssertEqual(recipe.minimumMacOS, "15.0", "LC_BUILD_VERSION minos of every binary in the archives")
+            XCTAssertEqual(recipe.assets.count, 1)
+            let asset = try XCTUnwrap(recipe.assets.first)
+            XCTAssertEqual(asset.artifact.url.absoluteString,
+                           "https://github.com/theseus-rs/postgresql-binaries/releases/download/\(label)/"
+                           + "postgresql-\(label)-x86_64-apple-darwin.tar.gz")
+            XCTAssertEqual(asset.artifact.sha256.count, 64)
+            XCTAssertNotNil(asset.artifact.size)
+            XCTAssertEqual(asset.archive, "tar.gz")
+            XCTAssertEqual(asset.stripComponents, 1)
+            XCTAssertEqual(recipe.initialise.map(\.executable), ["{bin}/bin/initdb"])
+            XCTAssertEqual(recipe.start.executable, "{bin}/bin/postgres")
+            XCTAssertTrue(recipe.start.arguments.contains("listen_addresses=127.0.0.1"), label)
+            XCTAssertTrue(recipe.start.arguments.contains("unix_socket_directories={socketDir}"), label)
+            XCTAssertEqual(recipe.ready, .tcp(port: "{port.main}"))
+            XCTAssertEqual(recipe.stopSignal, "INT", "fast shutdown")
+            XCTAssertEqual(recipe.stopGraceSeconds, 20)
+            XCTAssertEqual(recipe.ports, [RecipePort(name: "main", preferred: 5432)])
+            XCTAssertEqual(recipe.socket, "{run}/.s.PGSQL.{port.main}")
+            XCTAssertEqual(recipe.env, ["DB_CONNECTION=pgsql", "DB_HOST=127.0.0.1", "DB_PORT={port.main}",
+                                        "DB_DATABASE=laravel", "DB_USERNAME=root", "DB_PASSWORD="])
+            XCTAssertNil(recipe.openURL)
+            XCTAssertEqual(recipe.configFiles.map(\.path), ["{config}/pg_hba.conf"])
+            let rules = recipe.configFiles[0].contents.split(separator: "\n").filter { !$0.hasPrefix("#") }
+                .map { $0.split(separator: " ").joined(separator: " ") }
+            XCTAssertEqual(rules, ["local all all trust", "host all all 127.0.0.1/32 trust", "host all all ::1/128 trust"],
+                           "trust for this Mac only, nothing else")
+            let create = try XCTUnwrap(recipe.actions[RecipeAction.createDatabase])
+            XCTAssertEqual(create.command.executable, "{bin}/bin/createdb")
+            XCTAssertEqual(create.parameters, [RecipeParameter(name: "database", pattern: "^[A-Za-z0-9_]{1,63}$")])
+        }
+    }
+
     /// The catalog a daemon uses: a development home may name its own file (tests); a real home never.
     func testDaemonCatalogOverrideOnlyInDevelopmentHomes() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pdk-cat-\(UUID().uuidString)")

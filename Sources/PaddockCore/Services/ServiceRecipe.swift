@@ -231,7 +231,9 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     /// Seconds between the stop signal and SIGKILL.
     public let stopGraceSeconds: Int
     public let ports: [RecipePort]
-    /// The service's Unix socket (a template under `{run}/`), if it has one.
+    /// The service's Unix socket, if it has one: `{run}/` and one file name, literal but for `{port.<name>}`
+    /// (`{run}/.s.PGSQL.{port.main}`). Rendered as `{socket}` (and its folder as `{socketDir}`), or as nothing
+    /// when the path would be too long for macOS.
     public let socket: String?
     /// `.env` lines for a Laravel app (templates).
     public let env: [String]
