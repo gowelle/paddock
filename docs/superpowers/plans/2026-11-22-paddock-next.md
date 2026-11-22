@@ -129,6 +129,33 @@ Built on 2026-11-22.
 
 ### Object storage (services plan, Task 8)
 
+**Blocked on one decision (found 2026-11-22).** SeaweedFS 4.18 and later
+create four gRPC Unix sockets at a hard-coded
+`/tmp/seaweedfs-<component>-grpc-<port>.sock`, with no option to move or turn
+them off, and its own components dial those sockets first. Paddock keeps every
+socket in an owner-only folder and never in `/tmp`; a predictable path in
+`/tmp` is one another user of the Mac could create first. 4.17 (2026-03-11) is
+the last release without them. The choice: pin 4.17, or take the newest
+release and accept the `/tmp` sockets, or pick another S3 server.
+
+Verified on 4.54 in a scratch folder, all of which should hold for 4.17 but
+must be re-run on whichever version is chosen:
+
+- `weed server -s3` with `-ip=127.0.0.1 -ip.bind=127.0.0.1` and each of the
+  eight ports given (master, volume, filer and S3, each with its gRPC port)
+  listens on those eight loopback ports and nothing else; `-s3.port.iceberg=0`
+  and `-s3.port.lance=0` turn off two more listeners that are on by default.
+- `-master.telemetry=false` is needed: usage reporting is on by default.
+- `-filer.localSocket` and `-s3.localSocket` default to `/tmp` too, but can be
+  pointed at the run folder.
+- Static credentials from `-s3.config` work: a signed PUT and GET succeed, an
+  unsigned or wrongly signed request gets 403. The bucket can be made with a
+  signed `PUT /<bucket>`.
+- A clean stop on TERM takes about 26 seconds, so the grace period should be
+  60, not 30.
+- The binary's minimum macOS is 13.0; the 4.54 archive is 50 MB.
+
+
 - [ ] Catalog entry `storage`, shown as "Object Storage (S3)", from
       SeaweedFS's `darwin_amd64` release, checksum verified.
 - [ ] One process (`weed server -s3`), every listener on 127.0.0.1 and every
