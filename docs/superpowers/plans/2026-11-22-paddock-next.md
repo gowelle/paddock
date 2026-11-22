@@ -328,12 +328,23 @@ Application certificate. That purchase and enrolment are the owner's.
 - [ ] Decide what happens to PHP versions and services downloaded later:
       they are not in the notarized bundle, so they must be signed too or
       verified by checksum before they run (they are already checksummed).
-- [ ] Auto-update: Sparkle, with an appcast on GitHub Releases. The daemon
-      keeps running through an app update, as it did when the Mail build was
-      installed by hand.
-- [ ] A release script: version bump, build, notarize, zip, GitHub Release,
-      appcast.
-- [ ] README: a real download link in the Quick start.
+- [x] Auto-update: Sparkle 2.10.1 in the app (its Intel half), a check once
+      a day and from "Check for Updates…", asking before it installs. The
+      feed is `appcast.xml` on the latest GitHub Release of `gowelle/paddock`,
+      which the owner chose to make public (still private when this was
+      written: nothing downloads until it is). Updates are verified with an
+      EdDSA key; the private half is in the owner's login Keychain.
+      An app that finds its daemon on another build of the same install
+      replaces it at launch, so the daemon keeps serving through the update
+      and moves to the new build when the app comes back.
+- [x] A release script, `Scripts/release.sh`: version, build number, bundle,
+      signed feed; `--publish` commits, tags, pushes and creates the GitHub
+      Release. Signing with a Developer ID and notarizing are still to slot
+      into `bundle.sh`; until then publishing asks for `--unsigned`.
+- [x] README: a download link in the Quick start, and how updates work.
+- [ ] Not yet tried: an installed copy updating itself from a published
+      release. The feed and its signature are checked by the script; the
+      install step needs a first release to update from.
 
 Done when: the zip downloaded on a second Intel Mac opens with no warning,
 and that Mac later updates itself.
