@@ -3,3 +3,4 @@ Vendor/
 dist/
 .DS_Store
 .superpowers/
+.swiftpm/
