@@ -9,6 +9,8 @@ public enum Request: Codable, Equatable, Sendable {
     case isolate(site: String, version: PHPVersion), unisolate(site: String)
     case use(version: PHPVersion)
     case installPHP(version: PHPVersion), removePHP(version: PHPVersion)
+    /// Switches Xdebug on or off for one installed PHP version and restarts that version's PHP-FPM.
+    case xdebug(version: PHPVersion, enabled: Bool)
     case trust
     case shutdown
     /// Adds a service from the catalog (newest version when `version` is nil), starts it and waits until
@@ -53,7 +55,7 @@ extension Request {
         case .status, .serviceCatalog, .tasksStatus:
             return true
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
-             .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
+             .isolate, .unisolate, .use, .installPHP, .removePHP, .xdebug, .trust,
              .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate,
              .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit,
              .taskForceRestart,
@@ -96,6 +98,8 @@ public enum ErrorCode {
     public static let phpNotInstalled = "php_not_installed"
     public static let phpInUse = "php_in_use"
     public static let phpNotAvailable = "php_not_available"
+    /// Paddock has no Xdebug for that PHP version, or could not put it in place.
+    public static let xdebugUnavailable = "xdebug_unavailable"
     public static let portsBlocked = "ports_blocked"
     /// A site is served over HTTPS but macOS does not trust Paddock's certificate authority.
     public static let needsTrust = "needs_trust"

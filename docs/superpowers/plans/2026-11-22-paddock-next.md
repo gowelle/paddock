@@ -102,36 +102,68 @@ To confirm first:
    build is allowed, with its licence and source offer).
 2. **Reverb.** Confirm it stays a site task and is struck from the services
    list, or say if a one-click Reverb service is still wanted.
+   (Still open: not asked yet.)
 
 ### MySQL (services plan, Task 7)
 
-- [ ] Catalog entries `mysql` 8.4 and 9.7 from Oracle's `macos15-x86_64`
-      tarballs, checksums verified.
-- [ ] `initialise` with `mysqld --initialize-insecure`; start bound to
-      127.0.0.1 with a Unix socket and the X plugin off; verify every flag by
-      running it, from a path with a space in it.
-- [ ] `.env` lines: `DB_CONNECTION=mysql`, host, port, `root`, no password.
-- [ ] `paddock service create-db` and the app's Create Database sheet work
+Built on 2026-11-22.
+
+- [x] Catalog entries `mysql` 8.4 (8.4.11) and 9.7 (9.7.2) from Oracle's
+      `macos15-x86_64` tarballs in Oracle's archive, each checked against
+      Oracle's published MD5. 9.7.4 exists but only under Oracle's current
+      downloads path, which moves when a release is superseded; the archive
+      address is stable, so 9.7.2 is used.
+- [x] `initialise` with `mysqld --initialize-insecure`; start bound to
+      127.0.0.1 with the X plugin off and `--no-defaults`, so no `my.cnf` on
+      the Mac is read. Run from a path with a space.
+- [x] The socket is in the instance's run folder. MySQL always makes a
+      socket, so it is first given one relative to its data folder and then,
+      when the run folder's path is short enough, that one instead: it never
+      falls back to `/tmp/mysql.sock`.
+- [x] `.env` lines: `DB_CONNECTION=mysql`, host, port, `root`, no password.
+- [x] `paddock service create-db` and the app's Create Database sheet work
       for MySQL as they do for PostgreSQL.
-- [ ] Integration test: add 8.4; PDO over TCP and over the socket; a table
-      and a row; stop and start keeps the data; loopback only.
-- [ ] Add MySQL to `THIRD-PARTY-NOTICES` and the README's services table.
+- [x] Integration test: 8.4 end to end (PDO over TCP and the socket, a table
+      and rows, stop and start, remove and re-add keep the data, a stale
+      socket lock, loopback only), 9.7 beside it, and a long folder path.
+- [x] MySQL is in `THIRD-PARTY-NOTICES` and the README's services table.
 
 ### Object storage (services plan, Task 8)
 
-- [ ] Catalog entry `storage`, shown as "Object Storage (S3)", from
-      SeaweedFS's `darwin_amd64` release, checksum verified.
-- [ ] One process (`weed server -s3`), every listener on 127.0.0.1 and every
-      internal port taken from the recipe so nothing lands on a default port.
-- [ ] `ServiceRecipe` gains `afterReady` steps, run once after the first
-      successful start; used to create the default bucket `paddock`. (Not in
-      the code yet.)
-- [ ] Fixed development key and secret, shown in the `.env` lines with
+Built on 2026-11-22, on SeaweedFS **4.17** by the owner's decision.
+
+SeaweedFS 4.18 and later create four gRPC Unix sockets at a hard-coded
+`/tmp/seaweedfs-<component>-grpc-<port>.sock`, with no option to move or turn
+them off, and its own components dial those sockets first. Paddock keeps every
+socket in an owner-only folder and never in `/tmp`; a predictable path in
+`/tmp` is one another user of the Mac could create first. 4.17 (2026-03-11) is
+the last release without them. Move to a newer release only once SeaweedFS
+lets those sockets be moved or turned off; the test fails if any appear.
+
+- [x] Catalog entry `storage`, shown as "Object Storage (S3)", from
+      SeaweedFS 4.17's `darwin_amd64` release, checked against the release's
+      published checksum.
+- [x] One process (`weed server -s3`), every listener on 127.0.0.1 and all
+      eight ports (master, volume, filer and S3, each with its gRPC port)
+      taken from the recipe; the Iceberg listener is off. Usage reporting is
+      off by default in 4.17.
+- [x] Its two local sockets are named relative to its own folder, so they are
+      never in `/tmp` and their length never matters.
+- [x] `ServiceRecipe` has `afterReady` steps, run once after the first start
+      that became ready and recorded by a marker in the config folder; used to
+      create the bucket `paddock` with SeaweedFS's own shell.
+- [x] Fixed development key and secret, shown in the `.env` lines with
       `AWS_ENDPOINT` and path-style addressing.
-- [ ] Integration test: PUT and GET an object with a signed request; stop and
-      start keeps it; `lsof` shows every listener is loopback only, including
-      SeaweedFS's gRPC ports that open late.
-- [ ] Add SeaweedFS to `THIRD-PARTY-NOTICES` and the README's services table.
+- [x] Integration test: signed PUT and GET; unsigned, wrongly signed and
+      unknown-key requests refused; stop and start and remove and re-add keep
+      the objects; exactly its eight loopback listeners; no socket in `/tmp`;
+      a long folder path.
+- [x] SeaweedFS is in `THIRD-PARTY-NOTICES` and the README's services table.
+
+Worth knowing: SeaweedFS's shell exits 0 even when a command fails, so a
+failed bucket step is not detected by its exit status; the test checks the
+bucket really exists. The service's Open button shows the filer's page of
+buckets, which needs no sign-in (loopback only).
 
 Done when: `paddock service add mysql 8.4` and `paddock service add storage`
 each give a Laravel app a working database or S3 disk from the printed `.env`
@@ -139,56 +171,101 @@ lines alone, and both appear in the Services tab's Add Service… list.
 
 ## Stage 3: Xdebug toggle
 
-The core design already proved the hard part: Xdebug 3.5.0 built from source
-loads into Paddock's static PHP as a Zend extension, and the installer keeps
-`extension_dir` across PHP updates. What remains is building `xdebug.so` per
-PHP minor, shipping it, and a switch.
+Built on 2026-11-22.
 
-Decisions first:
+Decided by the owner: **one switch per PHP version**, and Xdebug **starts a
+session only when a request asks for one**.
 
-1. **Scope of the switch.** One switch per PHP version (simplest, what Herd
-   does), or per site? Recommended: per PHP version.
-2. **What "on" means.** `xdebug.mode=debug` with
-   `start_with_request=trigger` (no slowdown until a debugger asks), or
-   `start_with_request=yes`? Recommended: trigger.
+- [x] `Scripts/build-xdebug.sh`: Xdebug 3.5.3 as `xdebug.so` for each PHP
+      series Paddock ships (8.4, 8.5), locked in `Scripts/versions.lock`
+      (`xdebug-<series>`) and named by `Resources/php-manifest.json`. Pinned
+      sources, a neutral build folder, privacy and link checks and a
+      reproducible archive, as the other build scripts.
+- [x] Paddock's PHP is static, so there are no installed headers to build
+      against. The script takes the same php.net release the PHP build used,
+      installs only its headers, phpize and php-config, and refuses to build
+      unless those agree with the shipped binary on the PHP version, the API
+      numbers, thread safety, debug build, Zend signals and DTrace. The
+      shipped `php` must then load the result.
+- [x] The archives are in the app (`Resources/builds/`), so switching on needs
+      no network. `bundle.sh` and `fetch-vendor.sh` verify them.
+- [x] Loaded from PHP's command line (`-d zend_extension=…`, `xdebug.mode=debug`,
+      `xdebug.start_with_request=trigger`): the user's `php.ini` is never
+      edited, and it can still set the debugger's host and port.
+- [x] Kept in `bin/php-extensions/<version>/`, outside the PHP build's folder
+      (which an update replaces) and outside the user's `ext/`.
+- [x] Daemon request to switch it; only that version's PHP-FPM restarts. The
+      choice is saved in `state.json`.
+- [x] `paddock xdebug`, `paddock xdebug on|off [version]`; a checkbox per
+      installed version on the PHP tab.
+- [x] `php` in the terminal follows the same switch; `composer` never loads it.
+- [x] Tests: the switch against a real PHP-FPM, including a DBGp session that
+      starts on the trigger and not without it.
 
-Shape of the work:
+- [x] A full debugger session is tested the way an editor runs one (DBGp):
+      a breakpoint set in the site's own file is hit past Paddock's router,
+      the call stack and two variables read back, and the request finishes
+      when the debugger lets go.
+- [x] The user's `php.ini` wins: `xdebug.mode` or
+      `xdebug.start_with_request` set there is used in place of Paddock's
+      default (a command-line setting would otherwise override it).
+- [x] Zed (the owner's editor): `paddock xdebug zed` writes
+      `.zed/debug.json` with the entry Zed's PHP documentation gives, on the
+      port `php.ini` names, and never over an existing file. README sections
+      for Zed, VS Code and PhpStorm.
 
-- [ ] `Scripts/build-xdebug.sh`: one `xdebug.so` per supported PHP minor,
-      locked in `Scripts/versions.lock` like the PHP builds.
-- [ ] Ship or download it with each PHP version (decide in the design: in the
-      PHP archive, or a separate small artifact).
-- [ ] A Paddock-owned ini fragment that loads it, so the user's `php.ini` is
-      never edited.
-- [ ] Daemon request to turn it on and off; restart only that version's FPM
-      pool.
-- [ ] `paddock xdebug on|off|status`; a switch on the PHP tab.
-- [ ] The CLI `php` follows the same setting.
-- [ ] Editor setup lines (port 9003, path mappings are not needed locally)
-      printed by `paddock xdebug status`.
+Not done:
 
-Done when: a breakpoint in VS Code or PhpStorm stops on a request to a
-`.test` site, and turning it off returns PHP to its normal speed.
+- Xdebug is built for the two series shipped. A new PHP series needs
+  `Scripts/build-xdebug.sh <series>` and its lock and manifest lines.
+- Every request enters through Paddock's router, so "break at first line"
+  stops in `router/server.php`. Documented in the README; not changed.
+
+Done: the owner confirmed on 2026-11-22 that a breakpoint stops in Zed on
+t-market. (Zed's adapter listens on port 9003 for as long as a session runs;
+starting a second session fails with "address already in use" until the
+first is stopped.)
 
 ## Stage 4: log viewer
 
-A window for the logs Paddock already keeps under `log/`: Paddock's own,
-each service's, each site task's, and a site's Laravel log.
+Built on 2026-11-22.
 
-Decision first: **is a site's `storage/logs/laravel.log` in scope?** It is the
-log people look at most, but it belongs to the project, not Paddock.
-Recommended: yes, read-only, for Laravel sites only.
+Decided by the owner: a site's own logs are shown too, **every `.log` file in
+its `storage/logs`**, read-only.
 
-- [ ] A model that lists the logs, tails one, and follows it while the window
-      shows (bounded memory; the files are already bounded on disk).
-- [ ] A Logs window: sources on the left, the tail on the right, a filter
-      field, a pause switch, Reveal in Finder.
-- [ ] The Tasks and Services tabs' log buttons open this window at that log.
-- [ ] Laravel log entries split into level, time and message, with the stack
-      trace folded.
+- [x] `LogCatalog` lists the logs: Paddock's (daemon, web server), PHP's per
+      version, each service's, each site task's, and each site's own
+      (`laravel.log` first, then the most recently written, the newest 20;
+      regular files only, a symlink is never followed).
+- [x] `LogTail` reads a log's last 256 KB and then only what is added; a
+      rotated or cut-down file starts over; a line still being written waits
+      for its end; terminal colour sequences and control characters are
+      dropped.
+- [x] `LogParser` makes a Laravel (Monolog) entry of a line and what follows
+      it, with its level; a long trace is cut with a count. Any other log is a
+      line per entry.
+- [x] `LogsModel`: one look a second while the window shows, at most 3,000
+      entries kept, a filter (traces included), pause and catch up, fold and
+      unfold, Reveal in Finder.
+- [x] A Logs window, and a Logs row in the menu.
+- [x] Open Log on a task and (new) on a service opens the window at that log.
+- [x] Checked against the owner's real logs, read-only: every group found;
+      t-market's `laravel.log` (1,316 lines) became 252 entries with 10 traces
+      folded, in 36 ms.
+
+Not done:
+
+- Not tried by hand in the running app (scrolling to the newest line, the
+  split view, selecting text across entries).
+- Only Laravel's format gets levels and folding. PHP's, Caddy's and the
+  services' logs are shown a line at a time.
+- A site's logs are listed only for sites Paddock serves, and only directly in
+  `storage/logs` (no subfolders).
+- Nothing clears or rotates a log from the window; it only reads.
 
 Done when: an error thrown in a site shows in the window within two seconds
-without a refresh.
+without a refresh. (Covered by a test with a real file and the one-second
+look; the owner's to see in the app.)
 
 ## Stage 5: dumps window
 

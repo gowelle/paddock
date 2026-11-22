@@ -18,10 +18,15 @@ struct PHPTab: View {
             Table(rows, selection: $selection) {
                 TableColumn("Version") { row in Text("PHP \(row.version.description)") }
                 TableColumn("") { row in stateText(row.version) }
+                TableColumn("Xdebug") { row in xdebugSwitch(row.version) }
+                    .width(60)
                 TableColumn("") { row in action(row.version) }
                     .width(90)
             }
             .tableSurface()
+
+            if let caption = model.xdebugCaption { TableCaption(caption) }
+
 
             HStack {
                 Picker("Default", selection: Binding(
@@ -57,6 +62,21 @@ struct PHPTab: View {
             Text("Installed").foregroundStyle(Theme.inkMuted)
         } else {
             Text("")
+        }
+    }
+
+    /// A checkbox for an installed version Paddock has an Xdebug for; nothing for any other.
+    @ViewBuilder
+    private func xdebugSwitch(_ version: PHPVersion) -> some View {
+        if model.canSwitchXdebug(version) {
+            Toggle("", isOn: Binding(
+                get: { model.isXdebugOn(version) },
+                set: { on in Task { await model.perform(.xdebug(version: version, enabled: on)) } }))
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .tint(Theme.pasture)
+                .disabled(model.isSwitchingXdebug(version))
+                .help("Load Xdebug for PHP \(version.description)")
         }
     }
 

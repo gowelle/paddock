@@ -75,7 +75,7 @@ final class IPCTests: XCTestCase {
          .park(path: "/p"), .forget(path: "/p"), .link(name: "blog", path: "/p"), .unlink(name: "blog"),
          .secure(site: "blog"), .unsecure(site: "blog"), .isolate(site: "blog", version: v84),
          .unisolate(site: "blog"), .use(version: v84), .installPHP(version: v84), .removePHP(version: v84),
-         .trust, .serviceAdd(kind: "mail", version: nil), .serviceRemove(name: "mail", deleteData: false),
+         .xdebug(version: v84, enabled: true), .trust, .serviceAdd(kind: "mail", version: nil), .serviceRemove(name: "mail", deleteData: false),
          .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog,
          .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop"),
          .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
@@ -101,6 +101,7 @@ final class IPCTests: XCTestCase {
         case .use: return "use"
         case .installPHP: return "installPHP"
         case .removePHP: return "removePHP"
+        case .xdebug: return "xdebug"
         case .trust: return "trust"
         case .serviceAdd: return "serviceAdd"
         case .serviceRemove: return "serviceRemove"
@@ -123,7 +124,7 @@ final class IPCTests: XCTestCase {
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 34, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 35, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }

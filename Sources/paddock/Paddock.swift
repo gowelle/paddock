@@ -10,7 +10,7 @@ struct Paddock: ParsableCommand {
             Park.self, Forget.self, Parked.self,
             Link.self, Unlink.self, Links.self,
             Secure.self, Unsecure.self, Trust.self,
-            Isolate.self, Unisolate.self, Use.self,
+            Isolate.self, Unisolate.self, Use.self, XdebugGroup.self,
             Start.self, Stop.self, Restart.self, Status.self, Uninstall.self,
             Open.self, Logs.self,
             ServiceGroup.self, TaskGroup.self,
@@ -97,12 +97,14 @@ enum CLI {
         return try siteContainingCurrentDirectory(in: status)
     }
 
-    static func siteContainingCurrentDirectory(in status: EngineStatus) throws -> Site {
+    /// With `quietly`, a folder that is no site's throws without printing (for a command with a fallback).
+    static func siteContainingCurrentDirectory(in status: EngineStatus, quietly: Bool = false) throws -> Site {
         let registry = SiteRegistry(
             state: StateStore(paths: paths).load(),
             defaultPHP: status.defaultPHP ?? PHPVersion(major: 8, minor: 5))
         guard let site = registry.site(containing: currentDirectory),
               let served = status.sites.first(where: { $0.name == site.name }) else {
+            if quietly { throw ExitCode.failure }
             throw failure(Messages.notASite)
         }
         return served

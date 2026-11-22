@@ -141,6 +141,25 @@ for name in $POSTGIS_NAMES; do
   echo "PostGIS add-on $file verified."
 done
 
+# Xdebug: Paddock's own build for each PHP series, made by Scripts/build-xdebug.sh into Vendor/builds/ and
+# shipped in the app (the PHP manifest's "xdebug" of that series). Checked only.
+XDEBUG_NAMES="$(awk -F'\t' '$1 ~ /^xdebug-[0-9]+\.[0-9]+$/ { print $1 }' "$LOCK")"
+for name in $XDEBUG_NAMES; do
+  url="$(lock_field "$name" 2)"
+  sha="$(lock_field "$name" 3)"
+  case "$url" in
+    paddock-builds://*) file="${url#paddock-builds://}" ;;
+    *) fail "$name in Scripts/versions.lock is $url; Xdebug must come from Paddock's own builds (paddock-builds://)." ;;
+  esac
+  [ -f "$BUILDS/$file" ] || fail "Vendor/builds/$file is missing. Build it with: Scripts/build-xdebug.sh ${name#xdebug-}" \
+    "(a few minutes), or copy the archive there."
+  actual="$(sha256 "$BUILDS/$file")"
+  [ "$actual" = "$sha" ] || fail "Vendor/builds/$file has checksum $actual; Scripts/versions.lock expects $sha."
+  grep -q "\"$sha\"" "$ROOT/Resources/php-manifest.json" \
+    || fail "Resources/php-manifest.json does not list $file with checksum $sha."
+  echo "Xdebug $file verified."
+done
+
 # Valkey: Paddock's own build for the Redis (Valkey) service, made by Scripts/build-valkey.sh into
 # Vendor/builds/ and shipped in the app (a services-catalog.json paddock-builds:// asset). Checked only.
 url="$(lock_field valkey 2)"

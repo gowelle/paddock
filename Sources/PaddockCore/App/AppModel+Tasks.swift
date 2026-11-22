@@ -216,7 +216,7 @@ extension AppModel {
     /// Writes the starter `paddock.json` (queue and scheduler) for a Laravel site; never overwrites.
     public func createStarterFile(site: String) async { await taskAction(.tasksInit(site: site)) }
 
-    /// Opens the task's log with the system's default handler; says so when there is none yet.
+    /// Shows the task's log (in the Logs window, where the app has one); says so when there is none yet.
     public func openTaskLog(site: String, task: String) {
         guard let path = sites.first(where: { $0.name == site })?.tasks?.tasks.first(where: { $0.name == task })?.logPath
         else { return }
@@ -224,7 +224,12 @@ extension AppModel {
             showNotice("\(task) hasn't written a log yet.", tasks: true)
             return
         }
-        openItem?(URL(fileURLWithPath: path))
+        show(log: URL(fileURLWithPath: path))
+    }
+
+    /// A log goes to the Logs window when there is one, else to the system's default handler.
+    func show(log: URL) {
+        if let showLog { showLog(log) } else { openItem?(log) }
     }
 
     private func taskAction(_ request: Request) async {

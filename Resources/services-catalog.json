@@ -334,6 +334,341 @@
       }
     },
     {
+      "kind": "mysql",
+      "displayName": "MySQL",
+      "version": "9.7.2",
+      "series": "9.7",
+      "licence": "GPL-2.0",
+      "minimumMacOS": "14.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://cdn.mysql.com/archives/mysql-9.7/mysql-9.7.2-macos15-x86_64.tar.gz",
+            "sha256": "c290b3ad553a1d4e9831c4bd94e0107a6dc793d2c2a6e5eb37c2943d6a6b8670",
+            "size": 181261133
+          },
+          "archive": "tar.gz",
+          "stripComponents": 1
+        }
+      ],
+      "initialise": [
+        {
+          "executable": "{bin}/bin/mysqld",
+          "arguments": [
+            "--no-defaults",
+            "--initialize-insecure",
+            "--basedir={bin}",
+            "--datadir={data}"
+          ]
+        }
+      ],
+      "start": {
+        "executable": "{bin}/bin/mysqld",
+        "arguments": [
+          "--no-defaults",
+          "--basedir={bin}",
+          "--datadir={data}",
+          "--port={port.main}",
+          "--bind-address=127.0.0.1",
+          "--socket=mysql.sock",
+          {
+            "ifSocket": [
+              "--socket={socket}"
+            ]
+          },
+          "--mysqlx=OFF",
+          "--pid-file={run}/mysql.pid"
+        ]
+      },
+      "ready": {
+        "command": {
+          "executable": "{bin}/bin/mysqladmin",
+          "arguments": [
+            "--no-defaults",
+            "--protocol=TCP",
+            "--host=127.0.0.1",
+            "--port={port.main}",
+            "--user=root",
+            "ping"
+          ]
+        }
+      },
+      "stopSignal": "TERM",
+      "stopGraceSeconds": 30,
+      "ports": [
+        {
+          "name": "main",
+          "preferred": 3306
+        }
+      ],
+      "socket": "{run}/mysql.sock",
+      "lockFiles": [
+        "{run}/mysql.sock.lock"
+      ],
+      "env": [
+        "DB_CONNECTION=mysql",
+        "DB_HOST=127.0.0.1",
+        "DB_PORT={port.main}",
+        "DB_DATABASE=laravel",
+        "DB_USERNAME=root",
+        "DB_PASSWORD="
+      ],
+      "needsPHP": false,
+      "notes": [],
+      "readyTimeoutSeconds": 60,
+      "initialiseTimeoutSeconds": 300,
+      "actions": {
+        "createDatabase": {
+          "command": {
+            "executable": "{bin}/bin/mysql",
+            "arguments": [
+              "--no-defaults",
+              "--protocol=TCP",
+              "--host=127.0.0.1",
+              "--port={port.main}",
+              "--user=root",
+              "--execute=CREATE DATABASE `{database}`"
+            ]
+          },
+          "parameters": [
+            {
+              "name": "database",
+              "pattern": "^[A-Za-z0-9_]{1,63}$"
+            }
+          ],
+          "alreadyDone": "Can't create database '{database}'; database exists"
+        }
+      }
+    },
+    {
+      "kind": "mysql",
+      "displayName": "MySQL",
+      "version": "8.4.11",
+      "series": "8.4",
+      "licence": "GPL-2.0",
+      "minimumMacOS": "14.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://cdn.mysql.com/archives/mysql-8.4/mysql-8.4.11-macos15-x86_64.tar.gz",
+            "sha256": "90e8aea10698d01b978f0179e72e8d5e2cbe9f9bd5771e88b0b75d7c82244d3f",
+            "size": 171974960
+          },
+          "archive": "tar.gz",
+          "stripComponents": 1
+        }
+      ],
+      "initialise": [
+        {
+          "executable": "{bin}/bin/mysqld",
+          "arguments": [
+            "--no-defaults",
+            "--initialize-insecure",
+            "--basedir={bin}",
+            "--datadir={data}"
+          ]
+        }
+      ],
+      "start": {
+        "executable": "{bin}/bin/mysqld",
+        "arguments": [
+          "--no-defaults",
+          "--basedir={bin}",
+          "--datadir={data}",
+          "--port={port.main}",
+          "--bind-address=127.0.0.1",
+          "--socket=mysql.sock",
+          {
+            "ifSocket": [
+              "--socket={socket}"
+            ]
+          },
+          "--mysqlx=OFF",
+          "--pid-file={run}/mysql.pid"
+        ]
+      },
+      "ready": {
+        "command": {
+          "executable": "{bin}/bin/mysqladmin",
+          "arguments": [
+            "--no-defaults",
+            "--protocol=TCP",
+            "--host=127.0.0.1",
+            "--port={port.main}",
+            "--user=root",
+            "ping"
+          ]
+        }
+      },
+      "stopSignal": "TERM",
+      "stopGraceSeconds": 30,
+      "ports": [
+        {
+          "name": "main",
+          "preferred": 3306
+        }
+      ],
+      "socket": "{run}/mysql.sock",
+      "lockFiles": [
+        "{run}/mysql.sock.lock"
+      ],
+      "env": [
+        "DB_CONNECTION=mysql",
+        "DB_HOST=127.0.0.1",
+        "DB_PORT={port.main}",
+        "DB_DATABASE=laravel",
+        "DB_USERNAME=root",
+        "DB_PASSWORD="
+      ],
+      "needsPHP": false,
+      "notes": [
+        "MySQL 8.4.11 is the last 8.4 release Oracle built for Intel Macs."
+      ],
+      "readyTimeoutSeconds": 60,
+      "initialiseTimeoutSeconds": 300,
+      "actions": {
+        "createDatabase": {
+          "command": {
+            "executable": "{bin}/bin/mysql",
+            "arguments": [
+              "--no-defaults",
+              "--protocol=TCP",
+              "--host=127.0.0.1",
+              "--port={port.main}",
+              "--user=root",
+              "--execute=CREATE DATABASE `{database}`"
+            ]
+          },
+          "parameters": [
+            {
+              "name": "database",
+              "pattern": "^[A-Za-z0-9_]{1,63}$"
+            }
+          ],
+          "alreadyDone": "Can't create database '{database}'; database exists"
+        }
+      }
+    },
+    {
+      "kind": "storage",
+      "displayName": "Object Storage (S3)",
+      "version": "4.17",
+      "series": "4",
+      "seriesInID": false,
+      "licence": "Apache-2.0",
+      "minimumMacOS": "13.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://github.com/seaweedfs/seaweedfs/releases/download/4.17/darwin_amd64.tar.gz",
+            "sha256": "978c6f628c12330c81b0401b7468313a8d0c52f0d5a14eccd421cdea432c89b6",
+            "size": 44521255
+          },
+          "archive": "tar.gz",
+          "stripComponents": 0
+        }
+      ],
+      "initialise": [],
+      "start": {
+        "executable": "{bin}/weed",
+        "arguments": [
+          "server",
+          "-dir={data}",
+          "-ip=127.0.0.1",
+          "-ip.bind=127.0.0.1",
+          "-master.port={port.master}",
+          "-master.port.grpc={port.mastergrpc}",
+          "-volume.port={port.volume}",
+          "-volume.port.grpc={port.volumegrpc}",
+          "-filer",
+          "-filer.port={port.filer}",
+          "-filer.port.grpc={port.filergrpc}",
+          "-s3",
+          "-s3.port={port.main}",
+          "-s3.port.grpc={port.s3grpc}",
+          "-s3.port.iceberg=0",
+          "-s3.config={config}/s3.json",
+          "-filer.localSocket=filer.sock",
+          "-s3.localSocket=s3.sock"
+        ]
+      },
+      "ready": {
+        "http": {
+          "url": "http://127.0.0.1:{port.main}/healthz",
+          "expectStatus": 200
+        }
+      },
+      "stopSignal": "TERM",
+      "stopGraceSeconds": 60,
+      "ports": [
+        {
+          "name": "main",
+          "preferred": 8333
+        },
+        {
+          "name": "s3grpc",
+          "preferred": 18333
+        },
+        {
+          "name": "master",
+          "preferred": 9333
+        },
+        {
+          "name": "mastergrpc",
+          "preferred": 19333
+        },
+        {
+          "name": "volume",
+          "preferred": 9340
+        },
+        {
+          "name": "volumegrpc",
+          "preferred": 19340
+        },
+        {
+          "name": "filer",
+          "preferred": 8888
+        },
+        {
+          "name": "filergrpc",
+          "preferred": 18888
+        }
+      ],
+      "env": [
+        "FILESYSTEM_DISK=s3",
+        "AWS_ACCESS_KEY_ID=paddock",
+        "AWS_SECRET_ACCESS_KEY=paddock-secret",
+        "AWS_DEFAULT_REGION=us-east-1",
+        "AWS_BUCKET=paddock",
+        "AWS_ENDPOINT=http://127.0.0.1:{port.main}",
+        "AWS_USE_PATH_STYLE_ENDPOINT=true"
+      ],
+      "openURL": "http://127.0.0.1:{port.filer}/buckets/",
+      "needsPHP": false,
+      "notes": [
+        "SeaweedFS 4.17, an S3-compatible server. The key and secret are fixed, for development on this Mac only."
+      ],
+      "configFiles": [
+        {
+          "path": "{config}/s3.json",
+          "contents": "{\n  \"identities\": [\n    {\n      \"name\": \"paddock\",\n      \"credentials\": [{ \"accessKey\": \"paddock\", \"secretKey\": \"paddock-secret\" }],\n      \"actions\": [\"Admin\", \"Read\", \"Write\", \"List\", \"Tagging\"]\n    }\n  ]\n}\n"
+        }
+      ],
+      "readyTimeoutSeconds": 60,
+      "initialiseTimeoutSeconds": 60,
+      "afterReady": [
+        {
+          "executable": "{bin}/weed",
+          "arguments": [
+            "shell",
+            "-master=127.0.0.1:{port.master}.{port.mastergrpc}",
+            "-filer=127.0.0.1:{port.filer}.{port.filergrpc}"
+          ],
+          "stdin": "s3.bucket.create -name paddock\n"
+        }
+      ]
+    },
+    {
       "kind": "redis",
       "displayName": "Redis (Valkey)",
       "version": "9.1.4",

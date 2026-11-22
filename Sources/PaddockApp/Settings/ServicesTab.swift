@@ -150,6 +150,7 @@ struct ServiceRowView: View {
                 if row.canCreateDatabase {
                     Button("Create Database…", action: createDatabase)
                 }
+                Button("Open Log") { model.openServiceLog(row.id) }
                 Spacer()
                 Menu("Remove") {
                     Button("Remove (Keep Data)") { Task { await model.removeService(row.id, deleteData: false) } }

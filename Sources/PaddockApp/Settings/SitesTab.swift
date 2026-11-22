@@ -30,10 +30,10 @@ struct SitesTab: View {
             .tableSurface()
 
             if model.sites.isEmpty {
-                Caption("No sites yet. Put a project folder in your sites folder and it appears here.")
+                TableCaption("No sites yet. Put a project folder in your sites folder and it appears here.")
             }
             if let notice = model.trustNotice {
-                Caption(notice)
+                TableCaption(notice)
             }
             SettingsFooter().padding(.horizontal, -20).padding(.bottom, -12)
         }

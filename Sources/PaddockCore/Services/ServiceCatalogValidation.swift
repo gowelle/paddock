@@ -72,12 +72,13 @@ extension ServiceCatalog {
             throw fail("the action \"\(name)\" is not one Paddock knows")
         }
         let actions = recipe.actions.sorted { $0.key < $1.key }.map(\.value)
-        let commands = [recipe.start] + recipe.initialise + actions.map(\.command) + [recipe.ready.command].compactMap { $0 }
+        let commands = [recipe.start] + recipe.initialise + recipe.afterReady + actions.map(\.command)
+            + [recipe.ready.command].compactMap { $0 }
         for command in commands where !runsFromBinariesOrPHP(command.executable) {
             throw fail("\(command.executable) must be a program under {bin}/ or exactly {php}")
         }
         if recipe.start.stdin != nil || recipe.ready.command?.stdin != nil {
-            throw fail("only initialise steps may have stdin, not the start or readiness command")
+            throw fail("only initialise and afterReady steps may have stdin, not the start or readiness command")
         }
         for command in commands {
             for (name, value) in command.environment {
@@ -181,7 +182,7 @@ extension ServiceCatalog {
         var secretTemplates = recipe.env
         if recipe.ready.command == nil { templates.append(recipe.ready.template) }
         // (Actions below: their arguments may also use their parameters.)
-        for command in [recipe.start] + recipe.initialise + [recipe.ready.command].compactMap({ $0 }) {
+        for command in [recipe.start] + recipe.initialise + recipe.afterReady + [recipe.ready.command].compactMap({ $0 }) {
             templates += [command.executable] + command.arguments.flatMap(\.templates)
             templates += [command.stdin].compactMap { $0 }
             secretTemplates += Array(command.environment.values)

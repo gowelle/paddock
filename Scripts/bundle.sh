@@ -31,6 +31,9 @@ POSTGIS_ARCHIVES="$(awk -F'\t' '$1 ~ /^postgis-pg[0-9]+$/ && $2 ~ /^paddock-buil
 # Paddock's Valkey build (valkey), with its checksum.
 VALKEY_ARCHIVES="$(awk -F'\t' '$1 == "valkey" && $2 ~ /^paddock-builds:\/\// { sub(/^paddock-builds:\/\//, "", $2); print $2 "\t" $3 }' "$LOCK")"
 [ -n "$VALKEY_ARCHIVES" ] || fail "Scripts/versions.lock names no paddock-builds:// Valkey build."
+# Paddock's Xdebug for each PHP series (xdebug-<series>), with their checksums.
+XDEBUG_ARCHIVES="$(awk -F'\t' '$1 ~ /^xdebug-[0-9]+\.[0-9]+$/ && $2 ~ /^paddock-builds:\/\// { sub(/^paddock-builds:\/\//, "", $2); print $2 "\t" $3 }' "$LOCK")"
+[ -n "$XDEBUG_ARCHIVES" ] || fail "Scripts/versions.lock names no paddock-builds:// Xdebug build."
 
 for item in caddy composer.phar php-manifest.json router/server.php "php/$PHP_SERIES/default/php" "php/$PHP_SERIES/default/php-fpm" "php/$PHP_SERIES/default/build.json"; do
   [ -e "$VENDOR/$item" ] || fail "Vendor/$item is missing. Run Scripts/fetch-vendor.sh first."
@@ -97,6 +100,13 @@ while IFS=$'\t' read -r file sha; do
     || fail "Vendor/builds/$file does not match the checksum in Scripts/versions.lock."
   install -m 644 "$VENDOR/builds/$file" "$RES/builds/$file"
 done <<< "$VALKEY_ARCHIVES"
+# Paddock's Xdebug for each PHP series, the same way: switching it on needs no network.
+while IFS=$'\t' read -r file sha; do
+  [ -f "$VENDOR/builds/$file" ] || fail "Vendor/builds/$file is missing. Build it with Scripts/build-xdebug.sh."
+  [ "$(shasum -a 256 "$VENDOR/builds/$file" | awk '{print $1}')" = "$sha" ] \
+    || fail "Vendor/builds/$file does not match the checksum in Scripts/versions.lock."
+  install -m 644 "$VENDOR/builds/$file" "$RES/builds/$file"
+done <<< "$XDEBUG_ARCHIVES"
 
 sed "s/VERSION_PLACEHOLDER/$VERSION/g" "$ROOT/Resources/Info.plist" > "$APP/Contents/Info.plist"
 plutil -lint -s "$APP/Contents/Info.plist"

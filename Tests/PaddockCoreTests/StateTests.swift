@@ -17,6 +17,20 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(state, State.initial)
     }
 
+    func testXdebugChoicesAreKeptAndAnOlderFileHasNone() throws {
+        let paths = try makePaths()
+        try StateStore(paths: paths).update { $0.xdebug = [PHPVersion("8.4")!] }
+        XCTAssertEqual(StateStore(paths: paths).load().xdebug, [PHPVersion("8.4")!])
+
+        // A file from before the switch existed, and one whose list holds something unreadable.
+        let older = #"{"parked":[],"links":{},"secured":[],"phpPins":{}}"#
+        XCTAssertEqual(try JSONDecoder().decode(State.self, from: Data(older.utf8)).xdebug, [])
+        let odd = #"{"parked":["/p"],"links":{},"secured":[],"phpPins":{},"xdebug":["8.5",7,"nonsense"]}"#
+        let decoded = try JSONDecoder().decode(State.self, from: Data(odd.utf8))
+        XCTAssertEqual(decoded.xdebug, [PHPVersion("8.5")!])
+        XCTAssertEqual(decoded.parked, ["/p"], "the rest of the file is kept")
+    }
+
     func testRoundTrip() throws {
         let paths = try makePaths()
         let written = try StateStore(paths: paths).update {

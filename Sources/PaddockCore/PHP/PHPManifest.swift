@@ -12,13 +12,17 @@ public struct PHPManifest: Codable, Sendable {
         public var variant: String
         public var cli: Asset
         public var fpm: Asset
+        /// Paddock's Xdebug for this version: an archive with `xdebug.so` at its top level. Nil when there is none.
+        public var xdebug: Asset?
 
-        public init(version: PHPVersion, patch: String, variant: String, cli: Asset, fpm: Asset) {
+        public init(version: PHPVersion, patch: String, variant: String, cli: Asset, fpm: Asset,
+                    xdebug: Asset? = nil) {
             self.version = version
             self.patch = patch
             self.variant = variant
             self.cli = cli
             self.fpm = fpm
+            self.xdebug = xdebug
         }
     }
 

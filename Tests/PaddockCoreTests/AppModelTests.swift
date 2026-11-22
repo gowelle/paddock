@@ -797,6 +797,67 @@ extension AppModelTests {
         return (model, client, outside)
     }
 
+    /// A task's or a service's Open Log goes to the app's Logs window when it has one, else to the system's
+    /// handler; a log not written yet says so and opens nothing.
+    func testOpenLogShowsTheLogInTheLogsWindowWhenThereIsOne() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("pdk openlog-\(UUID().uuidString)", isDirectory: true)
+        let paths = Paths(home: home)
+        try FileManager.default.createDirectory(at: paths.log, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+        try Data("x\n".utf8).write(to: paths.serviceLog("mail"))
+        let reply = statusWith(services: [mail, postgres])
+
+        let shown = Locked<[URL]>([])
+        let opened = Locked<[URL]>([])
+        let model = AppModel(client: FakeClient { _ in .ok(reply) }, paths: paths,
+                             open: { url in opened.withValue { $0.append(url) } },
+                             showLog: { url in shown.withValue { $0.append(url) } })
+        await model.refresh()
+        model.openServiceLog("mail")
+        XCTAssertEqual(shown.value, [paths.serviceLog("mail")])
+        XCTAssertEqual(opened.value, [], "not handed to another app")
+
+        model.openServiceLog("postgres-18")
+        XCTAssertEqual(shown.value.count, 1, "nothing to show")
+        XCTAssertEqual(model.serviceNotice, "PostgreSQL 18 hasn't written a log yet.")
+
+        // Without a Logs window (as in a client that has none), the system's handler gets it.
+        let plain = AppModel(client: FakeClient { _ in .ok(reply) }, paths: paths,
+                             open: { url in opened.withValue { $0.append(url) } })
+        await plain.refresh()
+        plain.openServiceLog("mail")
+        XCTAssertEqual(opened.value, [paths.serviceLog("mail")])
+    }
+
+    func testXdebugFollowsTheStatusAndSwitchingSendsTheRequest() async {
+        var status = sampleStatus()
+        status.xdebug = [v84]
+        status.xdebugAvailable = [v84, v85]
+        let reply = status
+        let client = FakeClient { _ in .ok(reply) }
+        let model = AppModel(client: client)
+        XCTAssertFalse(model.canSwitchXdebug(v84), "nothing before the first status")
+        XCTAssertNil(model.xdebugCaption)
+        await model.refresh()
+        XCTAssertTrue(model.isXdebugOn(v84))
+        XCTAssertFalse(model.isXdebugOn(v85))
+        XCTAssertTrue(model.canSwitchXdebug(v85))
+        XCTAssertFalse(model.canSwitchXdebug(PHPVersion("8.3")!), "no Xdebug build, or not installed")
+        XCTAssertEqual(model.xdebugCaption, "Xdebug starts when a request asks for it; your editor listens on port 9003.")
+        await model.perform(.xdebug(version: v85, enabled: true))
+        XCTAssertTrue(client.requests.contains(.xdebug(version: v85, enabled: true)))
+        XCTAssertFalse(model.isSwitchingXdebug(v85), "done")
+    }
+
+    func testARunningDatabaseServerOffersCreateDatabase() async {
+        let mysql = service("mysql-8-4", name: "MySQL 8.4", kind: "mysql", state: .running, ports: ["main": 3306])
+        let stopped = service("mysql-9-7", name: "MySQL 9.7", kind: "mysql", state: .stopped, ports: ["main": 3307])
+        let running = service("postgres-18", name: "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5432])
+        let (model, _, _) = servicesModel { _ in .ok(statusWith(services: [mysql, stopped, running, mail])) }
+        await model.refresh()
+        XCTAssertEqual(model.serviceRows.map(\.canCreateDatabase), [true, false, true, false])
+    }
+
     func testServiceRowsSayWhatEachServiceIsDoingInTheCLIsWords() async {
         let (model, _, _) = servicesModel { _ in .ok(statusWith(services: [mail, postgres, meili])) }
         XCTAssertEqual(model.serviceRows, [], "nothing before the first status")

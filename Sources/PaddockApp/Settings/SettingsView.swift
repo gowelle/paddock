@@ -4,6 +4,8 @@ import SwiftUI
 /// The settings window: three tabs, nothing else.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var logs: LogsModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         TabView {
@@ -15,6 +17,11 @@ struct SettingsView: View {
         }
         .frame(width: SettingsView.size.width, height: SettingsView.size.height)
         .settingsTheme()
+        // A tab's Open Log chose a log: bring the Logs window forward to show it.
+        .onChange(of: logs.openRequests) { _ in
+            activateApp()
+            openWindow(id: LogsView.windowID)
+        }
         .background(VisibilityReporter { visible in
             visible ? model.beginWatching() : model.endWatching()
         })
@@ -39,6 +46,22 @@ extension View {
             .background(Theme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
+    }
+}
+
+/// Small secondary text under a table. Not `Caption`: a text that fixes its own height, beside a table, makes
+/// the tab taller than its window and pushes the table's top out of view. This one takes the room it is given.
+struct TableCaption: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(Theme.inkMuted)
+            .lineLimit(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

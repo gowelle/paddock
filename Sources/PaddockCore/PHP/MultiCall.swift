@@ -24,6 +24,9 @@ public enum MultiCall {
 
         var argv = [binary]
         if let ini = resolver.ini(for: version) { argv += ["-c", ini.path] }
+        // Xdebug follows the version's switch for `php`. Composer is left without it: it would only be slower,
+        // and it restarts itself without Xdebug anyway.
+        if name == "php" { argv += resolver.xdebugArguments(for: version) }
         // COMPOSER_HOME is left to Composer (the owner's ~/.composer, or what they set), so their
         // auth.json, global config and global packages keep working.
         if name == "composer" {

@@ -198,7 +198,7 @@ struct ServiceUpdate: ParsableCommand {
 
 struct ServiceCreateDatabase: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "create-db", abstract: "Create a database in a running service, such as PostgreSQL.")
+        commandName: "create-db", abstract: "Create a database in a running service, such as PostgreSQL or MySQL.")
     @Argument(help: "The service's name, such as postgres-18.") var name: String
     @Argument(help: "The new database's name: letters, numbers and underscores.") var database: String
 

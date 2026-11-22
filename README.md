@@ -49,6 +49,7 @@ you a question Paddock could answer itself.
 - [Quick start](#quick-start)
 - [The menu-bar app](#the-menu-bar-app)
   - [The Mail window](#the-mail-window)
+  - [The Logs window](#the-logs-window)
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
@@ -69,10 +70,12 @@ you a question Paddock could answer itself.
 | **Zero-configuration sites** | Park a directory once and every folder inside it is served at `http://<folder>.test`. Or link a single folder to `<name>.test`. |
 | **Trusted local HTTPS** | `paddock secure` serves a site over HTTPS and makes macOS trust Paddock's local certificate authority, so browsers never complain. |
 | **PHP versions side by side** | Paddock ships with the newest stable PHP. Other versions are the only downloads, and only when you ask (`paddock use 8.4`). Each site can pin its own. |
+| **Xdebug, one switch per PHP version** | Paddock's own Xdebug build loads into a PHP version when you switch it on, and starts a session only when a request asks for one. Your `php.ini` is never edited. |
 | **`php` and `composer` that follow you** | The `php` and `composer` commands in your terminal use the PHP version of the site whose folder you are in. |
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
-| **One-action services** | Add PostgreSQL, Redis (Valkey), Meilisearch or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
+| **One-action services** | Add PostgreSQL, MySQL, Redis (Valkey), Meilisearch, S3-compatible object storage or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
+| **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
 
@@ -148,9 +151,10 @@ General, PHP, Sites, Services and Tasks.
 </p>
 
 - **Sites:** open a site, secure it with a checkbox, pin its PHP version.
-- **PHP:** install and remove versions, choose the default, open `php.ini`.
-- **Services:** add, start, stop, restart and remove services, and copy a
-  service's `.env` lines.
+- **PHP:** install and remove versions, choose the default, switch Xdebug on
+  or off for a version, open `php.ini`.
+- **Services:** add, start, stop, restart and remove services, copy a
+  service's `.env` lines, and open its log.
 - **Tasks:** review and approve a site's `paddock.json`, then start, stop and
   restart its tasks and open their logs.
 - **General:** start at login, manage parked folders, add Paddock to your
@@ -185,6 +189,34 @@ running, the window says so and how to fix it. The mail service's Open button
 in Settings… → Services opens this window too. Mailpit's own web page is still
 there: `paddock service open mail`.
 
+### The Logs window
+
+**Logs** in the menu opens every log in one place, grouped:
+
+- **Paddock:** the daemon and the web server.
+- **PHP:** each version's errors and PHP-FPM's own log.
+- **Services:** one per added service.
+- **A site's tasks:** one per task in its `paddock.json`.
+- **A site's logs:** every `.log` file in its `storage/logs`, `laravel.log`
+  first, then the most recently written (the newest 20).
+
+<p align="center">
+  <img src="docs/images/logs-light.png" width="760" alt="The Logs window: logs grouped on the left; a Laravel log on the right with a warning, and an error whose stack trace is unfolded">
+</p>
+
+- The chosen log shows from its end and **follows as it is written**: a new
+  line appears within about a second, with no refresh.
+- In a Laravel log, an entry's stack trace is **folded under it**; click the
+  chevron to see it. Errors are bold with a bar beside them, warnings amber.
+- **Filter** narrows to entries mentioning a word, stack traces included.
+- **Pause** stops new lines arriving while you read; it catches up when you
+  go on.
+- **Reveal in Finder** shows the file itself.
+- Open Log on a task or a service in Settings… opens this window at that log.
+
+Paddock only reads these files. It never rotates, clears or edits a site's
+own logs.
+
 The pictures in this section are rendered from sample data by the app's own
 snapshot tool (`PaddockApp --snapshots <dir>`).
 
@@ -218,6 +250,77 @@ take a site default to the one containing the current directory.
 
 Paddock supports PHP 8.1 and later.
 
+### Xdebug
+
+| Command | What it does |
+|---|---|
+| `paddock xdebug` | Show which PHP versions have Xdebug on. |
+| `paddock xdebug on [8.4]` | Switch Xdebug on for a PHP version (default: the current site's, else the default). |
+| `paddock xdebug off [8.4]` | Switch it off. |
+| `paddock xdebug zed` | Write Zed's debug configuration (`.zed/debug.json`) for the current site; never over an existing one. |
+
+Xdebug is switched per PHP version: every site on that version follows, and so
+does `php` in the terminal. Switching restarts that version's PHP-FPM, nothing
+else. While it is on:
+
+- A debugging session starts **only when asked for**: the Xdebug browser
+  extension, `?XDEBUG_TRIGGER=1` on a URL, or `XDEBUG_TRIGGER=1 php artisan …`
+  in the terminal. Other requests run as usual.
+- Your editor listens on **port 9003** on this Mac, Xdebug's default. No path
+  mappings are needed: the files are where your editor sees them. To use
+  another port or host, set `xdebug.client_port` or `xdebug.client_host` in
+  that version's `php.ini`.
+- Every request enters through Paddock's router, so with "break at first line"
+  on, your editor stops in `router/server.php` first. Set a breakpoint in your
+  own code instead.
+- `composer` never loads Xdebug.
+- Paddock's defaults are `xdebug.mode=debug` and
+  `xdebug.start_with_request=trigger`. Set either in that version's `php.ini`
+  and yours is used instead, for example
+  `xdebug.mode = debug,develop,coverage`. For a one-off in the terminal:
+  `XDEBUG_MODE=coverage php artisan test --coverage`.
+
+Xdebug is Paddock's own build of Xdebug 3.5.3, in the app, so switching it on
+needs no network. Paddock loads it from PHP's command line; your `php.ini` is
+never edited.
+
+#### Zed
+
+Zed's PHP extension brings its own Xdebug debug adapter. In a site's folder:
+
+```sh
+paddock xdebug on
+paddock xdebug zed
+```
+
+The second command writes `.zed/debug.json` with the entry Zed's PHP
+documentation gives:
+
+```json
+[
+  {
+    "label": "PHP: Listen to Xdebug",
+    "adapter": "Xdebug",
+    "request": "launch",
+    "port": 9003
+  }
+]
+```
+
+Then, in Zed: set a breakpoint, run `debugger: start` (F4), choose
+"PHP: Listen to Xdebug", and load the page with `?XDEBUG_TRIGGER=1` (or with
+the Xdebug browser extension on). If the file already exists, Paddock prints
+the entry for you to add instead. If your `php.ini` sets
+`xdebug.client_port`, the entry uses that port.
+
+#### VS Code and PhpStorm
+
+- **VS Code:** install the "PHP Debug" extension, add its "Listen for Xdebug"
+  configuration (port 9003), and start it.
+- **PhpStorm:** turn on "Start Listening for PHP Debug Connections". Its
+  debug port is 9003 by default. Turn off "Break at first line in PHP
+  scripts", or it stops in Paddock's router on every request.
+
 ### Lifecycle
 
 | Command | What it does |
@@ -241,7 +344,7 @@ Paddock supports PHP 8.1 and later.
 | `paddock service restart <name>` | Restart a service. |
 | `paddock service remove <name> [--delete-data]` | Stop and remove a service. Data is kept unless `--delete-data`, which asks first. |
 | `paddock service update <name>` | Download the newest version of a service's series and switch to it. |
-| `paddock service create-db <name> <database>` | Create a database in a running service such as PostgreSQL. |
+| `paddock service create-db <name> <database>` | Create a database in a running PostgreSQL or MySQL service. |
 | `paddock service env <name>` | Print a service's `.env` lines for a Laravel app. |
 | `paddock service logs <name>` | Show the end of a service's log. |
 | `paddock service open <name>` | Open a service's page in the browser. |
@@ -270,7 +373,9 @@ initializes and starts a service with working defaults. There are no forms.
 | Kind | Service | Series | Notes |
 |---|---|---|---|
 | `postgres` | PostgreSQL | 18, 17, 16 | Includes PostGIS 3.6.4 (no raster or topology). |
+| `mysql` | MySQL | 9.7, 8.4 | Oracle's Community Server, `root` with no password. 8.4.11 is the last 8.4 release Oracle built for Intel Macs. |
 | `redis` | Redis (Valkey) | 9 | Valkey, a Redis-compatible server. Laravel's Redis client works unchanged. Bundled, so adding it needs no download. |
+| `storage` | Object Storage (S3) | 4 | SeaweedFS 4.17, S3-compatible. A `paddock` bucket is made for you; the key and secret are fixed, for development on this Mac only. |
 | `meilisearch` | Meilisearch | 1.57 | A random master key is generated per instance and shown in its `.env`. Search indexes are tied to the series. |
 | `mail` | Mail (Mailpit) | 1 | An SMTP catcher on port 1025 with a web page and API on port 8025. Paddock's [Mail window](#the-mail-window) reads from it. |
 
@@ -365,7 +470,7 @@ Everything Paddock writes lives under
 
 | Path | Contents |
 |---|---|
-| `bin/` | The `php` and `composer` shims, and `php-versions/` with installed PHP builds. |
+| `bin/` | The `php` and `composer` shims, `php-versions/` with installed PHP builds, and `php-extensions/` with Paddock's Xdebug for the versions it was switched on for. |
 | `config/` | Regenerated configuration, including the `Caddyfile` and the vendored router home. |
 | `php/` | Your PHP settings, such as `php/8.4/php.ini`. Never regenerated. |
 | `run/` | Owner-only Unix sockets and pid files. |
@@ -418,9 +523,9 @@ bundled binaries and Paddock's own PHP, PostGIS and Valkey archives (so
 installing another version needs no network), signs it ad hoc and verifies the
 signature.
 
-Paddock's own PHP, PostGIS and Valkey artifacts are built with
-`Scripts/build-php.sh`, `Scripts/build-postgis.sh` and
-`Scripts/build-valkey.sh`. The locked versions and checksums live in
+Paddock's own PHP, Xdebug, PostGIS and Valkey artifacts are built with
+`Scripts/build-php.sh`, `Scripts/build-xdebug.sh`, `Scripts/build-postgis.sh`
+and `Scripts/build-valkey.sh`. The locked versions and checksums live in
 [`Scripts/versions.lock`](Scripts/versions.lock).
 
 ## Testing

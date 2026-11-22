@@ -110,6 +110,8 @@ public final class AppModel: ObservableObject {
     let copyText: (@MainActor (_ text: String, _ concealed: Bool) -> Void)?
     /// Opens a URL or file with the system's default handler.
     let openItem: (@MainActor (URL) -> Void)?
+    /// Shows a log file in the app's own Logs window; without it a log opens with the system's default handler.
+    let showLog: (@MainActor (URL) -> Void)?
     private let services: AppServices?
     private let quitter: ApplicationQuitter?
     private let paths: Paths?
@@ -138,10 +140,12 @@ public final class AppModel: ObservableObject {
                 availablePHP: [PHPVersion] = [], paths: Paths? = nil,
                 ownExecutable: String? = PaddockBuild.runningExecutable,
                 copyText: (@MainActor (_ text: String, _ concealed: Bool) -> Void)? = nil,
-                open: (@MainActor (URL) -> Void)? = nil) {
+                open: (@MainActor (URL) -> Void)? = nil,
+                showLog: (@MainActor (URL) -> Void)? = nil) {
         self.client = client
         self.copyText = copyText
         self.openItem = open
+        self.showLog = showLog
         self.ownExecutable = ownExecutable
         self.paths = paths
         self.services = services
@@ -237,6 +241,26 @@ public final class AppModel: ObservableObject {
     public var defaultPHPLabel: String { "Default (\(defaultPHP?.description ?? "none"))" }
     public var systemIntegrationEnabled: Bool { services?.isSystemIntegrationEnabled ?? false }
     public var sitesFolder: URL? { parked.first.map { URL(fileURLWithPath: $0, isDirectory: true) } }
+
+    /// Xdebug is switched on for the version.
+    public func isXdebugOn(_ v: PHPVersion) -> Bool { status?.xdebug.contains(v) ?? false }
+
+    /// The version is installed and Paddock has an Xdebug for it.
+    public func canSwitchXdebug(_ v: PHPVersion) -> Bool { status?.xdebugAvailable.contains(v) ?? false }
+
+    /// True while the version's Xdebug is being switched either way.
+    public func isSwitchingXdebug(_ v: PHPVersion) -> Bool {
+        isBusy(.xdebug(version: v, enabled: true)) || isBusy(.xdebug(version: v, enabled: false))
+    }
+
+    /// Said under the PHP list while Xdebug is on for some version; nil otherwise.
+    public var xdebugCaption: String? {
+        guard let on = status?.xdebug, !on.isEmpty else { return nil }
+        return "Xdebug starts when a request asks for it; your editor listens on port 9003."
+    }
+
+    /// Where Paddock's logs are, when this model knows its home.
+    var logPaths: Paths? { paths }
 
     /// The version's user-edited php.ini, once it exists.
     public func phpIni(_ v: PHPVersion) -> URL? {

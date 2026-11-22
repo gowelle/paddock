@@ -151,6 +151,8 @@ extension Engine {
             return await change { $0.defaultPHP = version }
         case .installPHP(let version):
             return await install(version)
+        case .xdebug(let version, let enabled):
+            return await setXdebug(version, enabled: enabled)
         case .removePHP(let version):
             let state = store.load()
             // Before the first start there is no stored default yet: the newest installed one will be.
@@ -332,6 +334,40 @@ extension Engine {
 
     private func unknownSite(_ name: String) -> Response {
         error(ErrorCode.unknownSite, "No site named \"\(name)\"")
+    }
+
+    /// Switches Xdebug for one PHP version: when turning it on, puts its library in place first (from the app,
+    /// no network); then saves the choice and restarts that version's PHP-FPM so its sites follow at once.
+    /// Asking for what is already so changes nothing and restarts nothing.
+    private func setXdebug(_ version: PHPVersion, enabled: Bool) async -> Response {
+        guard installer.isInstalled(version) else { return notInstalled(version) }
+        if enabled {
+            guard xdebug.isAvailable(version) else {
+                return error(ErrorCode.xdebugUnavailable, Messages.xdebugNotAvailable(version))
+            }
+            do {
+                try await xdebug.ensureInstalled(version)
+            } catch XdebugError.installFailed(_, let reason) {
+                return error(ErrorCode.xdebugUnavailable, Messages.xdebugInstallFailed(version, reason: reason))
+            } catch {
+                return self.error(ErrorCode.xdebugUnavailable,
+                                  Messages.xdebugInstallFailed(version, reason: error.localizedDescription))
+            }
+        }
+        guard store.load().xdebug.contains(version) != enabled else { return .ok(status()) }
+        do {
+            try await blocking {
+                try self.store.update { state in
+                    if enabled { state.xdebug.insert(version) } else { state.xdebug.remove(version) }
+                }
+                try self.restartFPM(version)
+            }
+        } catch EngineError.notReady(let process, let log) {
+            return error(ErrorCode.internal, "\(process) did not become ready; see \(log)")
+        } catch {
+            return self.error(ErrorCode.internal, "\(error.localizedDescription)")
+        }
+        return .ok(status())
     }
 
     private func notInstalled(_ version: PHPVersion) -> Response {

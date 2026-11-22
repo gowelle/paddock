@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 17
+    public static let number = 18
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -44,12 +44,16 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var services: [ServiceStatus]
     /// Sentences about Paddock itself (a web-stack log grown very large); empty from an older daemon.
     public var notices: [String]
+    /// The installed PHP versions Xdebug is switched on for; empty from an older daemon.
+    public var xdebug: [PHPVersion]
+    /// The installed PHP versions Paddock has an Xdebug build for; empty from an older daemon.
+    public var xdebugAvailable: [PHPVersion]
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
                 needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false, services: [ServiceStatus] = [],
-                notices: [String] = [],
+                notices: [String] = [], xdebug: [PHPVersion] = [], xdebugAvailable: [PHPVersion] = [],
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -65,6 +69,8 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.hasReplacedRootsToClean = hasReplacedRootsToClean
         self.services = services
         self.notices = notices
+        self.xdebug = xdebug
+        self.xdebugAvailable = xdebugAvailable
         self.version = version
         self.executablePath = executablePath
     }
@@ -72,7 +78,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
         case dnsRunning, portHelperInstalled, needsTrust, hasReplacedRootsToClean, version, executablePath
-        case services, notices
+        case services, notices, xdebug, xdebugAvailable
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -95,6 +101,8 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         services = (try? c.decodeIfPresent([Lenient<ServiceStatus>].self, forKey: .services))?
             .compactMap(\.value) ?? []
         notices = (try? c.decodeIfPresent([String].self, forKey: .notices)) ?? []
+        xdebug = (try? c.decodeIfPresent([PHPVersion].self, forKey: .xdebug)) ?? []
+        xdebugAvailable = (try? c.decodeIfPresent([PHPVersion].self, forKey: .xdebugAvailable)) ?? []
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -121,6 +129,8 @@ public final class Engine: @unchecked Sendable {
     public let settings: Settings
     public let store: StateStore
     public let installer: PHPInstaller
+    /// Paddock's Xdebug builds for the installed PHP versions.
+    public let xdebug: Xdebug
     /// Makes macOS trust Caddy's local CA when a site is secured; nil leaves trust alone.
     let trust: CertificateTrust?
     /// Whether macOS trusts the current root, for `status().needsTrust`: kept for a few seconds and
@@ -281,8 +291,9 @@ public final class Engine: @unchecked Sendable {
         self.paths = paths
         self.settings = settings
         store = StateStore(paths: paths)
-        installer = PHPInstaller(paths: paths, manifest: (try? PHPManifest.bundled()) ?? PHPManifest(builds: []),
-                                 environment: phpEnvironment)
+        let manifest = (try? PHPManifest.bundled()) ?? PHPManifest(builds: [])
+        installer = PHPInstaller(paths: paths, manifest: manifest, environment: phpEnvironment)
+        xdebug = Xdebug(paths: paths, manifest: manifest, downloader: ArtifactDownloader(environment: phpEnvironment))
         dns = DNSResponder(port: settings.dnsPort, tld: settings.tld)
         services = ServiceManager(
             paths: paths, catalog: serviceSetup.catalog, store: store, supervisor: Supervisor(backoffScale: backoffScale),
@@ -517,10 +528,11 @@ public final class Engine: @unchecked Sendable {
         }
         var processes = services.processes
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
+        let installed = installer.installed()
         return EngineStatus(running: current.running && !caddyCrashed && !helperCrashed,
                             blockedBy: current.blockedBy,
                             sites: sites,
-                            installedPHP: installer.installed(), defaultPHP: state.defaultPHP,
+                            installedPHP: installed, defaultPHP: state.defaultPHP,
                             processes: processes,
                             resolverInstalled: (try? String(contentsOf: resolverFile, encoding: .utf8))
                                 == Resolver.desiredContents(settings: settings),
@@ -528,7 +540,9 @@ public final class Engine: @unchecked Sendable {
                             portHelperInstalled: managesPortHelper || portHelperInstalled(),
                             needsTrust: needsTrust(sites: sites),
                             hasReplacedRootsToClean: hasReplacedRootsToClean,
-                            services: services.statuses(), notices: currentLogNotices)
+                            services: services.statuses(), notices: currentLogNotices,
+                            xdebug: installed.filter(state.xdebug.contains),
+                            xdebugAvailable: xdebug.available(among: installed))
     }
 
     private var currentLogNotices: [String] {
@@ -705,9 +719,22 @@ public final class Engine: @unchecked Sendable {
         try? FileManager.default.removeItem(at: paths.fpmSocket(v))
         try supervisor.start(ProcessSpec(
             name: Self.fpmName(v), executable: installer.fpmBinary(v),
-            arguments: ["-y", conf.path, "-c", paths.phpIni(v).path, "-F"],
+            arguments: ["-y", conf.path, "-c", paths.phpIni(v).path, "-F"]
+                + Xdebug.arguments(for: v, state: store.load(), paths: paths),
             logFile: paths.log.appendingPathComponent("\(Self.fpmName(v)).out.log")))
         fpmVersions.insert(v)
+    }
+
+    /// Stops and starts one version's PHP-FPM, so it runs with its current command line (Xdebug on or off), and
+    /// waits until it serves again. Nothing to do when Paddock isn't running or no site uses the version.
+    func restartFPM(_ v: PHPVersion) throws {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard flags.running, fpmVersions.contains(v) else { return }
+        supervisor.stop(Self.fpmName(v))
+        fpmVersions.remove(v)
+        try startFPM(v)
+        try waitUntilReady()
     }
 
     /// Caddy keeps its data and config (CA, certificates, autosave) inside the Paddock home.

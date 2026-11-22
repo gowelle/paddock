@@ -31,6 +31,40 @@ public enum Messages {
     public static let notASite =
         "This folder isn't a Paddock site. Run this inside a site folder, or link it first with: paddock link"
 
+    public static func xdebugNotAvailable(_ version: PHPVersion) -> String {
+        "Paddock has no Xdebug for PHP \(version)."
+    }
+
+    public static func xdebugInstallFailed(_ version: PHPVersion, reason: String) -> String {
+        "Paddock couldn't set up Xdebug for PHP \(version): \(reason)"
+    }
+
+    /// `Xdebug is on for PHP 8.4. It starts when a request asks for it; your editor listens on port 9003.`
+    public static func xdebugTurnedOn(_ version: PHPVersion) -> String {
+        "Xdebug is on for PHP \(version). It starts when a request asks for it; your editor listens on port 9003."
+    }
+
+    public static func xdebugTurnedOff(_ version: PHPVersion) -> String {
+        "Xdebug is off for PHP \(version)."
+    }
+
+    public static func zedConfigWritten(_ path: String) -> String {
+        "Wrote \(path). In Zed, run \"debugger: start\" and choose \"PHP: Listen to Xdebug\"."
+    }
+
+    public static func zedConfigExists(_ path: String, entry: String) -> String {
+        "\(path) already exists, so Paddock left it alone. Add this to it:\n\(entry)"
+    }
+
+    /// One line per installed PHP version: `PHP 8.5  on`, `PHP 8.4  off`, `PHP 8.3  not available`.
+    public static func xdebugStatus(installed: [PHPVersion], on: [PHPVersion], available: [PHPVersion]) -> String {
+        guard !installed.isEmpty else { return MultiCall.noPHPMessage }
+        return installed.sorted(by: >).map { version in
+            let state = on.contains(version) ? "on" : available.contains(version) ? "off" : "not available"
+            return "PHP \(version)  \(state)"
+        }.joined(separator: "\n")
+    }
+
     public static let trusted = "Paddock's certificate is trusted."
 
     public static func needsTrust(host: String) -> String {
