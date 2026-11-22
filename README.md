@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/gowelle/paddock/releases/latest"><img src="https://img.shields.io/github/v/release/gowelle/paddock?label=release&color=d49a1e" alt="Latest release"></a>
+  <a href="https://github.com/gowelle/paddock/releases"><img src="https://img.shields.io/github/downloads/gowelle/paddock/total?label=downloads&color=d49a1e" alt="Downloads"></a>
   <a href="https://github.com/gowelle/paddock/actions/workflows/tests.yml"><img src="https://github.com/gowelle/paddock/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B%20%C2%B7%20Intel-2f6659" alt="macOS 13 or later, Intel">
   <img src="https://img.shields.io/badge/PHP-8.4%20%C2%B7%208.5-777bb4" alt="PHP 8.4 and 8.5">
