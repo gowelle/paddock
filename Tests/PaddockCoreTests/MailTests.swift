@@ -42,6 +42,24 @@ private final class FakeMail: MailClient, @unchecked Sendable {
         record("part \(messageID) \(partID)")
         return try partAnswer.get()
     }
+
+    var searchAnswer: Result<MailInbox, MailError> = .success(MailInbox(total: 0, unread: 0, messages: []))
+    var changeAnswer: Result<Void, MailError> = .success(())
+
+    func search(at base: URL, query: String, limit: Int) async throws -> MailInbox {
+        record("search \(query) \(limit)")
+        return try searchAnswer.get()
+    }
+
+    func delete(at base: URL, ids: [String]) async throws {
+        record("delete \(ids)")
+        try changeAnswer.get()
+    }
+
+    func setRead(at base: URL, ids: [String], read: Bool) async throws {
+        record("setRead \(ids) \(read)")
+        try changeAnswer.get()
+    }
 }
 
 private func mailService(state: ServiceState = .running, http: Int = 8025) -> ServiceStatus {
@@ -275,6 +293,101 @@ final class MailModelTests: XCTestCase {
         await model.refresh()
         XCTAssertNil(model.selection)
         XCTAssertNil(model.opened)
+    }
+
+    func testSearchingNarrowsTheListAndKeepsTheMailboxesCounts() async {
+        let mail = FakeMail()
+        mail.inboxAnswer = .success(MailInbox(total: 2, unread: 1, messages: [unreadMail, readMail]))
+        mail.searchAnswer = .success(MailInbox(total: 2, unread: 1, messages: [readMail]))
+        let model = model(mail)
+        await model.refresh()
+        await model.search(for: "  report ")
+        XCTAssertEqual(model.messages.map(\.id), ["b"])
+        XCTAssertEqual(model.menuTitle, "Mail (1 unread)")
+        XCTAssertEqual(mail.requests.last, "search report 100")
+
+        mail.searchAnswer = .success(MailInbox(total: 2, unread: 1, messages: []))
+        await model.search(for: "nothing")
+        XCTAssertEqual(model.emptyListText, "No mail matches \u{201C}nothing\u{201D}.")
+
+        // Only spaces is no search at all.
+        await model.search(for: "  ")
+        XCTAssertEqual(model.messages.map(\.id), ["a", "b"])
+        XCTAssertEqual(mail.requests.last, "inbox http://127.0.0.1:8025 100")
+    }
+
+    func testDeletingAMessageNamesOnlyThatMessageAndClosesIt() async {
+        let mail = FakeMail()
+        mail.inboxAnswer = .success(MailInbox(total: 2, unread: 0, messages: [readMail, unreadMail]))
+        mail.messageAnswers["b"] = MailMessage(id: "b", from: nil, subject: "B", text: "Plain")
+        let model = model(mail)
+        await model.refresh()
+        await model.select("b")
+        mail.inboxAnswer = .success(MailInbox(total: 1, unread: 0, messages: [unreadMail]))
+        await model.delete("b")
+        XCTAssertTrue(mail.requests.contains(#"delete ["b"]"#))
+        XCTAssertNil(model.opened)
+        XCTAssertEqual(model.messages.map(\.id), ["a"])
+    }
+
+    func testClearDeletesEverythingOnlyAfterItsQuestionIsConfirmed() async {
+        let mail = FakeMail()
+        mail.inboxAnswer = .success(MailInbox(total: 2, unread: 1, messages: [unreadMail, readMail]))
+        let model = model(mail)
+        await model.refresh()
+
+        // No question asked: nothing is deleted.
+        await model.confirmClear()
+        XCTAssertFalse(mail.requests.contains("delete []"))
+
+        model.askToClear()
+        XCTAssertTrue(model.isAskingToClear)
+        XCTAssertEqual(model.clearQuestion, "Delete all 2 caught messages?")
+        model.cancelClear()
+        await model.confirmClear()
+        XCTAssertFalse(mail.requests.contains("delete []"))
+
+        model.askToClear()
+        mail.inboxAnswer = .success(MailInbox(total: 0, unread: 0, messages: []))
+        await model.confirmClear()
+        XCTAssertEqual(mail.requests.filter { $0 == "delete []" }.count, 1)
+        XCTAssertFalse(model.isAskingToClear)
+        XCTAssertEqual(model.messages, [])
+
+        // An empty mailbox has nothing to ask about.
+        model.askToClear()
+        XCTAssertFalse(model.isAskingToClear)
+        XCTAssertFalse(model.canClear)
+    }
+
+    func testMarkingTheOpenMessageUnreadClosesIt() async {
+        let mail = FakeMail()
+        mail.inboxAnswer = .success(MailInbox(total: 1, unread: 0, messages: [readMail]))
+        mail.messageAnswers["b"] = MailMessage(id: "b", from: nil, subject: "B", text: "Plain")
+        let model = model(mail)
+        await model.refresh()
+        await model.select("b")
+        mail.inboxAnswer = .success(MailInbox(total: 1, unread: 1, messages: [
+            MailSummary(id: "b", read: false, from: nil, subject: "Report"),
+        ]))
+        await model.markOpenedUnread()
+        XCTAssertTrue(mail.requests.contains(#"setRead ["b"] false"#))
+        XCTAssertNil(model.selection)
+        XCTAssertEqual(model.unread, 1)
+        XCTAssertEqual(model.messages.first?.read, false)
+    }
+
+    func testAFailedDeleteSaysSoAndKeepsTheMessageOpen() async {
+        let mail = FakeMail()
+        mail.inboxAnswer = .success(MailInbox(total: 1, unread: 0, messages: [readMail]))
+        mail.messageAnswers["b"] = MailMessage(id: "b", from: nil, subject: "B", text: "Plain")
+        mail.changeAnswer = .failure(.unreachable)
+        let model = model(mail)
+        await model.refresh()
+        await model.select("b")
+        await model.delete("b")
+        XCTAssertEqual(model.opened?.id, "b")
+        XCTAssertEqual(model.lastError, "Paddock couldn't delete the message: Mail didn't answer.")
     }
 
     func testAnAttachmentsBytesComeFromTheOpenedMessage() async {

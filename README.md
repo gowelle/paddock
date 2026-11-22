@@ -166,7 +166,7 @@ count. It opens a window listing the mail your apps sent to the catcher,
 newest first, updated as mail arrives.
 
 <p align="center">
-  <img src="docs/images/mail-text-light.png" width="720" alt="The Mail window: caught messages on the left, the chosen message's headers, text and attachment on the right">
+  <img src="docs/images/mail-text-light.png" width="720" alt="The Mail window: a search field and caught messages on the left; the chosen message's headers, text, Mark Unread and Delete buttons and attachment on the right">
 </p>
 
 - Read a message as **HTML**, **Text** or **Source** (exactly as it arrived,
@@ -175,11 +175,15 @@ newest first, updated as mail arrives.
   choose Load Remote Content**, so a tracking pixel is not fetched just because
   you looked. Scripts never run, and links open in your browser.
 - Save attachments with one click.
-- Opening a message marks it read.
+- Opening a message marks it read; **Mark Unread** puts it back.
+- **Search** narrows the list by sender, recipient, subject or body.
+- **Delete** removes the open message. **Clear…** deletes every caught
+  message, after asking.
 
 The window needs the mail service running; when it isn't added or isn't
-running, the window says so and how to fix it. Mailpit's own web page is still
-there too: `paddock service open mail`.
+running, the window says so and how to fix it. The mail service's Open button
+in Settings… → Services opens this window too. Mailpit's own web page is still
+there: `paddock service open mail`.
 
 The pictures in this section are rendered from sample data by the app's own
 snapshot tool (`PaddockApp --snapshots <dir>`).

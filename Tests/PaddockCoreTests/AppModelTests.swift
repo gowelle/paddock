@@ -810,6 +810,7 @@ extension AppModelTests {
         XCTAssertEqual(rows.map(\.canStart), [false, true, true])
         XCTAssertEqual(rows.map(\.canStop), [true, false, false])
         XCTAssertEqual(rows.map(\.canOpen), [true, false, false], "a page opens only while the service runs")
+        XCTAssertEqual(rows.map(\.opensMailWindow), [true, false, false], "a running mail service opens the Mail window")
         XCTAssertEqual(rows.map(\.canCreateDatabase), [false, false, false], "PostgreSQL only, and only while it runs")
 
         var running = postgres

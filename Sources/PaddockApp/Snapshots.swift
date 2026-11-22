@@ -44,6 +44,8 @@ enum Snapshots {
              MailView.size),
             ("mail-source", AnyView(MailView().environmentObject(running).environmentObject(mailModel(reading: .source))),
              MailView.size),
+            ("mail-no-match", AnyView(MailView().environmentObject(running).environmentObject(mailModel(searching: "invoice"))),
+             MailView.size),
             ("mail-none", AnyView(MailView().environmentObject(running).environmentObject(noMail)), MailView.size),
         ]
         var ok = true
@@ -167,6 +169,12 @@ enum Snapshots {
 
     /// A mail service with three caught messages; with `reading`, the first is open and shown that way. (The
     /// HTML view is a web view, which an off-screen capture can't draw, so the shots show text and source.)
+    private static func mailModel(searching text: String) -> MailModel {
+        let model = mailModel(reading: nil)
+        settle { await model.search(for: text) }
+        return model
+    }
+
     private static func mailModel(reading: MailBody?) -> MailModel {
         let mail = service("mail", "Mail", kind: "mail", state: .running, ports: ["smtp": 1025, "http": 8025],
                            openURL: "http://127.0.0.1:8025")
@@ -229,6 +237,14 @@ enum Snapshots {
         }
 
         func part(at base: URL, messageID: String, partID: String) async throws -> Data { Data() }
+
+        func search(at base: URL, query: String, limit: Int) async throws -> MailInbox {
+            MailInbox(total: 3, unread: 2, messages: [])
+        }
+
+        func delete(at base: URL, ids: [String]) async throws {}
+
+        func setRead(at base: URL, ids: [String], read: Bool) async throws {}
     }
 
     /// Three services in mixed states (running with a note, stopped, port in use); with `adding`, PostgreSQL 17 is

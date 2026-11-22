@@ -72,14 +72,18 @@ Done when: the owner has used it on real mail from a real app and `main` has it.
 
 Left out of the first version on purpose.
 
-- [ ] Search the list by sender, recipient and subject (Mailpit's search API).
-- [ ] Delete one message; clear the inbox, with a confirmation.
-- [ ] The Services tab's Open button on the mail service opens the Mail
+- [x] Search the list by sender, recipient, subject and body (Mailpit's
+      search API).
+- [x] Delete one message; clear the inbox, with a confirmation.
+- [x] The Services tab's Open button on the mail service opens the Mail
       window. Mailpit's web page stays reachable with
       `paddock service open mail`.
-- [ ] Mark a message unread again.
+- [x] Mark a message unread again.
 
 Done when: each has model tests and a snapshot, and the README says so.
+
+Built on 2026-11-22: model tests, snapshots and README are in; the calls were
+checked against a scratch Mailpit. Not yet tried by hand in the running app.
 
 ## Stage 2: finish the services (MySQL, object storage)
 

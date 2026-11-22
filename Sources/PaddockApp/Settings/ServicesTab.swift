@@ -114,6 +114,7 @@ struct ServicesTab: View {
 /// One service: name, state and ports, its notes, and its actions.
 struct ServiceRowView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     let row: ServiceRow
     let createDatabase: () -> Void
 
@@ -137,7 +138,14 @@ struct ServiceRowView: View {
                     .disabled(!row.canStop)
                 Button("Copy .env") { Task { await model.copyEnv(row.id) } }
                 if row.canOpen {
-                    Button("Open") { model.openService(row.id) }
+                    Button("Open") {
+                        if row.opensMailWindow {
+                            activateApp()
+                            openWindow(id: MailView.windowID)
+                        } else {
+                            model.openService(row.id)
+                        }
+                    }
                 }
                 if row.canCreateDatabase {
                     Button("Create Database…", action: createDatabase)

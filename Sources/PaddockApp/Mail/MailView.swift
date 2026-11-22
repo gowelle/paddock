@@ -48,6 +48,35 @@ struct MailList: View {
     @EnvironmentObject private var mail: MailModel
 
     var body: some View {
+        VStack(spacing: 0) {
+            if mail.isRunning {
+                HStack(spacing: 8) {
+                    TextField("Search", text: Binding(
+                        get: { mail.query },
+                        set: { text in Task { await mail.search(for: text) } }))
+                        .textFieldStyle(.roundedBorder)
+                    Button("Clear\u{2026}") { mail.askToClear() }
+                        .disabled(!mail.canClear)
+                        .help("Delete every caught message")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                Rectangle().fill(Theme.line).frame(height: 1)
+            }
+            list
+        }
+        .background(Theme.surface)
+        .confirmationDialog(mail.clearQuestion, isPresented: Binding(
+            get: { mail.isAskingToClear },
+            set: { showing in if !showing { mail.cancelClear() } })) {
+            Button("Delete All", role: .destructive) { Task { await mail.confirmClear() } }
+            Button("Cancel", role: .cancel) { mail.cancelClear() }
+        } message: {
+            Text("This can't be undone.")
+        }
+    }
+
+    private var list: some View {
         Group {
             if let text = mail.emptyListText {
                 Caption(text)
@@ -70,7 +99,6 @@ struct MailList: View {
                 }
             }
         }
-        .background(Theme.surface)
     }
 }
 
@@ -203,15 +231,20 @@ private struct MailHeader: View {
                 line("Bcc", message.bcc)
                 line("Reply-To", message.replyTo)
             }
-            if mail.bodies.count > 1 {
-                Picker("View", selection: Binding(
-                    get: { mail.body },
-                    set: { body in Task { await mail.show(body) } })) {
-                    ForEach(mail.bodies) { body in Text(body.rawValue).tag(body) }
+            HStack(spacing: 8) {
+                if mail.bodies.count > 1 {
+                    Picker("View", selection: Binding(
+                        get: { mail.body },
+                        set: { body in Task { await mail.show(body) } })) {
+                        ForEach(mail.bodies) { body in Text(body.rawValue).tag(body) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
+                Spacer()
+                Button("Mark Unread") { Task { await mail.markOpenedUnread() } }
+                Button("Delete") { Task { await mail.delete(message.id) } }
             }
         }
     }

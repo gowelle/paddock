@@ -70,6 +70,8 @@ public struct MailSummary: Decodable, Equatable, Identifiable, Sendable {
 
 /// The newest messages and the counts, from `GET /api/v1/messages`.
 public struct MailInbox: Decodable, Equatable, Sendable {
+    /// Every message the mail service holds, and how many of them are unread: the whole mailbox, also when
+    /// `messages` is a search's matches.
     public let total: Int
     public let unread: Int
     public let messages: [MailSummary]
@@ -213,6 +215,12 @@ public enum MailError: Error, Equatable, Sendable {
 /// Reads caught mail from the mail service. `HTTPMailClient` in the app, a fake in tests.
 public protocol MailClient: Sendable {
     func inbox(at base: URL, limit: Int) async throws -> MailInbox
+    /// The messages matching `query` (Mailpit's search: words from the sender, recipients, subject and body),
+    /// with the whole mailbox's counts.
+    func search(at base: URL, query: String, limit: Int) async throws -> MailInbox
+    /// Deletes the messages named; **an empty list deletes every message**.
+    func delete(at base: URL, ids: [String]) async throws
+    func setRead(at base: URL, ids: [String], read: Bool) async throws
     func message(at base: URL, id: String) async throws -> MailMessage
     /// The message exactly as it arrived, headers included.
     func source(at base: URL, id: String) async throws -> String
@@ -237,6 +245,22 @@ public struct HTTPMailClient: MailClient {
         return try decode(MailInbox.self, from: try await get(url))
     }
 
+    public func search(at base: URL, query: String, limit: Int) async throws -> MailInbox {
+        var components = URLComponents(url: MailRoutes.search(base), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "query", value: query),
+                                  URLQueryItem(name: "limit", value: String(limit))]
+        guard let url = components?.url else { throw MailError.unreadable }
+        return try decode(MailInbox.self, from: try await get(url))
+    }
+
+    public func delete(at base: URL, ids: [String]) async throws {
+        _ = try await send("DELETE", MailRoutes.messages(base), body: MailChange(ids: ids, read: nil))
+    }
+
+    public func setRead(at base: URL, ids: [String], read: Bool) async throws {
+        _ = try await send("PUT", MailRoutes.messages(base), body: MailChange(ids: ids, read: read))
+    }
+
     public func message(at base: URL, id: String) async throws -> MailMessage {
         try decode(MailMessage.self, from: try await get(MailRoutes.message(base, id: id)))
     }
@@ -251,9 +275,21 @@ public struct HTTPMailClient: MailClient {
     }
 
     private func get(_ url: URL) async throws -> Data {
+        try await perform(URLRequest(url: url))
+    }
+
+    private func send(_ method: String, _ url: URL, body: MailChange) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await perform(request)
+    }
+
+    private func perform(_ request: URLRequest) async throws -> Data {
         let data: Data, response: URLResponse
         do {
-            (data, response) = try await session.data(from: url)
+            (data, response) = try await session.data(for: request)
         } catch {
             throw MailError.unreachable
         }
@@ -271,10 +307,24 @@ public struct HTTPMailClient: MailClient {
     }
 }
 
+/// The body of a delete or a mark-read request: `{"IDs": ["…"], "Read": false}`.
+struct MailChange: Encodable, Equatable {
+    let ids: [String]
+    let read: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case ids = "IDs", read = "Read"
+    }
+}
+
 /// Where Mailpit answers what, under the mail service's address.
 public enum MailRoutes {
     static func messages(_ base: URL) -> URL {
         base.appendingPathComponent("api/v1/messages")
+    }
+
+    static func search(_ base: URL) -> URL {
+        base.appendingPathComponent("api/v1/search")
     }
 
     static func message(_ base: URL, id: String) -> URL {
