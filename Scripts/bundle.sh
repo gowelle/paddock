@@ -3,6 +3,7 @@
 #   Contents/MacOS/{PaddockApp,paddockd,paddock,paddock-ports}
 # (The app's executable is not called "Paddock": on a case-insensitive disk it would be the same file
 # as the "paddock" command.)
+#   Contents/Frameworks/Sparkle.framework   (the updater, Intel only, as its publisher built it)
 #   Contents/Resources/{caddy,composer.phar,router/,php/<bundled>/default/,builds/,php-manifest.json,services-catalog.json,LICENSE,THIRD-PARTY-NOTICES,AppIcon.icns}
 # builds/ holds Paddock's own PHP archives (every version in the manifest, from Vendor/builds/), so
 # installing another version needs no network, and its PostGIS add-ons for PostgreSQL (postgis-pg<series>
@@ -43,6 +44,10 @@ done
 [ -f "$ROOT/Resources/AppIcon.icns" ] || fail "Resources/AppIcon.icns is missing. Run: swift Scripts/make-icon.swift"
 [ -f "$ROOT/Resources/fonts/BricolageGrotesque.ttf" ] || fail "Resources/fonts/BricolageGrotesque.ttf is missing."
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+# The build number: what Sparkle compares to tell a newer Paddock, and what the daemon and its clients
+# compare to tell they match. One number, raised by Scripts/release.sh.
+BUILD="$(sed -n 's/^ *public static let number = \([0-9][0-9]*\)$/\1/p' "$ROOT/Sources/PaddockCore/Engine.swift")"
+[ -n "$BUILD" ] || fail "PaddockBuild.number was not found in Sources/PaddockCore/Engine.swift."
 
 echo "Building release binaries for x86_64…"
 swift build --package-path "$ROOT" -c release --arch x86_64
@@ -57,6 +62,20 @@ install -m 755 "$BIN/paddockd" "$APP/Contents/MacOS/paddockd"
 install -m 755 "$BIN/paddock" "$APP/Contents/MacOS/paddock"
 # The port helper the setup prompt installs as /Library/PrivilegedHelperTools/app.paddock.ports.
 install -m 755 "$BIN/paddock-ports" "$APP/Contents/MacOS/paddock-ports"
+
+# The updater, fetched and pinned by the package (Package.resolved). Only its Intel half is shipped.
+SPARKLE="$ROOT/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+[ -d "$SPARKLE" ] || fail "Sparkle.framework is missing from .build/artifacts. Run: swift package resolve"
+mkdir -p "$APP/Contents/Frameworks"
+ditto --arch x86_64 "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
+rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Headers" \
+       "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/PrivateHeaders" \
+       "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Modules" \
+       "$APP/Contents/Frameworks/Sparkle.framework/Headers" \
+       "$APP/Contents/Frameworks/Sparkle.framework/PrivateHeaders" \
+       "$APP/Contents/Frameworks/Sparkle.framework/Modules"
+otool -l "$APP/Contents/MacOS/PaddockApp" | grep -q '@executable_path/../Frameworks' \
+  || fail "PaddockApp does not look for frameworks in Contents/Frameworks (see Package.swift)."
 
 RES="$APP/Contents/Resources"
 install -m 755 "$VENDOR/caddy" "$RES/caddy"
@@ -113,7 +132,7 @@ while IFS=$'\t' read -r file sha; do
   install -m 644 "$VENDOR/builds/$file" "$RES/builds/$file"
 done <<< "$XDEBUG_ARCHIVES"
 
-sed "s/VERSION_PLACEHOLDER/$VERSION/g" "$ROOT/Resources/Info.plist" > "$APP/Contents/Info.plist"
+sed -e "s/VERSION_PLACEHOLDER/$VERSION/g" -e "s/BUILD_PLACEHOLDER/$BUILD/g" "$ROOT/Resources/Info.plist" > "$APP/Contents/Info.plist"
 plutil -lint -s "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
@@ -123,10 +142,16 @@ for exe in "$RES/caddy" "$RES/php/$PHP_SERIES/default/php" "$RES/php/$PHP_SERIES
            "$APP/Contents/MacOS/paddockd" "$APP/Contents/MacOS/paddock" "$APP/Contents/MacOS/paddock-ports"; do
   codesign --force -s - "$exe"
 done
+# The updater's own helpers, inside out, as its publisher's instructions say to re-sign it.
+SPARKLE_B="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+for item in "$SPARKLE_B/XPCServices/Installer.xpc" "$SPARKLE_B/XPCServices/Downloader.xpc" \
+            "$SPARKLE_B/Autoupdate" "$SPARKLE_B/Updater.app" "$APP/Contents/Frameworks/Sparkle.framework"; do
+  codesign --force -s - "$item"
+done
 codesign --force -s - --deep "$APP"
 codesign --verify --deep --strict "$APP"
 
 cp "$ROOT/LICENSE" "$ROOT/dist/LICENSE.txt"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ROOT/dist/Paddock-$VERSION.zip"
 
-echo "dist/Paddock.app is ready (version $VERSION, PHP $PHP_SERIES)."
+echo "dist/Paddock.app is ready (version $VERSION, build $BUILD, PHP $PHP_SERIES)."

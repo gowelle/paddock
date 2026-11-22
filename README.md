@@ -89,8 +89,12 @@ you a question Paddock could answer itself.
 
 ## Quick start
 
-1. **Install.** Download or [build](#building-from-source) `Paddock.app` and
-   move it to `/Applications`.
+1. **Install.** Download the zip from the
+   [latest release](https://github.com/gowelle/paddock/releases/latest) (or
+   [build it](#building-from-source)), unzip it and move `Paddock.app` to
+   `/Applications`. Paddock is not yet signed with an Apple Developer ID, so
+   the first time, open it with a right-click → Open (or allow it under
+   System Settings → Privacy & Security).
 2. **Open Paddock.** The first launch asks for your password **once**, to
    install the `.test` DNS resolver and the port 80/443 entry. No Paddock code
    runs as root after that.
@@ -164,6 +168,19 @@ General, PHP, Sites, Services and Tasks.
 
 When something else holds ports 80 or 443, the menu names the program and
 offers to quit it. Paddock never fights another web server for its ports.
+
+### Updates
+
+Paddock checks for a newer version once a day, and whenever you choose
+"Check for Updates…" in the menu. When there is one, a window shows what is
+new and asks before installing; nothing is installed on its own. Your sites
+keep being served while the app updates, and Paddock restarts its background
+service on the new version when the app comes back.
+
+Updates are downloaded from this repository's releases and verified against a
+signing key built into the app before they are installed
+([Sparkle](https://sparkle-project.org) does the work). An app you built
+yourself with `swift build` has no updater.
 
 ### The Mail window
 
@@ -558,6 +575,25 @@ bundled binaries and Paddock's own PHP, PostGIS and Valkey archives (so
 installing another version needs no network), signs it ad hoc and verifies the
 signature.
 
+### Making a release
+
+```sh
+Scripts/release.sh 0.2.0                        # build dist/release/, publish nothing
+Scripts/release.sh 0.2.0 --publish --unsigned   # also commit, tag, push, create the GitHub Release
+```
+
+`Scripts/release.sh` writes the version, raises the build number, runs
+`Scripts/bundle.sh`, signs the zip with the update key in the login Keychain
+and writes `appcast.xml`, the feed installed copies read. `--publish` runs
+from `main` only. `--unsigned` acknowledges that the app is signed ad hoc and
+Gatekeeper will question it on another Mac. Release notes in
+`docs/releases/<version>.md` appear in the update window and on GitHub.
+
+The update key was made once with Sparkle's `generate_keys`; its public half
+is `SUPublicEDKey` in `Resources/Info.plist`. Keep a backup of the private
+half (`generate_keys -x <file>`): without it, installed copies can never be
+updated again.
+
 Paddock's own PHP, Xdebug, PostGIS and Valkey artifacts are built with
 `Scripts/build-php.sh`, `Scripts/build-xdebug.sh`, `Scripts/build-postgis.sh`
 and `Scripts/build-valkey.sh`. The locked versions and checksums live in
@@ -614,7 +650,7 @@ and derivative works are not permitted. See [LICENSE](LICENSE).
 
 The Paddock source is public for transparency only; no open-source license is
 granted by its availability. Third-party components bundled with Paddock
-(Caddy, PHP, Xdebug, Composer, the Valet router, swift-argument-parser, the
+(Caddy, PHP, Xdebug, Composer, the Valet router, swift-argument-parser, Sparkle, the
 Bricolage Grotesque typeface, and the libraries inside Paddock's PHP builds) are licensed under their own terms. See
 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
 

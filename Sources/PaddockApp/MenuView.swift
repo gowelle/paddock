@@ -6,6 +6,7 @@ import SwiftUI
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var mail: MailModel
+    @ObservedObject private var updates = AppDelegate.updates
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -53,6 +54,9 @@ struct MenuContentView: View {
             MenuRow("About Paddock") {
                 activateApp()
                 openWindow(id: AboutView.windowID)
+            }
+            if updates.isAvailable {
+                MenuRow("Check for Updates…", isEnabled: updates.canCheck) { updates.check() }
             }
             MenuDivider()
             MenuRow("Quit") { NSApp.terminate(nil) }

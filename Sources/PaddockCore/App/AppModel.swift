@@ -481,7 +481,14 @@ public final class AppModel: ObservableObject {
     /// On launch: start Paddock unless it is already running. No windows, no questions.
     public func launch() async {
         await refresh()
-        if status == nil { await start() }
+        if status == nil || runsAnOlderBuild { await start() }
+    }
+
+    /// True when the daemon answering is this install's own, from another build than this app: Paddock was
+    /// updated while it ran. Starting replaces it (`DaemonLauncher` does, for the same install only).
+    var runsAnOlderBuild: Bool {
+        guard let status, status.version != PaddockBuild.number else { return false }
+        return anotherCopyLocation == nil
     }
 
     /// Starts the daemon as `paddock start` does, then asks the engine to start.

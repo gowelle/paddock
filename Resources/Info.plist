@@ -21,13 +21,21 @@
 	<key>CFBundleShortVersionString</key>
 	<string>VERSION_PLACEHOLDER</string>
 	<key>CFBundleVersion</key>
-	<string>VERSION_PLACEHOLDER</string>
+	<string>BUILD_PLACEHOLDER</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/gowelle/paddock/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>pDlJMoWUoAF+BjqbxxfK+Wx+iWCGdaEnNMoDfAbKHis=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright (c) 2026 John Gowelle. All rights reserved.</string>
 </dict>
