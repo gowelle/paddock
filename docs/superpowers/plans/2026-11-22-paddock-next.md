@@ -269,24 +269,50 @@ look; the owner's to see in the app.)
 
 ## Stage 5: dumps window
 
-`dump()` and `dd()` output from a site, shown in Paddock instead of in the
-page.
+Built on 2026-11-22.
 
-Decision first: **how the dumps get to Paddock.** Either Symfony VarDumper's
-dump server protocol (works with Laravel as is, needs
-`VAR_DUMPER_FORMAT=server` in the site's environment), or a small PHP file
-Paddock auto-prepends for every site (no setup, but Paddock's code runs in
-every request). Recommended: the dump server, with the `.env` line printed
-the same way services print theirs.
+Decided by the owner: **Symfony's dump server** (none of Paddock's code in a
+request), for **all sites, while the window is open**.
 
-- [ ] A listener in the daemon on a loopback port; dumps kept in memory, a
-      bounded number of them.
-- [ ] A Dumps window: newest first, the site and file and line each came
-      from, the value as a foldable tree, a Clear button.
-- [ ] An unread count on a Dumps row in the menu, as Mail has.
+- [x] `PHPSerialized`: reads PHP's `serialize()` format into plain values. No
+      class is looked up and nothing is run, whatever the bytes say; bounded in
+      depth and size.
+- [x] `DumpDecoder`: a port of VarDumper's own walk over its data
+      (`Data::dump`) and of how its text dumper writes each value. Tested
+      against 98 real payloads (VarDumper 8.1 and 6.4), each compared with the
+      text VarDumper's own `CliDumper` prints: every one matches exactly.
+      `Scripts/fixtures/var-dumper-fixtures.php` regenerates them.
+- [x] `DumpListener`: listens on 127.0.0.1 only, one line per dump.
+- [x] The listener is in the menu-bar app, not the daemon (a change from the
+      first outline): with the app closed, nothing listens and VarDumper falls
+      back to the page by itself, so a dump is never swallowed unseen.
+- [x] `dumps(port:)` daemon request: PHP is told where to send dumps only
+      while the window listens (two FastCGI variables in the Caddyfile; the
+      `php` shim sets them for the terminal). Build number 19.
+- [x] The app clears the setting when the window closes, at quit, and at launch
+      if a previous run left it set; it sets it again if the daemon restarted
+      under an open window.
+- [x] A Dumps window (a tree per dump, fold and unfold, Copy, Clear) and a
+      Dumps row in the menu.
+- [x] End to end through the real web server and PHP-FPM, as a test; and once,
+      by hand, with a real `dump()` and the real VarDumper: in the page before,
+      only in the listener while it listened, in the page again after.
+
+Not done:
+
+- Not tried by hand in the running app, and not with t-market itself.
+- No unread count in the menu: dumps only arrive while the window is open.
+- A long-running command (a queue worker) started before the window opened
+  does not send its dumps until it is restarted.
+- With the window open, Laravel's own dumper is not registered, so its small
+  source line under a dump in the page is absent if the listener is not
+  reachable for some reason. The window shows the source itself.
+- The request shown with a dump needs `symfony/http-foundation` in the project
+  (Laravel has it); without it only the file and line show.
 
 Done when: `dump($user)` in a controller appears in the window and not in the
-response.
+response. (Shown by the hand run above with a real `dump()`; the owner's to
+see in t-market.)
 
 ## Stage 6: shareable release
 

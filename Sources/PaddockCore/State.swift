@@ -16,11 +16,14 @@ public struct State: Codable, Equatable, Sendable {
     public var taskApprovals: [String: ApprovedTasks]
     /// The PHP versions Xdebug is switched on for.
     public var xdebug: Set<PHPVersion>
+    /// The loopback port PHP sends its dumps to (the app's Dumps window, while it is open); nil when nothing
+    /// is listening for them and `dump()` shows where it always did.
+    public var dumpsTo: Int?
 
     public init(parked: [String] = [], links: [String: String] = [:], secured: Set<String> = [],
                 phpPins: [String: PHPVersion] = [:], defaultPHP: PHPVersion? = nil,
                 previousResolver: String? = nil, services: [ServiceInstance] = [],
-                taskApprovals: [String: ApprovedTasks] = [:], xdebug: Set<PHPVersion> = []) {
+                taskApprovals: [String: ApprovedTasks] = [:], xdebug: Set<PHPVersion> = [], dumpsTo: Int? = nil) {
         self.parked = parked
         self.links = links
         self.secured = secured
@@ -30,10 +33,11 @@ public struct State: Codable, Equatable, Sendable {
         self.services = services
         self.taskApprovals = taskApprovals
         self.xdebug = xdebug
+        self.dumpsTo = dumpsTo
     }
 
     private enum CodingKeys: String, CodingKey {
-        case parked, links, secured, phpPins, defaultPHP, previousResolver, services, taskApprovals, xdebug
+        case parked, links, secured, phpPins, defaultPHP, previousResolver, services, taskApprovals, xdebug, dumpsTo
     }
 
     /// As before services existed, plus `services` (absent in older files: none) and `taskApprovals` (absent:
@@ -51,6 +55,7 @@ public struct State: Codable, Equatable, Sendable {
             .compactMapValues(\.value)
         // Absent in older files, and never worth the file: off.
         xdebug = Set(((try? c.decodeIfPresent([Lenient<PHPVersion>].self, forKey: .xdebug)) ?? []).compactMap(\.value))
+        dumpsTo = ((try? c.decodeIfPresent(Int.self, forKey: .dumpsTo)) ?? nil).flatMap { DumpDestination.isPort($0) ? $0 : nil }
     }
 
     /// First-run state: `~/Paddock` parked, expanded to an absolute path.

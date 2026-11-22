@@ -20,6 +20,24 @@ final class CaddyfileTests: XCTestCase {
                                 settings: settings)
     }
 
+    /// With a listener for dumps, every PHP request carries the two variables VarDumper reads; without one,
+    /// neither appears, so `dump()` shows in the page as it always did.
+    func testPHPIsToldWhereDumpsGoOnlyWhileSomethingListens() {
+        var settings = Settings()
+        settings.httpPort = 18080
+        settings.httpsPort = 18443
+        let none = Caddyfile.render(sites: [site("blog", secured: true)], defaultPHP: v84, paths: paths, settings: settings)
+        XCTAssertFalse(none.contains("VAR_DUMPER"))
+        let listening = Caddyfile.render(sites: [site("blog", secured: true)], defaultPHP: v84, paths: paths,
+                                         settings: settings, dumpsTo: 9912)
+        XCTAssertTrue(listening.contains("env VAR_DUMPER_FORMAT \"server\""))
+        XCTAssertTrue(listening.contains("env VAR_DUMPER_SERVER \"127.0.0.1:9912\""))
+        // Once, in the snippet every site's PHP goes through.
+        XCTAssertEqual(listening.components(separatedBy: "VAR_DUMPER_SERVER").count, 2)
+        let unusable = Caddyfile.render(sites: [], defaultPHP: v84, paths: paths, settings: settings, dumpsTo: 80)
+        XCTAssertFalse(unusable.contains("VAR_DUMPER"), "not a port dumps are sent to")
+    }
+
     func testGlobalBlock() {
         let out = render([])
         XCTAssertTrue(out.contains("admin \"unix//h/Paddock/run/caddy-admin.sock\""))

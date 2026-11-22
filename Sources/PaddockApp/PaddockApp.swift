@@ -19,6 +19,7 @@ struct PaddockApp: App {
     @ObservedObject private var model = AppDelegate.model
     @ObservedObject private var mail = AppDelegate.mail
     @ObservedObject private var logs = AppDelegate.logs
+    @ObservedObject private var dumps = AppDelegate.dumps
 
     var body: some Scene {
         // Window style, so the menu's content is one plain SwiftUI view the snapshot tool can render too.
@@ -42,6 +43,12 @@ struct PaddockApp: App {
                 .environmentObject(logs)
         }
         .defaultSize(LogsView.size)
+
+        Window("Dumps", id: DumpsView.windowID) {
+            DumpsView()
+                .environmentObject(dumps)
+        }
+        .defaultSize(DumpsView.size)
 
         Settings {
             SettingsView()
@@ -113,6 +120,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         showLog: { log in Task { await logs.request(path: log.path) } })
     }()
 
+    /// Listens for dumps while its window is open, and has the daemon tell PHP to send them here.
+    static let dumps = DumpsModel(
+        route: { port in
+            await model.perform(.dumps(port: port))
+            await model.refresh()
+        },
+        copy: { Pasteboard.copy($0, concealed: false) })
+
     /// Lists Paddock's logs and each site's own from the daemon's status, and reads the one on show.
     static let logs = LogsModel(find: { LogCatalog.sections(paths: .current, status: model.status) },
                                 reveal: { NSWorkspace.shared.activateFileViewerSelecting([$0]) })
@@ -123,7 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if UserDefaults.standard.bool(forKey: Self.licenseAcceptedKey) {
             // Every accepted launch: start Paddock exactly as `paddock start` does.
-            Task { await Self.model.launch() }
+            Task {
+                await Self.model.launch()
+                // A window that was open when the app last quit left PHP sending dumps to nobody.
+                await Self.dumps.reconcile(daemonSendsTo: Self.model.status?.dumpsTo)
+            }
         } else {
             showLicenseAcceptance()
         }
@@ -165,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Self.model.stopSendingDumps()
         Self.model.shutDownOwnedDaemon()
     }
 }

@@ -50,6 +50,7 @@ you a question Paddock could answer itself.
 - [The menu-bar app](#the-menu-bar-app)
   - [The Mail window](#the-mail-window)
   - [The Logs window](#the-logs-window)
+  - [The Dumps window](#the-dumps-window)
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
@@ -75,6 +76,7 @@ you a question Paddock could answer itself.
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
 | **One-action services** | Add PostgreSQL, MySQL, Redis (Valkey), Meilisearch, S3-compatible object storage or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
+| **A Dumps window** | While it is open, `dump()` and `dd()` from every site and from `php` in the terminal show in Paddock instead of in the page. Close it and they show where they always did. |
 | **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
@@ -188,6 +190,39 @@ The window needs the mail service running; when it isn't added or isn't
 running, the window says so and how to fix it. The mail service's Open button
 in Settings… → Services opens this window too. Mailpit's own web page is still
 there: `paddock service open mail`.
+
+### The Dumps window
+
+**Dumps** in the menu opens a window that collects what your sites `dump()`.
+
+<p align="center">
+  <img src="docs/images/dumps-light.png" width="620" alt="The Dumps window: two dumps, each with its file and line, the request or command it came from, and the value as a foldable tree">
+</p>
+
+- **While the window is open**, `dump()` and `dd()` in any site, and in `php`
+  run from the terminal, show here instead of in the page. Each says the file
+  and line it is on and the request or command it came from.
+- **Close the window** and they show in the page again, as before. Nothing is
+  left changed.
+- Arrays and objects are a tree: click a chevron to fold or unfold. Values read
+  exactly as VarDumper prints them in a terminal. **Copy** puts a dump on the
+  pasteboard as that text.
+- Nothing to set up in a project, and none of Paddock's code runs in your
+  requests.
+
+How it works: Paddock listens on `127.0.0.1:9912`, the way Symfony's own
+`dump-server` does, and tells PHP to send dumps there with the two variables
+VarDumper reads (`VAR_DUMPER_FORMAT=server`, `VAR_DUMPER_SERVER`). Laravel and
+Symfony both honour them. If nothing is listening, VarDumper itself falls back
+to showing the dump in the page.
+
+Worth knowing:
+
+- A queue worker or other long-running command started **before** you opened
+  the window does not know about it; restart the task and its dumps arrive too.
+- Port 9912 is the one `php artisan dump-server` uses. Only one of the two can
+  listen at a time; the window says so if the port is taken.
+- A project that sets `VAR_DUMPER_FORMAT` itself keeps its own choice.
 
 ### The Logs window
 
@@ -567,6 +602,7 @@ Resources/        App icon, Info.plist, service recipes and the vendored router.
 Scripts/          Fetch, build and bundle scripts; version lock file.
 Vendor/           Fetched third-party binaries (gitignored).
 docs/images/      The pictures in this README.
+Scripts/fixtures/ How the VarDumper test fixtures are made.
 docs/superpowers/ Design documents and plans.
 ```
 

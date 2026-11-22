@@ -47,6 +47,7 @@ enum Snapshots {
              MailView.size),
             ("mail-no-match", AnyView(MailView().environmentObject(running).environmentObject(mailModel(searching: "invoice"))),
              MailView.size),
+            ("dumps", AnyView(DumpList(model: dumpsModel())), DumpsView.size),
             ("logs", AnyView(LogsView().environmentObject(running).environmentObject(logsModel(filter: ""))), LogsView.size),
             ("logs-filtered", AnyView(LogsView().environmentObject(running).environmentObject(logsModel(filter: "payment"))),
              LogsView.size),
@@ -168,6 +169,43 @@ enum Snapshots {
         ServiceStatus(id: id, name: name, kind: kind, version: "1", displayName: name, state: state, ports: ports,
                       env: [], openURL: openURL, dataPath: "/Users/you/Library/Application Support/Paddock/services/\(id)/data",
                       autostart: true, mainPort: ports["main"] ?? ports["smtp"], notes: notes)
+    }
+
+    // MARK: - Dumps
+
+    /// The window's contents without its listening (a snapshot opens no port): two dumps as they would arrive.
+    private struct DumpList: View {
+        @ObservedObject var model: DumpsModel
+        var body: some View { DumpsView(listens: false).environmentObject(model) }
+    }
+
+    private static func dumpsModel() -> DumpsModel {
+        final class Quiet: DumpListening {
+            func start() throws {}
+            func stop() {}
+        }
+        let model = DumpsModel(listener: { _, _ in Quiet() }, route: { _ in })
+        func node(_ id: Int, _ kind: DumpNode.Kind, _ head: String, _ children: [DumpNode] = [], tail: String? = nil) -> DumpNode {
+            DumpNode(id: id, kind: kind, head: head, body: [], children: children, tail: tail)
+        }
+        let order = node(1, .hash, "App\\Models\\Order {#1423", [
+            node(2, .scalar, "+id: 1042"),
+            node(3, .string, "+status: \"shipped\""),
+            node(4, .hash, "#lines: array:2 [", [node(5, .scalar, "\"widget\" => 2"), node(6, .scalar, "\"gadget\" => 1")], tail: "]"),
+            node(7, .scalar, "-total: 59.0"),
+            node(8, .hash, "+customer: App\\Models\\User {#1388", [node(9, .string, "+name: \"Ada\"")], tail: "}"),
+        ], tail: "}")
+        let queued = node(1, .hash, "array:2 [", [node(2, .scalar, "\"queued\" => 3"), node(3, .string, "\"queue\" => \"default\"")], tail: "]")
+        let at = Date(timeIntervalSince1970: 1_795_310_050)
+        settle {
+            await model.open()
+            model.received(.success(Dump(id: 0, time: at.addingTimeInterval(-20), origin: "artisan queue:work --tries=3",
+                                         file: "/Users/you/Paddock/shop/app/Jobs/Worker.php", line: 9, root: queued)))
+            model.received(.success(Dump(id: 0, time: at, origin: "GET https://shop.test/orders/1042",
+                                         file: "/Users/you/Paddock/shop/app/Http/Controllers/OrderController.php", line: 42,
+                                         root: order)))
+        }
+        return model
     }
 
     // MARK: - Logs

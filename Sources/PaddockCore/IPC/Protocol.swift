@@ -11,6 +11,9 @@ public enum Request: Codable, Equatable, Sendable {
     case installPHP(version: PHPVersion), removePHP(version: PHPVersion)
     /// Switches Xdebug on or off for one installed PHP version and restarts that version's PHP-FPM.
     case xdebug(version: PHPVersion, enabled: Bool)
+    /// Sends PHP's `dump()` output to a listener on this Mac at `port` (the app's Dumps window), or, with nil,
+    /// back to where it always went.
+    case dumps(port: Int?)
     case trust
     case shutdown
     /// Adds a service from the catalog (newest version when `version` is nil), starts it and waits until
@@ -55,7 +58,7 @@ extension Request {
         case .status, .serviceCatalog, .tasksStatus:
             return true
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
-             .isolate, .unisolate, .use, .installPHP, .removePHP, .xdebug, .trust,
+             .isolate, .unisolate, .use, .installPHP, .removePHP, .xdebug, .dumps, .trust,
              .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate,
              .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit,
              .taskForceRestart,

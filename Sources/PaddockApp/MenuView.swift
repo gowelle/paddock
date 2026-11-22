@@ -27,6 +27,10 @@ struct MenuContentView: View {
                 activateApp()
                 openWindow(id: LogsView.windowID)
             }
+            MenuRow("Dumps") {
+                activateApp()
+                openWindow(id: DumpsView.windowID)
+            }
             MenuRow("Open Sites Folder", isEnabled: model.sitesFolder != nil) {
                 if let folder = model.sitesFolder { NSWorkspace.shared.open(folder) }
             }

@@ -153,6 +153,13 @@ extension Engine {
             return await install(version)
         case .xdebug(let version, let enabled):
             return await setXdebug(version, enabled: enabled)
+        case .dumps(let port):
+            if let port, !DumpDestination.isPort(port) {
+                return error(ErrorCode.invalidArgument, "\(port) is not a port Paddock sends dumps to")
+            }
+            // Asked for what is already so: nothing is rewritten or reloaded.
+            guard store.load().dumpsTo != port else { return .ok(status()) }
+            return await change { $0.dumpsTo = port }
         case .removePHP(let version):
             let state = store.load()
             // Before the first start there is no stored default yet: the newest installed one will be.

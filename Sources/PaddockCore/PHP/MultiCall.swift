@@ -32,7 +32,10 @@ public enum MultiCall {
         if name == "composer" {
             argv.append(resources().appendingPathComponent("composer.phar").path)
         }
-        return .exec(path: binary, arguments: argv + arguments, setEnvironment: [:])
+        // While something listens for dumps, `php` in the terminal sends its own there too; a choice the
+        // user's shell already made (VAR_DUMPER_FORMAT) is left alone.
+        let dumps = environment[DumpDestination.formatVariable] == nil ? resolver.dumpEnvironment() : [:]
+        return .exec(path: binary, arguments: argv + arguments, setEnvironment: dumps)
     }
 
     /// Returns normally only when this process was not started as `php` or `composer`.

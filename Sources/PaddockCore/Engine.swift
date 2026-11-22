@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 18
+    public static let number = 19
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -48,12 +48,15 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var xdebug: [PHPVersion]
     /// The installed PHP versions Paddock has an Xdebug build for; empty from an older daemon.
     public var xdebugAvailable: [PHPVersion]
+    /// The loopback port PHP sends its dumps to, when it does; nil otherwise and from an older daemon.
+    public var dumpsTo: Int?
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
                 needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false, services: [ServiceStatus] = [],
                 notices: [String] = [], xdebug: [PHPVersion] = [], xdebugAvailable: [PHPVersion] = [],
+                dumpsTo: Int? = nil,
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -71,6 +74,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.notices = notices
         self.xdebug = xdebug
         self.xdebugAvailable = xdebugAvailable
+        self.dumpsTo = dumpsTo
         self.version = version
         self.executablePath = executablePath
     }
@@ -78,7 +82,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
         case dnsRunning, portHelperInstalled, needsTrust, hasReplacedRootsToClean, version, executablePath
-        case services, notices, xdebug, xdebugAvailable
+        case services, notices, xdebug, xdebugAvailable, dumpsTo
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -103,6 +107,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         notices = (try? c.decodeIfPresent([String].self, forKey: .notices)) ?? []
         xdebug = (try? c.decodeIfPresent([PHPVersion].self, forKey: .xdebug)) ?? []
         xdebugAvailable = (try? c.decodeIfPresent([PHPVersion].self, forKey: .xdebugAvailable)) ?? []
+        dumpsTo = (try? c.decodeIfPresent(Int.self, forKey: .dumpsTo)) ?? nil
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -542,7 +547,7 @@ public final class Engine: @unchecked Sendable {
                             hasReplacedRootsToClean: hasReplacedRootsToClean,
                             services: services.statuses(), notices: currentLogNotices,
                             xdebug: installed.filter(state.xdebug.contains),
-                            xdebugAvailable: xdebug.available(among: installed))
+                            xdebugAvailable: xdebug.available(among: installed), dumpsTo: state.dumpsTo)
     }
 
     private var currentLogNotices: [String] {
@@ -602,14 +607,14 @@ public final class Engine: @unchecked Sendable {
         let sites = SiteRegistry(state: state, defaultPHP: defaultPHP, settings: settings).sites()
         let proxies = TaskApproval.routes(state: state, sites: sites, reservedPorts: reservedPorts)
         var text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
-                                    namesAuthority: namesCertificateAuthority, proxies: proxies)
+                                    namesAuthority: namesCertificateAuthority, proxies: proxies, dumpsTo: state.dumpsTo)
         // Sites' proxy routes are checked before they are used: a config Caddy would refuse (or that can't be
         // checked) never replaces the one it serves; the sites are served without any routes, and say why.
         var refusal: String?
         if !proxies.isEmpty, let problem = validationProblem(text) {
             refusal = problem
             text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
-                                    namesAuthority: namesCertificateAuthority)
+                                    namesAuthority: namesCertificateAuthority, dumpsTo: state.dumpsTo)
         }
         flagsLock.lock()
         rendered = (refusal == nil ? proxies : [:], refusal)

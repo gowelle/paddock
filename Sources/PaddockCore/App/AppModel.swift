@@ -565,6 +565,13 @@ public final class AppModel: ObservableObject {
     /// Sends `shutdown` to a daemon this app launched itself, for the app's last moments. Blocks for at
     /// most `shutdownTimeout`: if the daemon is busy (say, downloading PHP) the app gives up quietly;
     /// the daemon still handles the queued `shutdown` once that work is done.
+    /// At quit: if PHP is still sending its dumps to this app's window, tell the daemon to stop, so `dump()`
+    /// shows in the page again. Best effort, and brief.
+    public func stopSendingDumps() {
+        guard status?.dumpsTo != nil else { return }
+        _ = try? client.send(.dumps(port: nil), timeout: 3)
+    }
+
     public func shutDownOwnedDaemon() {
         guard ownsDaemon else { return }
         _ = try? client.send(.shutdown, timeout: Self.shutdownTimeout)
