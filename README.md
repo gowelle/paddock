@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/gowelle/paddock/releases/latest"><img src="https://img.shields.io/github/v/release/gowelle/paddock?label=release&color=d49a1e" alt="Latest release"></a>
-  <a href="https://github.com/gowelle/paddock/releases"><img src="https://img.shields.io/github/downloads/gowelle/paddock/total?label=downloads&color=d49a1e" alt="Downloads"></a>
+  <a href="https://github.com/gowelle/paddock/releases"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fgowelle%2Fpaddock%2Fbadges%2Fdownloads.json" alt="Downloads"></a>
   <a href="https://github.com/gowelle/paddock/actions/workflows/tests.yml"><img src="https://github.com/gowelle/paddock/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B%20%C2%B7%20Intel-2f6659" alt="macOS 13 or later, Intel">
   <img src="https://img.shields.io/badge/PHP-8.4%20%C2%B7%208.5-777bb4" alt="PHP 8.4 and 8.5">
@@ -649,6 +649,11 @@ swift test
 
 The unit tests run on every push and pull request, on an Intel Mac
 ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+
+The downloads badge counts the app's zip only, across every release; a daily
+job ([`.github/workflows/downloads.yml`](.github/workflows/downloads.yml))
+writes the number to the `badges` branch. It leaves out the update feed and
+checksum files, which GitHub's own total includes.
 
 - [`Tests/PaddockCoreTests`](Tests/PaddockCoreTests): unit tests for the core
   library (Caddyfile generation, DNS messages, IPC, PHP resolution, path and
