@@ -37,6 +37,9 @@ install it, open it, enter your password once, and any folder in a parked
 directory is served at
 `<folder>.test`, over trusted HTTPS when you want it.
 
+Why it exists and how it is built:
+[My Intel Mac was left behind, so I built its local PHP environment myself](https://medium.com/@chiefmfalme/my-intel-mac-was-left-behind-so-i-built-its-local-php-environment-myself-b7d1d0c562ab).
+
 It is a menu-bar app, a background daemon and a `paddock` command-line tool
 that share one Swift core. Caddy, Composer, Valet's request router and
 Paddock's own static PHP builds are inside the app, so the first launch works
