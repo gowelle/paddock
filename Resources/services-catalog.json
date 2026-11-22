@@ -550,6 +550,125 @@
       }
     },
     {
+      "kind": "storage",
+      "displayName": "Object Storage (S3)",
+      "version": "4.17",
+      "series": "4",
+      "seriesInID": false,
+      "licence": "Apache-2.0",
+      "minimumMacOS": "13.0",
+      "assets": [
+        {
+          "artifact": {
+            "url": "https://github.com/seaweedfs/seaweedfs/releases/download/4.17/darwin_amd64.tar.gz",
+            "sha256": "978c6f628c12330c81b0401b7468313a8d0c52f0d5a14eccd421cdea432c89b6",
+            "size": 44521255
+          },
+          "archive": "tar.gz",
+          "stripComponents": 0
+        }
+      ],
+      "initialise": [],
+      "start": {
+        "executable": "{bin}/weed",
+        "arguments": [
+          "server",
+          "-dir={data}",
+          "-ip=127.0.0.1",
+          "-ip.bind=127.0.0.1",
+          "-master.port={port.master}",
+          "-master.port.grpc={port.mastergrpc}",
+          "-volume.port={port.volume}",
+          "-volume.port.grpc={port.volumegrpc}",
+          "-filer",
+          "-filer.port={port.filer}",
+          "-filer.port.grpc={port.filergrpc}",
+          "-s3",
+          "-s3.port={port.main}",
+          "-s3.port.grpc={port.s3grpc}",
+          "-s3.port.iceberg=0",
+          "-s3.config={config}/s3.json",
+          "-filer.localSocket=filer.sock",
+          "-s3.localSocket=s3.sock"
+        ]
+      },
+      "ready": {
+        "http": {
+          "url": "http://127.0.0.1:{port.main}/healthz",
+          "expectStatus": 200
+        }
+      },
+      "stopSignal": "TERM",
+      "stopGraceSeconds": 60,
+      "ports": [
+        {
+          "name": "main",
+          "preferred": 8333
+        },
+        {
+          "name": "s3grpc",
+          "preferred": 18333
+        },
+        {
+          "name": "master",
+          "preferred": 9333
+        },
+        {
+          "name": "mastergrpc",
+          "preferred": 19333
+        },
+        {
+          "name": "volume",
+          "preferred": 9340
+        },
+        {
+          "name": "volumegrpc",
+          "preferred": 19340
+        },
+        {
+          "name": "filer",
+          "preferred": 8888
+        },
+        {
+          "name": "filergrpc",
+          "preferred": 18888
+        }
+      ],
+      "env": [
+        "FILESYSTEM_DISK=s3",
+        "AWS_ACCESS_KEY_ID=paddock",
+        "AWS_SECRET_ACCESS_KEY=paddock-secret",
+        "AWS_DEFAULT_REGION=us-east-1",
+        "AWS_BUCKET=paddock",
+        "AWS_ENDPOINT=http://127.0.0.1:{port.main}",
+        "AWS_USE_PATH_STYLE_ENDPOINT=true"
+      ],
+      "openURL": "http://127.0.0.1:{port.filer}/buckets/",
+      "needsPHP": false,
+      "notes": [
+        "SeaweedFS 4.17, an S3-compatible server. The key and secret are fixed, for development on this Mac only."
+      ],
+      "configFiles": [
+        {
+          "path": "{config}/s3.json",
+          "contents": "{\n  \"identities\": [\n    {\n      \"name\": \"paddock\",\n      \"credentials\": [{ \"accessKey\": \"paddock\", \"secretKey\": \"paddock-secret\" }],\n      \"actions\": [\"Admin\", \"Read\", \"Write\", \"List\", \"Tagging\"]\n    }\n  ]\n}\n"
+        }
+      ],
+      "readyTimeoutSeconds": 60,
+      "initialiseTimeoutSeconds": 60,
+      "afterReady": [
+        {
+          "executable": "{bin}/weed",
+          "arguments": [
+            "shell",
+            "-master=127.0.0.1:{port.master}.{port.mastergrpc}",
+            "-filer=127.0.0.1:{port.filer}.{port.filergrpc}"
+          ],
+          "stdin": "s3.bucket.create -name paddock\n"
+        }
+      ]
+    },
+    {
       "kind": "redis",
       "displayName": "Redis (Valkey)",
       "version": "9.1.4",

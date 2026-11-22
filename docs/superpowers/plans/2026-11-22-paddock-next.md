@@ -102,6 +102,7 @@ To confirm first:
    build is allowed, with its licence and source offer).
 2. **Reverb.** Confirm it stays a site task and is struck from the services
    list, or say if a one-click Reverb service is still wanted.
+   (Still open: not asked yet.)
 
 ### MySQL (services plan, Task 7)
 
@@ -129,46 +130,40 @@ Built on 2026-11-22.
 
 ### Object storage (services plan, Task 8)
 
-**Blocked on one decision (found 2026-11-22).** SeaweedFS 4.18 and later
-create four gRPC Unix sockets at a hard-coded
+Built on 2026-11-22, on SeaweedFS **4.17** by the owner's decision.
+
+SeaweedFS 4.18 and later create four gRPC Unix sockets at a hard-coded
 `/tmp/seaweedfs-<component>-grpc-<port>.sock`, with no option to move or turn
 them off, and its own components dial those sockets first. Paddock keeps every
 socket in an owner-only folder and never in `/tmp`; a predictable path in
 `/tmp` is one another user of the Mac could create first. 4.17 (2026-03-11) is
-the last release without them. The choice: pin 4.17, or take the newest
-release and accept the `/tmp` sockets, or pick another S3 server.
+the last release without them. Move to a newer release only once SeaweedFS
+lets those sockets be moved or turned off; the test fails if any appear.
 
-Verified on 4.54 in a scratch folder, all of which should hold for 4.17 but
-must be re-run on whichever version is chosen:
-
-- `weed server -s3` with `-ip=127.0.0.1 -ip.bind=127.0.0.1` and each of the
-  eight ports given (master, volume, filer and S3, each with its gRPC port)
-  listens on those eight loopback ports and nothing else; `-s3.port.iceberg=0`
-  and `-s3.port.lance=0` turn off two more listeners that are on by default.
-- `-master.telemetry=false` is needed: usage reporting is on by default.
-- `-filer.localSocket` and `-s3.localSocket` default to `/tmp` too, but can be
-  pointed at the run folder.
-- Static credentials from `-s3.config` work: a signed PUT and GET succeed, an
-  unsigned or wrongly signed request gets 403. The bucket can be made with a
-  signed `PUT /<bucket>`.
-- A clean stop on TERM takes about 26 seconds, so the grace period should be
-  60, not 30.
-- The binary's minimum macOS is 13.0; the 4.54 archive is 50 MB.
-
-
-- [ ] Catalog entry `storage`, shown as "Object Storage (S3)", from
-      SeaweedFS's `darwin_amd64` release, checksum verified.
-- [ ] One process (`weed server -s3`), every listener on 127.0.0.1 and every
-      internal port taken from the recipe so nothing lands on a default port.
-- [ ] `ServiceRecipe` gains `afterReady` steps, run once after the first
-      successful start; used to create the default bucket `paddock`. (Not in
-      the code yet.)
-- [ ] Fixed development key and secret, shown in the `.env` lines with
+- [x] Catalog entry `storage`, shown as "Object Storage (S3)", from
+      SeaweedFS 4.17's `darwin_amd64` release, checked against the release's
+      published checksum.
+- [x] One process (`weed server -s3`), every listener on 127.0.0.1 and all
+      eight ports (master, volume, filer and S3, each with its gRPC port)
+      taken from the recipe; the Iceberg listener is off. Usage reporting is
+      off by default in 4.17.
+- [x] Its two local sockets are named relative to its own folder, so they are
+      never in `/tmp` and their length never matters.
+- [x] `ServiceRecipe` has `afterReady` steps, run once after the first start
+      that became ready and recorded by a marker in the config folder; used to
+      create the bucket `paddock` with SeaweedFS's own shell.
+- [x] Fixed development key and secret, shown in the `.env` lines with
       `AWS_ENDPOINT` and path-style addressing.
-- [ ] Integration test: PUT and GET an object with a signed request; stop and
-      start keeps it; `lsof` shows every listener is loopback only, including
-      SeaweedFS's gRPC ports that open late.
-- [ ] Add SeaweedFS to `THIRD-PARTY-NOTICES` and the README's services table.
+- [x] Integration test: signed PUT and GET; unsigned, wrongly signed and
+      unknown-key requests refused; stop and start and remove and re-add keep
+      the objects; exactly its eight loopback listeners; no socket in `/tmp`;
+      a long folder path.
+- [x] SeaweedFS is in `THIRD-PARTY-NOTICES` and the README's services table.
+
+Worth knowing: SeaweedFS's shell exits 0 even when a command fails, so a
+failed bucket step is not detected by its exit status; the test checks the
+bucket really exists. The service's Open button shows the filer's page of
+buckets, which needs no sign-in (loopback only).
 
 Done when: `paddock service add mysql 8.4` and `paddock service add storage`
 each give a Laravel app a working database or S3 disk from the printed `.env`

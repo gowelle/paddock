@@ -1032,6 +1032,11 @@ public final class ServiceManager: @unchecked Sendable {
                 }
                 scheduleLateListenerChecks(instance, processGroup: pid)
             }
+            if let failure = runAfterReady(instance, recipe, context: context) {
+                stopProcess(id)
+                setRuntime(.crashed, for: id)
+                return failure
+            }
             writeDataVersion(instance, recipe)
             setRuntime(.running, for: id)
             return nil
@@ -1052,6 +1057,29 @@ public final class ServiceManager: @unchecked Sendable {
             setRuntime(.crashed, for: id)
             let reason = error is SupervisorError ? "\(recipe.start.executable) could not be run" : "\(error)"
             return .notReady(name: instance.name, log: reason)
+        }
+    }
+
+    /// The file in an instance's config folder that says its recipe's `afterReady` steps have run.
+    static let afterReadyMarker = ".after-ready"
+
+    /// Runs the recipe's `afterReady` steps against the service that has just become ready, unless they already
+    /// ran for this instance; then records that they did. Nil when there is nothing to do or all of it worked.
+    private func runAfterReady(_ instance: ServiceInstance, _ recipe: ServiceRecipe,
+                               context: ServiceTemplateContext) -> ServiceError? {
+        guard !recipe.afterReady.isEmpty else { return nil }
+        let marker = paths.serviceConfig(instance.id).appendingPathComponent(Self.afterReadyMarker)
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return nil }
+        do {
+            for step in recipe.afterReady { try runStep(step, instance: instance, recipe: recipe, context: context) }
+            try Data("\(recipe.kind) \(recipe.version)\n".utf8).write(to: marker, options: .atomic)
+            return nil
+        } catch let error as ServiceError {
+            return error
+        } catch let error as TemplateError {
+            return .unavailable(name: instance.name, reason: "its recipe is broken (\(error))")
+        } catch {
+            return .initialiseFailed(name: instance.name, output: error.localizedDescription)
         }
     }
 

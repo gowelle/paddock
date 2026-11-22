@@ -46,7 +46,8 @@ enum FakeService {
                        ready: Readiness = .tcp(port: "{port.main}"), stopSignal: String = "TERM",
                        configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
                        actions: [String: RecipeAction] = [:], lockFiles: [String] = [],
-                       stopGraceSeconds: Int = 5, notes: [String] = []) -> ServiceRecipe {
+                       stopGraceSeconds: Int = 5, notes: [String] = [],
+                       afterReady: [RecipeCommand] = []) -> ServiceRecipe {
         var arguments = ["serve", "{data}"]
         for port in ports { arguments += ["--port", "{port.\(port.name)}"] }
         arguments += ["--socket", "{socket}", "--name", "{name}"] + extraArguments
@@ -61,7 +62,7 @@ enum FakeService {
             env: ["FAKE_HOST=127.0.0.1", "FAKE_PORT={port.main}", "FAKE_SOCKET={socket}"],
             openURL: "http://127.0.0.1:{port.main}", configFiles: configFiles,
             readyTimeoutSeconds: readyTimeoutSeconds, initialiseTimeoutSeconds: initialiseTimeoutSeconds,
-            actions: actions, lockFiles: lockFiles, notes: notes)
+            actions: actions, lockFiles: lockFiles, notes: notes, afterReady: afterReady)
     }
 
     /// The fake with a secret in its environment and its .env lines (`FAKE_SECRET`).

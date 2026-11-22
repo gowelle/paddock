@@ -309,6 +309,11 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     public let assets: [RecipeAsset]
     /// Run once, in order, when an instance's data folder is new.
     public let initialise: [RecipeCommand]
+    /// Steps run once, after the instance's first start that became ready (creating a default bucket, say). Run
+    /// like initialise steps, against the running service. Each must be safe to run again: a marker in the
+    /// instance's config folder records that they ran, and an instance whose config folder is new runs them
+    /// again on data that may already have been set up.
+    public let afterReady: [RecipeCommand]
     public let start: RecipeCommand
     public let ready: Readiness
     /// `TERM`, `INT` or `QUIT`: what stops the service cleanly.
@@ -351,7 +356,8 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                 ports: [RecipePort], socket: String? = nil, env: [String] = [], openURL: String? = nil,
                 needsPHP: Bool = false, configFiles: [RecipeFile] = [], readyTimeoutSeconds: Int? = nil,
                 initialiseTimeoutSeconds: Int? = nil, actions: [String: RecipeAction] = [:], lockFiles: [String] = [],
-                notes: [String] = [], logHints: [RecipeLogHint] = [], secrets: [RecipeSecret] = []) {
+                notes: [String] = [], logHints: [RecipeLogHint] = [], secrets: [RecipeSecret] = [],
+                afterReady: [RecipeCommand] = []) {
         self.kind = kind
         self.displayName = displayName
         self.version = version
@@ -361,6 +367,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         self.minimumMacOS = minimumMacOS
         self.assets = assets
         self.initialise = initialise
+        self.afterReady = afterReady
         self.start = start
         self.ready = ready
         self.stopSignal = stopSignal
@@ -383,7 +390,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case kind, displayName, version, series, seriesInID, licence, minimumMacOS, assets, initialise, start, ready
         case stopSignal, stopGraceSeconds, ports, socket, env, openURL, needsPHP, configFiles, readyTimeoutSeconds
-        case initialiseTimeoutSeconds, actions, lockFiles, notes, logHints, secrets
+        case initialiseTimeoutSeconds, actions, lockFiles, notes, logHints, secrets, afterReady
     }
 
     public init(from decoder: Decoder) throws {
@@ -397,6 +404,7 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
         minimumMacOS = try c.decodeIfPresent(String.self, forKey: .minimumMacOS)
         assets = try c.decodeIfPresent([RecipeAsset].self, forKey: .assets) ?? []
         initialise = try c.decodeIfPresent([RecipeCommand].self, forKey: .initialise) ?? []
+        afterReady = try c.decodeIfPresent([RecipeCommand].self, forKey: .afterReady) ?? []
         start = try c.decode(RecipeCommand.self, forKey: .start)
         ready = try c.decode(Readiness.self, forKey: .ready)
         stopSignal = try c.decodeIfPresent(String.self, forKey: .stopSignal) ?? "TERM"
@@ -452,6 +460,6 @@ public struct ServiceRecipe: Codable, Equatable, Sendable {
                       ports: ports, socket: socket, env: env, openURL: openURL, needsPHP: needsPHP,
                       configFiles: configFiles, readyTimeoutSeconds: readyTimeoutSeconds,
                       initialiseTimeoutSeconds: initialiseTimeoutSeconds, actions: actions, lockFiles: lockFiles, notes: notes,
-                      logHints: logHints, secrets: secrets)
+                      logHints: logHints, secrets: secrets, afterReady: afterReady)
     }
 }
