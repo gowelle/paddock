@@ -71,6 +71,7 @@ you a question Paddock could answer itself.
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
 | **One-action services** | Add PostgreSQL, Redis (Valkey), Meilisearch or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
+| **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
 
 ## Requirements
@@ -146,6 +147,26 @@ Services and Tasks.
 
 When something else holds ports 80 or 443, the menu names the program and
 offers to quit it. Paddock never fights another web server for its ports.
+
+### The Mail window
+
+Once the mail service is added, the menu gains a **Mail** row with the unread
+count. It opens a window listing the mail your apps sent to the catcher,
+newest first, updated as mail arrives.
+
+<p align="center">
+  <img src="docs/images/mail-text-light.png" width="720" alt="The Mail window: caught messages on the left, the chosen message's headers, text and attachment on the right">
+</p>
+
+- Read a message as **HTML**, **Text** or **Source** (exactly as it arrived,
+  headers included).
+- Remote images, styles and fonts in an HTML message are **blocked until you
+  choose Load Remote Content**, so a tracking pixel is not fetched just because
+  you looked. Scripts never run, and links open in your browser.
+- Save attachments with one click.
+- Opening a message marks it read.
+
+Mailpit's own web page is still there: `paddock service open mail`.
 
 The pictures above are rendered from sample data by the app's own snapshot
 tool (`PaddockApp --snapshots <dir>`).
@@ -234,7 +255,7 @@ initializes and starts a service with working defaults. There are no forms.
 | `postgres` | PostgreSQL | 18, 17, 16 | Includes PostGIS 3.6.4 (no raster or topology). |
 | `redis` | Redis (Valkey) | 9 | Valkey, a Redis-compatible server. Laravel's Redis client works unchanged. Bundled, so adding it needs no download. |
 | `meilisearch` | Meilisearch | 1.57 | A random master key is generated per instance and shown in its `.env`. Search indexes are tied to the series. |
-| `mail` | Mail (Mailpit) | 1 | An SMTP catcher on port 1025 with a web page and API on port 8025. |
+| `mail` | Mail (Mailpit) | 1 | An SMTP catcher on port 1025 with a web page and API on port 8025. Paddock's [Mail window](#the-mail-window) reads from it. |
 
 Every service:
 

@@ -17,10 +17,11 @@ enum Snapshots {
         }
 
         let running = sampleModel(.running)
+        let noMail = MailModel(client: SampleMail(), services: { [] })
         let shots: [(String, AnyView, CGSize?)] = [
-            ("menu-running", AnyView(MenuContentView().environmentObject(running)), nil),
-            ("menu-blocked", AnyView(MenuContentView().environmentObject(sampleModel(.blocked))), nil),
-            ("menu-stopped", AnyView(MenuContentView().environmentObject(sampleModel(.stopped))), nil),
+            ("menu-running", AnyView(MenuContentView().environmentObject(running).environmentObject(noMail)), nil),
+            ("menu-blocked", AnyView(MenuContentView().environmentObject(sampleModel(.blocked)).environmentObject(noMail)), nil),
+            ("menu-stopped", AnyView(MenuContentView().environmentObject(sampleModel(.stopped)).environmentObject(noMail)), nil),
             ("settings-general", AnyView(GeneralTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-php", AnyView(PHPTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-sites", AnyView(SitesTab().settingsTheme().environmentObject(running)), SettingsView.size),
@@ -35,6 +36,15 @@ enum Snapshots {
              SettingsView.size),
             ("approval-sheet", AnyView(ApprovalSheet().environmentObject(approvalModel())), nil),
             ("approval-sheet-nothing", AnyView(ApprovalSheet().environmentObject(approvalModel(nothing: true))), nil),
+            ("menu-mail", AnyView(MenuContentView().environmentObject(running).environmentObject(mailModel(reading: nil))),
+             nil),
+            ("mail-list", AnyView(MailView().environmentObject(running).environmentObject(mailModel(reading: nil))),
+             MailView.size),
+            ("mail-text", AnyView(MailView().environmentObject(running).environmentObject(mailModel(reading: .text))),
+             MailView.size),
+            ("mail-source", AnyView(MailView().environmentObject(running).environmentObject(mailModel(reading: .source))),
+             MailView.size),
+            ("mail-none", AnyView(MailView().environmentObject(running).environmentObject(noMail)), MailView.size),
         ]
         var ok = true
         for (name, view, size) in shots {
@@ -151,6 +161,74 @@ enum Snapshots {
         ServiceStatus(id: id, name: name, kind: kind, version: "1", displayName: name, state: state, ports: ports,
                       env: [], openURL: openURL, dataPath: "/Users/you/Library/Application Support/Paddock/services/\(id)/data",
                       autostart: true, mainPort: ports["main"] ?? ports["smtp"], notes: notes)
+    }
+
+    // MARK: - Mail
+
+    /// A mail service with three caught messages; with `reading`, the first is open and shown that way. (The
+    /// HTML view is a web view, which an off-screen capture can't draw, so the shots show text and source.)
+    private static func mailModel(reading: MailBody?) -> MailModel {
+        let mail = service("mail", "Mail", kind: "mail", state: .running, ports: ["smtp": 1025, "http": 8025],
+                           openURL: "http://127.0.0.1:8025")
+        let model = MailModel(client: SampleMail(), services: { [mail] })
+        settle {
+            await model.refresh()
+            if let reading {
+                await model.select("a")
+                await model.show(reading)
+            }
+        }
+        return model
+    }
+
+    private struct SampleMail: MailClient {
+        static let shop = MailAddress(name: "Paddock Shop", address: "orders@shop.test")
+        static let ada = MailAddress(name: "Ada Customer", address: "ada@example.test")
+        static let sent = Date(timeIntervalSince1970: 1_795_310_050)
+
+        func inbox(at base: URL, limit: Int) async throws -> MailInbox {
+            MailInbox(total: 3, unread: 2, messages: [
+                MailSummary(id: "a", read: false, from: Self.shop, to: [Self.ada], subject: "Your order #1042 has shipped",
+                            created: Self.sent, attachments: 1,
+                            snippet: "Hello Ada, your order #1042 has shipped and is on its way."),
+                MailSummary(id: "b", read: false, from: MailAddress(address: "no-reply@blog.test"), to: [Self.ada],
+                            subject: "Reset your password", created: Self.sent.addingTimeInterval(-900),
+                            snippet: "Someone asked to reset the password for your account."),
+                MailSummary(id: "c", read: true, from: MailAddress(name: "Wiki", address: "wiki@wiki.test"), to: [Self.ada],
+                            subject: "Weekly digest", created: Self.sent.addingTimeInterval(-90_000),
+                            snippet: "Four pages changed this week."),
+            ])
+        }
+
+        func message(at base: URL, id: String) async throws -> MailMessage {
+            MailMessage(id: id, from: Self.shop, to: [Self.ada, MailAddress(address: "ops@shop.test")],
+                        cc: [MailAddress(address: "accounts@shop.test")], subject: "Your order #1042 has shipped",
+                        date: Self.sent,
+                        text: "Hello Ada,\n\nYour order #1042 has shipped.\n\nThanks,\nPaddock Shop\n",
+                        html: "<h1>Your order has shipped</h1>",
+                        attachments: [MailPart(partID: "2", fileName: "invoice-1042.csv", contentType: "text/csv", size: 23)])
+        }
+
+        func source(at base: URL, id: String) async throws -> String {
+            """
+            Return-Path: <orders@shop.test>
+            From: Paddock Shop <orders@shop.test>
+            To: Ada Customer <ada@example.test>, ops@shop.test
+            Cc: accounts@shop.test
+            Subject: Your order #1042 has shipped
+            MIME-Version: 1.0
+            Content-Type: multipart/mixed; boundary="===============1042=="
+
+            --===============1042==
+            Content-Type: text/plain; charset="utf-8"
+
+            Hello Ada,
+
+            Your order #1042 has shipped.
+            """
+        }
+
+        func part(at base: URL, messageID: String, partID: String) async throws -> Data { Data() }
     }
 
     /// Three services in mixed states (running with a note, stopped, port in use); with `adding`, PostgreSQL 17 is

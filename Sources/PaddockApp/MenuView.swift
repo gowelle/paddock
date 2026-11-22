@@ -5,6 +5,7 @@ import SwiftUI
 /// The menu bar menu: one plain view, shown in the menu bar panel and rendered by the snapshot tool.
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var mail: MailModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -14,6 +15,12 @@ struct MenuContentView: View {
 
             SubmenuRow(title: "Sites", isEnabled: !model.sites.isEmpty) { siteItems }
             SubmenuRow(title: model.phpMenuTitle, isEnabled: !model.installedPHP.isEmpty) { phpItems }
+            if mail.isAdded {
+                MenuRow(mail.menuTitle) {
+                    activateApp()
+                    openWindow(id: MailView.windowID)
+                }
+            }
             MenuDivider()
 
             MenuRow("Open Sites Folder", isEnabled: model.sitesFolder != nil) {
@@ -52,7 +59,13 @@ struct MenuContentView: View {
         .foregroundStyle(Theme.ink)
         .background(Theme.surface)
         .background(VisibilityReporter { visible in
-            visible ? model.beginWatching() : model.endWatching()
+            if visible {
+                model.beginWatching()
+                mail.beginWatching()
+            } else {
+                model.endWatching()
+                mail.endWatching()
+            }
         })
     }
 
