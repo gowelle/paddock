@@ -688,6 +688,7 @@ Resources/        App icon, headline font, Info.plist, service recipes and the v
 Scripts/          Fetch, build and bundle scripts; version lock file.
 Vendor/           Fetched third-party binaries (gitignored).
 docs/images/      The pictures in this README.
+site/             Paddock's web page; Scripts/build-site.sh assembles it, GitHub Pages serves it.
 Scripts/fixtures/ How the VarDumper test fixtures are made.
 docs/superpowers/ Design documents and plans.
 ```
