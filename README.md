@@ -13,6 +13,7 @@
   <a href="#what-you-get">What you get</a> ·
   <a href="#the-paddock-cli">CLI</a> ·
   <a href="#services">Services</a> ·
+  <a href="#the-mail-window">Mail</a> ·
   <a href="#site-tasks-and-paddockjson">Site tasks</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#building-from-source">Build</a>
@@ -47,6 +48,7 @@ you a question Paddock could answer itself.
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [The menu-bar app](#the-menu-bar-app)
+  - [The Mail window](#the-mail-window)
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
@@ -113,7 +115,16 @@ you a question Paddock could answer itself.
 
    PostgreSQL 18 is downloaded, initialized and started, and its `.env` lines
    are printed.
-7. **Keep a Laravel project's workers running.** Inside the project:
+7. **Catch your app's mail.**
+
+   ```sh
+   paddock service add mail
+   ```
+
+   Put the `.env` lines it prints into your app. Mail the app sends now stops
+   at Paddock instead of going out, and you read it from the menu's **Mail**
+   row. See [The Mail window](#the-mail-window).
+8. **Keep a Laravel project's workers running.** Inside the project:
 
    ```sh
    paddock tasks init
@@ -124,9 +135,9 @@ you a question Paddock could answer itself.
 
 ## The menu-bar app
 
-The menu shows whether Paddock is running, your sites and the default PHP
-version. Everything else lives in Settings…, in five tabs: General, PHP, Sites,
-Services and Tasks.
+The menu shows whether Paddock is running, your sites, the default PHP version
+and, once a mail service is added, your unread mail. Settings… has five tabs:
+General, PHP, Sites, Services and Tasks.
 
 <p align="center">
   <img src="docs/images/settings-sites-light.png" width="420" alt="The Sites tab: each site with a Secure checkbox and a PHP version picker">
@@ -166,10 +177,12 @@ newest first, updated as mail arrives.
 - Save attachments with one click.
 - Opening a message marks it read.
 
-Mailpit's own web page is still there: `paddock service open mail`.
+The window needs the mail service running; when it isn't added or isn't
+running, the window says so and how to fix it. Mailpit's own web page is still
+there too: `paddock service open mail`.
 
-The pictures above are rendered from sample data by the app's own snapshot
-tool (`PaddockApp --snapshots <dir>`).
+The pictures in this section are rendered from sample data by the app's own
+snapshot tool (`PaddockApp --snapshots <dir>`).
 
 ## The `paddock` CLI
 
