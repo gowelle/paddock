@@ -148,6 +148,80 @@ final class XdebugEngineTests: XCTestCase {
         XCTAssertEqual(page.value, "xdebug:3.5.3 mode=debug start=trigger", "served once the debugger let go")
     }
 
+    /// What an editor does: sets a breakpoint in the site's own file, runs to it (past Paddock's router), reads
+    /// where it stopped and a variable's value, and lets the request finish.
+    func testABreakpointInTheSitesOwnCodeStopsAndShowsItsVariables() async throws {
+        try engine.installer.installBundled()
+        let port = TestSupport.freeTCPPort(excluding: [home.settings.httpPort, home.settings.httpsPort])
+        let ini = home.paths.phpIni(v85)
+        try FileManager.default.createDirectory(at: ini.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data((FPMConfig.defaultIni(version: v85, paths: home.paths) + "xdebug.client_port = \(port)\n").utf8).write(to: ini)
+        let script = home.parked.appendingPathComponent("debugme/index.php")
+        try Data("""
+        <?php
+        $answer = 6 * 7;
+        $greeting = 'hello from ' . basename(__DIR__);
+        echo $greeting . ':' . $answer;
+
+        """.utf8).write(to: script)
+        try engine.start()
+        _ = try await status(.xdebug(version: v85, enabled: true))
+
+        let listener = try TestSupport.listen(port: port)
+        defer { close(listener) }
+        XCTAssertEqual(fcntl(listener, F_SETFL, O_NONBLOCK), 0)
+        let page = Locked<String?>(nil)
+        let done = expectation(description: "the debugged request finishes")
+        Thread.detachNewThread {
+            page.value = try? self.get("/?XDEBUG_TRIGGER=1", timeout: 60)
+            done.fulfill()
+        }
+        var connection: Int32 = -1
+        XCTAssertTrue(waitUntil(20) {
+            connection = accept(listener, nil, nil)
+            return connection >= 0
+        }, "Xdebug connected to the debugger's port")
+        guard connection >= 0 else { return }
+        defer { close(connection) }
+        let debugger = DBGp(connection)
+        let greeting = try debugger.read()
+        XCTAssertTrue(greeting.contains("<init"), greeting)
+
+        // The file as PHP names it (symlinks resolved: /tmp is /private/tmp) and as it was parked.
+        let line = 4
+        var files = [script.path]
+        if let real = ServiceManager.realPath(script.path), real != script.path { files.append(real) }
+        for file in files {
+            let set = try debugger.send("breakpoint_set", "-t line -f file://\(file) -n \(line)")
+            XCTAssertTrue(set.contains("id="), "the breakpoint was accepted: \(set)")
+        }
+
+        // Run: the session opened on the router; it must stop in the site's file, on that line.
+        let stopped = try debugger.send("run")
+        XCTAssertTrue(stopped.contains(#"status="break""#), "stopped at the breakpoint: \(stopped)")
+        XCTAssertTrue(stopped.contains("debugme/index.php"), "in the site's own file: \(stopped)")
+        XCTAssertTrue(stopped.contains(#"lineno="\#(line)""#), "on the line asked for: \(stopped)")
+        XCTAssertNil(page.value, "the request is held while stopped")
+
+        // The call stack: the site's file on top, Paddock's router beneath it.
+        let stack = try debugger.send("stack_get")
+        XCTAssertTrue(stack.contains("debugme/index.php") && stack.contains("router/server.php"), stack)
+
+        // The variables set before the breakpoint, with their values.
+        let answer = try debugger.send("property_get", "-n $answer")
+        XCTAssertTrue(answer.contains(#"type="int""#) && answer.contains("<![CDATA[42]]>"), answer)
+        let text = try debugger.send("property_get", "-n $greeting")
+        XCTAssertTrue(text.contains(Data("hello from debugme".utf8).base64EncodedString()), text)
+
+        // Step over the echo: the script is on its last line, so it either stops once more or is finishing.
+        let stepped = try debugger.send("step_over")
+        XCTAssertTrue(stepped.contains(#"status="break""#) || stepped.contains(#"status="stopping""#), stepped)
+        // Let it run to the end. Xdebug may hang up as the script ends, so no reply is not a failure here.
+        _ = try? debugger.send("run")
+        await fulfillment(of: [done], timeout: 60)
+        XCTAssertEqual(page.value, "hello from debugme:42", "the page is served once the debugger lets go")
+    }
+
     func testAVersionThatIsNotInstalledIsRefused() async throws {
         try engine.installer.installBundled()
         let response = await engine.handle(.xdebug(version: PHPVersion("8.1")!, enabled: true))
@@ -175,3 +249,57 @@ final class XdebugEngineTests: XCTestCase {
         return false
     }
 }
+
+/// The debugger's end of a DBGp session, as an editor speaks it: commands end with a NUL; each reply is a
+/// length, a NUL, the XML, a NUL.
+private final class DBGp {
+    private let socket: Int32
+    private var transaction = 0
+    private var buffered = Data()
+
+    init(_ socket: Int32) {
+        self.socket = socket
+        _ = fcntl(socket, F_SETFL, 0)
+        var timeout = timeval(tv_sec: 20, tv_usec: 0)
+        setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    struct Failure: Error, CustomStringConvertible { let description: String }
+
+    /// The next packet's XML.
+    func read() throws -> String {
+        while true {
+            if let first = buffered.firstIndex(of: 0),
+               let length = Int(String(decoding: buffered[buffered.startIndex..<first], as: UTF8.self)) {
+                let start = buffered.index(after: first)
+                if buffered.distance(from: start, to: buffered.endIndex) >= length + 1 {
+                    let end = buffered.index(start, offsetBy: length)
+                    let xml = String(decoding: buffered[start..<end], as: UTF8.self)
+                    buffered = Data(buffered[buffered.index(after: end)...])
+                    return xml
+                }
+            }
+            var chunk = [UInt8](repeating: 0, count: 8192)
+            let count = Darwin.read(socket, &chunk, chunk.count)
+            guard count > 0 else {
+                throw Failure(description: "the debugger connection gave no reply (read returned \(count), errno \(errno))")
+            }
+            buffered.append(contentsOf: chunk[..<count])
+        }
+    }
+
+    /// Sends one command and returns its reply.
+    func send(_ command: String, _ arguments: String = "") throws -> String {
+        transaction += 1
+        let line = "\(command) -i \(transaction)" + (arguments.isEmpty ? "" : " \(arguments)")
+        var bytes = Array(line.utf8) + [0]
+        let written = write(socket, &bytes, bytes.count)
+        guard written == bytes.count else { throw Failure(description: "could not send \(command)") }
+        let reply = try read()
+        guard reply.contains(#"transaction_id="\#(transaction)""#) else {
+            throw Failure(description: "\(command) got another command's reply: \(reply)")
+        }
+        return reply
+    }
+}
+

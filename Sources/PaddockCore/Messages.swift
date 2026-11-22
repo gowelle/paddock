@@ -48,6 +48,14 @@ public enum Messages {
         "Xdebug is off for PHP \(version)."
     }
 
+    public static func zedConfigWritten(_ path: String) -> String {
+        "Wrote \(path). In Zed, run \"debugger: start\" and choose \"PHP: Listen to Xdebug\"."
+    }
+
+    public static func zedConfigExists(_ path: String, entry: String) -> String {
+        "\(path) already exists, so Paddock left it alone. Add this to it:\n\(entry)"
+    }
+
     /// One line per installed PHP version: `PHP 8.5  on`, `PHP 8.4  off`, `PHP 8.3  not available`.
     public static func xdebugStatus(installed: [PHPVersion], on: [PHPVersion], available: [PHPVersion]) -> String {
         guard !installed.isEmpty else { return MultiCall.noPHPMessage }

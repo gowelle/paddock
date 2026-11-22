@@ -42,6 +42,22 @@ extension View {
     }
 }
 
+/// Small secondary text under a table. Not `Caption`: a text that fixes its own height, beside a table, makes
+/// the tab taller than its window and pushes the table's top out of view. This one takes the room it is given.
+struct TableCaption: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(Theme.inkMuted)
+            .lineLimit(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// The error line at the foot of a settings tab.
 struct SettingsFooter: View {
     @EnvironmentObject private var model: AppModel

@@ -202,21 +202,31 @@ session only when a request asks for one**.
 - [x] Tests: the switch against a real PHP-FPM, including a DBGp session that
       starts on the trigger and not without it.
 
+- [x] A full debugger session is tested the way an editor runs one (DBGp):
+      a breakpoint set in the site's own file is hit past Paddock's router,
+      the call stack and two variables read back, and the request finishes
+      when the debugger lets go.
+- [x] The user's `php.ini` wins: `xdebug.mode` or
+      `xdebug.start_with_request` set there is used in place of Paddock's
+      default (a command-line setting would otherwise override it).
+- [x] Zed (the owner's editor): `paddock xdebug zed` writes
+      `.zed/debug.json` with the entry Zed's PHP documentation gives, on the
+      port `php.ini` names, and never over an existing file. README sections
+      for Zed, VS Code and PhpStorm.
+
 Not done:
 
-- No editor has been attached by hand. The test accepts Xdebug's connection
-  and reads its greeting, which is the same handshake an editor starts with.
+- Zed itself has not been driven: the test speaks the debugger protocol
+  directly, which is what Zed's Xdebug adapter does, but a breakpoint
+  stopping inside Zed's window is the owner's to try.
 - Xdebug is built for the two series shipped. A new PHP series needs
   `Scripts/build-xdebug.sh <series>` and its lock and manifest lines.
 - Every request enters through Paddock's router, so "break at first line"
   stops in `router/server.php`. Documented in the README; not changed.
-- Paddock sets `xdebug.mode=debug` on the command line, so `php.ini` cannot
-  add `develop` or `coverage` for web requests. In the terminal,
-  `XDEBUG_MODE=coverage` works.
 
-Done when: a breakpoint in VS Code or PhpStorm stops on a request to a
-`.test` site, and turning it off returns PHP to its normal speed. (The second
-half is covered by the test; the first is the owner's to try.)
+Done when: a breakpoint in the owner's editor stops on a request to a `.test`
+site, and turning it off returns PHP to its normal speed. (The second half
+is covered by the test; the first, inside Zed, is the owner's to try.)
 
 ## Stage 4: log viewer
 

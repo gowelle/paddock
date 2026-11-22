@@ -227,6 +227,7 @@ Paddock supports PHP 8.1 and later.
 | `paddock xdebug` | Show which PHP versions have Xdebug on. |
 | `paddock xdebug on [8.4]` | Switch Xdebug on for a PHP version (default: the current site's, else the default). |
 | `paddock xdebug off [8.4]` | Switch it off. |
+| `paddock xdebug zed` | Write Zed's debug configuration (`.zed/debug.json`) for the current site; never over an existing one. |
 
 Xdebug is switched per PHP version: every site on that version follows, and so
 does `php` in the terminal. Switching restarts that version's PHP-FPM, nothing
@@ -243,12 +244,52 @@ else. While it is on:
   on, your editor stops in `router/server.php` first. Set a breakpoint in your
   own code instead.
 - `composer` never loads Xdebug.
-- For test coverage, switch Xdebug on and run
+- Paddock's defaults are `xdebug.mode=debug` and
+  `xdebug.start_with_request=trigger`. Set either in that version's `php.ini`
+  and yours is used instead, for example
+  `xdebug.mode = debug,develop,coverage`. For a one-off in the terminal:
   `XDEBUG_MODE=coverage php artisan test --coverage`.
 
 Xdebug is Paddock's own build of Xdebug 3.5.3, in the app, so switching it on
 needs no network. Paddock loads it from PHP's command line; your `php.ini` is
 never edited.
+
+#### Zed
+
+Zed's PHP extension brings its own Xdebug debug adapter. In a site's folder:
+
+```sh
+paddock xdebug on
+paddock xdebug zed
+```
+
+The second command writes `.zed/debug.json` with the entry Zed's PHP
+documentation gives:
+
+```json
+[
+  {
+    "label": "PHP: Listen to Xdebug",
+    "adapter": "Xdebug",
+    "request": "launch",
+    "port": 9003
+  }
+]
+```
+
+Then, in Zed: set a breakpoint, run `debugger: start` (F4), choose
+"PHP: Listen to Xdebug", and load the page with `?XDEBUG_TRIGGER=1` (or with
+the Xdebug browser extension on). If the file already exists, Paddock prints
+the entry for you to add instead. If your `php.ini` sets
+`xdebug.client_port`, the entry uses that port.
+
+#### VS Code and PhpStorm
+
+- **VS Code:** install the "PHP Debug" extension, add its "Listen for Xdebug"
+  configuration (port 9003), and start it.
+- **PhpStorm:** turn on "Start Listening for PHP Debug Connections". Its
+  debug port is 9003 by default. Turn off "Break at first line in PHP
+  scripts", or it stops in Paddock's router on every request.
 
 ### Lifecycle
 

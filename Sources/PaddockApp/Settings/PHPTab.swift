@@ -25,14 +25,7 @@ struct PHPTab: View {
             }
             .tableSurface()
 
-            // A plain line, not `Caption`: beside a table, a text that fixes its own height makes the whole
-            // tab taller than its window.
-            if let caption = model.xdebugCaption {
-                Text(caption)
-                    .font(.caption)
-                    .foregroundStyle(Theme.inkMuted)
-                    .lineLimit(1)
-            }
+            if let caption = model.xdebugCaption { TableCaption(caption) }
 
 
             HStack {

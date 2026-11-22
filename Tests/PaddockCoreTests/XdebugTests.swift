@@ -138,6 +138,48 @@ final class XdebugTests: XCTestCase {
         XCTAssertEqual(Xdebug.arguments(for: v85, state: state, paths: paths), [], "another version's switch")
     }
 
+    /// What the user's php.ini sets for Xdebug is theirs: Paddock leaves that setting off the command line,
+    /// where it would otherwise win. A commented-out line sets nothing.
+    func testSettingsInTheUsersIniAreNotOverridden() throws {
+        let library = URL(fileURLWithPath: "/x/xdebug.so")
+        let ini = root.appendingPathComponent("php.ini")
+        try Data("""
+        memory_limit = 512M
+        ; xdebug.start_with_request = yes
+          Xdebug.Mode = debug,develop,coverage
+        xdebug.client_port=9010
+        """.utf8).write(to: ini)
+        XCTAssertEqual(Xdebug.arguments(library: library, ini: ini),
+                       ["-d", "zend_extension=/x/xdebug.so", "-d", "xdebug.start_with_request=trigger"])
+        try Data("xdebug.start_with_request = yes\n".utf8).write(to: ini)
+        XCTAssertEqual(Xdebug.arguments(library: library, ini: ini),
+                       ["-d", "zend_extension=/x/xdebug.so", "-d", "xdebug.mode=debug"])
+        // No php.ini, or one that says nothing about Xdebug: Paddock's defaults.
+        let defaults = ["-d", "zend_extension=/x/xdebug.so", "-d", "xdebug.mode=debug", "-d", "xdebug.start_with_request=trigger"]
+        XCTAssertEqual(Xdebug.arguments(library: library, ini: root.appendingPathComponent("none.ini")), defaults)
+        XCTAssertEqual(Xdebug.arguments(library: library), defaults)
+        XCTAssertEqual(Xdebug.settings(in: "[PHP]\n# a = 1\n b = 2 \n\nc\n"), ["b"])
+    }
+
+    func testZedsConfigurationListensWhereXdebugConnects() throws {
+        let config = try JSONSerialization.jsonObject(with: Data(Xdebug.zedConfiguration().utf8)) as? [[String: Any]]
+        XCTAssertEqual(config?.count, 1)
+        XCTAssertEqual(config?.first?["label"] as? String, "PHP: Listen to Xdebug")
+        XCTAssertEqual(config?.first?["adapter"] as? String, "Xdebug")
+        XCTAssertEqual(config?.first?["request"] as? String, "launch")
+        XCTAssertEqual(config?.first?["port"] as? Int, 9003)
+        XCTAssertTrue(Xdebug.zedConfiguration(port: 9010).contains("\"port\": 9010"))
+
+        let ini = root.appendingPathComponent("php.ini")
+        XCTAssertEqual(Xdebug.clientPort(ini: ini), 9003, "no php.ini")
+        try Data("; xdebug.client_port = 9001\nxdebug.client_port = 9010\n".utf8).write(to: ini)
+        XCTAssertEqual(Xdebug.clientPort(ini: ini), 9010)
+        try Data("xdebug.client_port = \"9011\"\n".utf8).write(to: ini)
+        XCTAssertEqual(Xdebug.clientPort(ini: ini), 9011)
+        try Data("xdebug.client_port = nonsense\n".utf8).write(to: ini)
+        XCTAssertEqual(Xdebug.clientPort(ini: ini), 9003, "an unusable value")
+    }
+
     func testAnOlderDaemonsStatusHasNoXdebug() throws {
         let status = try JSONDecoder().decode(EngineStatus.self, from: Data(#"{"running":true}"#.utf8))
         XCTAssertEqual(status.xdebug, [])

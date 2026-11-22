@@ -35,8 +35,64 @@ public struct Xdebug: Sendable {
     /// What PHP is started with to load Xdebug for step debugging that begins only when asked for (a request's
     /// `XDEBUG_TRIGGER` or `XDEBUG_SESSION`, or the browser extension's cookie). Where the debugger connects
     /// (`xdebug.client_host`, `xdebug.client_port`: 127.0.0.1 and 9003 unless set) is left to php.ini.
-    public static func arguments(library: URL) -> [String] {
-        ["-d", "zend_extension=\(library.path)", "-d", "xdebug.mode=debug", "-d", "xdebug.start_with_request=trigger"]
+    ///
+    /// A command-line setting beats php.ini, so one the user's php.ini (`ini`) sets itself is left out here:
+    /// `xdebug.mode = debug,develop,coverage` in php.ini is theirs to choose.
+    public static func arguments(library: URL, ini: URL? = nil) -> [String] {
+        let theirs = ini.flatMap { try? String(contentsOf: $0, encoding: .utf8) }.map(settings(in:)) ?? []
+        var arguments = ["-d", "zend_extension=\(library.path)"]
+        for (name, value) in [("xdebug.mode", "debug"), ("xdebug.start_with_request", "trigger")]
+        where !theirs.contains(name) {
+            arguments += ["-d", "\(name)=\(value)"]
+        }
+        return arguments
+    }
+
+    /// Xdebug's own default for where the debugger listens.
+    public static let defaultClientPort = 9003
+
+    /// The port the debugger must listen on: the php.ini's `xdebug.client_port` when it sets a usable one,
+    /// else Xdebug's default.
+    public static func clientPort(ini: URL?) -> Int {
+        guard let text = ini.flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) else { return defaultClientPort }
+        var port = defaultClientPort
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let first = trimmed.first, first != ";", first != "#", let equals = trimmed.firstIndex(of: "="),
+                  trimmed[..<equals].trimmingCharacters(in: .whitespaces).lowercased() == "xdebug.client_port" else { continue }
+            let value = trimmed[trimmed.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if let number = Int(value), (1...65535).contains(number) { port = number }
+        }
+        return port
+    }
+
+    /// Zed's debug configuration for listening to Xdebug, as its PHP documentation gives it: the contents of
+    /// a project's `.zed/debug.json`.
+    public static func zedConfiguration(port: Int = defaultClientPort) -> String {
+        """
+        [
+          {
+            "label": "PHP: Listen to Xdebug",
+            "adapter": "Xdebug",
+            "request": "launch",
+            "port": \(port)
+          }
+        ]
+
+        """
+    }
+
+    /// The names an ini text sets: `name = value` lines, not comments (`;` or `#`) and not section headers.
+    static func settings(in ini: String) -> Set<String> {
+        var names: Set<String> = []
+        for line in ini.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let first = trimmed.first, first != ";", first != "#", first != "[",
+                  let equals = trimmed.firstIndex(of: "=") else { continue }
+            names.insert(trimmed[..<equals].trimmingCharacters(in: .whitespaces).lowercased())
+        }
+        return names
     }
 
     /// Those arguments when Xdebug is switched on for the version and its library is installed; none otherwise
@@ -45,7 +101,7 @@ public struct Xdebug: Sendable {
         guard state.xdebug.contains(v) else { return [] }
         let library = library(v, paths: paths)
         guard FileManager.default.fileExists(atPath: library.path) else { return [] }
-        return arguments(library: library)
+        return arguments(library: library, ini: paths.phpIni(v))
     }
 
     /// Whether Paddock has an Xdebug build for the version.

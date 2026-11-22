@@ -25,6 +25,7 @@ enum Snapshots {
             ("settings-general", AnyView(GeneralTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-php", AnyView(PHPTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-sites", AnyView(SitesTab().settingsTheme().environmentObject(running)), SettingsView.size),
+            ("settings-sites-empty", AnyView(SitesTab().settingsTheme().environmentObject(sampleModel(.stopped))), SettingsView.size),
             ("settings-services-none", AnyView(ServicesTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-services", AnyView(ServicesTab().settingsTheme().environmentObject(servicesModel(adding: false))),
              SettingsView.size),

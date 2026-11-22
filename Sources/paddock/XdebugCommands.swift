@@ -11,7 +11,7 @@ struct XdebugGroup: ParsableCommand {
             While on, a debugging session starts only when a request asks for one (the browser extension, or \
             XDEBUG_TRIGGER=1); your editor listens on port 9003.
             """,
-        subcommands: [XdebugOn.self, XdebugOff.self, XdebugStatus.self],
+        subcommands: [XdebugOn.self, XdebugOff.self, XdebugStatus.self, XdebugZed.self],
         defaultSubcommand: XdebugStatus.self)
 
     /// The version named, else the one the current folder's site uses, else the default.
@@ -54,5 +54,37 @@ struct XdebugStatus: ParsableCommand {
     func run() throws {
         let status = try CLI.send(.status, timeout: 30)
         print(Messages.xdebugStatus(installed: status.installedPHP, on: status.xdebug, available: status.xdebugAvailable))
+    }
+}
+
+struct XdebugZed: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "zed",
+        abstract: "Write Zed's debug configuration for the current site (never over an existing one).")
+
+    func run() throws {
+        let status = try CLI.send(.status, timeout: 30)
+        // The site's folder when the current one is inside a site, else the current folder.
+        let site = try? CLI.siteContainingCurrentDirectory(in: status, quietly: true)
+        let root = URL(fileURLWithPath: site?.path ?? CLI.currentDirectory, isDirectory: true)
+        let version = try XdebugGroup.version(nil, status: status)
+        let entry = Xdebug.zedConfiguration(port: Xdebug.clientPort(ini: CLI.paths.phpIni(version)))
+        let file = root.appendingPathComponent(".zed", isDirectory: true).appendingPathComponent("debug.json")
+        let shown = Messages.displayName(file.path, limit: 512) ?? file.path
+        if FileManager.default.fileExists(atPath: file.path) {
+            print(Messages.zedConfigExists(shown, entry: entry), terminator: "")
+        } else {
+            do {
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                // Fails rather than replaces if the file appeared meanwhile.
+                try Data(entry.utf8).write(to: file, options: .withoutOverwriting)
+            } catch {
+                throw CLI.failure("Paddock couldn't write \(shown): \(error.localizedDescription)")
+            }
+            print(Messages.zedConfigWritten(shown))
+        }
+        if !status.xdebug.contains(version) {
+            print("Xdebug is off for PHP \(version). Switch it on with: paddock xdebug on \(version)")
+        }
     }
 }
