@@ -21,9 +21,9 @@
 
 ---
 
-Laravel Herd no longer ships for Intel Macs. Paddock gives Intel Mac users the
-same thing Herd gives everyone else: drag it to Applications, open it, enter
-your password once, and any folder in a parked directory is served at
+Paddock is a complete local PHP and Laravel environment for Intel Macs:
+install it, open it, enter your password once, and any folder in a parked
+directory is served at
 `<folder>.test`, over trusted HTTPS when you want it.
 
 It is a menu-bar app, a background daemon and a `paddock` command-line tool
@@ -47,6 +47,7 @@ you a question Paddock could answer itself.
 - [What you get](#what-you-get)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+  - [Installing by hand](#installing-by-hand)
 - [The menu-bar app](#the-menu-bar-app)
   - [The Mail window](#the-mail-window)
   - [The Logs window](#the-logs-window)
@@ -89,12 +90,16 @@ you a question Paddock could answer itself.
 
 ## Quick start
 
-1. **Install.** Download the zip from the
-   [latest release](https://github.com/gowelle/paddock/releases/latest) (or
-   [build it](#building-from-source)), unzip it and move `Paddock.app` to
-   `/Applications`. Paddock is not yet signed with an Apple Developer ID, so
-   the first time, open it with a right-click → Open (or allow it under
-   System Settings → Privacy & Security).
+1. **Install.** In Terminal:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/gowelle/paddock/main/Scripts/install.sh | bash
+   ```
+
+   This downloads the latest release, checks it against the release's
+   SHA-256, puts `Paddock.app` in `/Applications` and opens it. It asks for
+   no password and runs nothing as root. See
+   [Installing by hand](#installing-by-hand) for the other ways.
 2. **Open Paddock.** The first launch asks for your password **once**, to
    install the `.test` DNS resolver and the port 80/443 entry. No Paddock code
    runs as root after that.
@@ -141,6 +146,30 @@ you a question Paddock could answer itself.
    ```
 
    Its queue worker and scheduler now run whenever Paddock runs.
+
+### Installing by hand
+
+Paddock is not signed with an Apple Developer ID, so macOS questions a copy
+downloaded in a browser. The install command above avoids that (a file
+fetched by `curl` is not marked as downloaded). If you would rather download
+it yourself:
+
+1. Download `Paddock-<version>.zip` from the
+   [latest release](https://github.com/gowelle/paddock/releases/latest),
+   unzip it and move `Paddock.app` to `/Applications`.
+2. Open it. macOS says it can't check the app; close that message.
+3. Open System Settings → Privacy & Security, scroll to the message about
+   Paddock and click **Open Anyway**. This is needed once.
+
+Or clear the download mark yourself and open it normally:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Paddock.app
+```
+
+Each release lists its SHA-256 in `SHA256SUMS`; compare with
+`shasum -a 256 Paddock-<version>.zip`. You can also
+[build Paddock from source](#building-from-source).
 
 ## The menu-bar app
 
@@ -578,15 +607,15 @@ signature.
 ### Making a release
 
 ```sh
-Scripts/release.sh 0.2.0                        # build dist/release/, publish nothing
-Scripts/release.sh 0.2.0 --publish --unsigned   # also commit, tag, push, create the GitHub Release
+Scripts/release.sh 0.2.0             # build dist/release/, publish nothing
+Scripts/release.sh 0.2.0 --publish   # also commit, tag, push, create the GitHub Release
 ```
 
 `Scripts/release.sh` writes the version, raises the build number, runs
 `Scripts/bundle.sh`, signs the zip with the update key in the login Keychain
-and writes `appcast.xml`, the feed installed copies read. `--publish` runs
-from `main` only. `--unsigned` acknowledges that the app is signed ad hoc and
-Gatekeeper will question it on another Mac. Release notes in
+and writes `appcast.xml`, the feed installed copies read, and `SHA256SUMS`,
+which `Scripts/install.sh` checks the download against. `--publish` runs
+from `main` only. Release notes in
 `docs/releases/<version>.md` appear in the update window and on GitHub.
 
 The update key was made once with Sparkle's `generate_keys`; its public half

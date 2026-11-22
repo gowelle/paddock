@@ -13,8 +13,8 @@
 #
 # Release notes: docs/releases/<version>.md, if it is there, is shown in the update window and on GitHub.
 #
-# The app itself is signed ad hoc: Gatekeeper on another Mac refuses it until Paddock is signed with a
-# Developer ID and notarized (the roadmap's stage 6). --publish says so and asks for --unsigned.
+# The app is signed ad hoc, not with an Apple Developer ID. Scripts/install.sh is how it reaches another Mac
+# without macOS questioning it; it reads the SHA256SUMS this script publishes beside the zip.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,16 +25,15 @@ OUT="$ROOT/dist/release"
 
 fail() { echo "release.sh: $*" >&2; exit 1; }
 
-VERSION="" PUBLISH=0 UNSIGNED=0
+VERSION="" PUBLISH=0
 for argument in "$@"; do
   case "$argument" in
     --publish) PUBLISH=1 ;;
-    --unsigned) UNSIGNED=1 ;;
     -*) fail "unknown option $argument" ;;
     *) [ -z "$VERSION" ] || fail "one version, please."; VERSION="$argument" ;;
   esac
 done
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "usage: Scripts/release.sh <version like 1.2.3> [--publish [--unsigned]]"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "usage: Scripts/release.sh <version like 1.2.3> [--publish]"
 TAG="v$VERSION"
 # Where the zip will be downloaded from. (Another address only to try an update against a local server.)
 PREFIX="${PADDOCK_DOWNLOAD_PREFIX:-https://github.com/$REPO/releases/download/$TAG/}"
@@ -49,7 +48,6 @@ grep -q "<string>$PUBLIC</string>" "$ROOT/Resources/Info.plist" \
 
 if [ "$PUBLISH" = 1 ]; then
   command -v gh >/dev/null || fail "--publish needs the gh command."
-  [ "$UNSIGNED" = 1 ] || fail "this build is signed ad hoc, so Gatekeeper refuses it on another Mac. To publish it anyway, add --unsigned."
   [ "$(git -C "$ROOT" branch --show-current)" = "main" ] || fail "--publish releases from main; this is $(git -C "$ROOT" branch --show-current)."
   git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "the tag $TAG already exists."
 fi
@@ -87,10 +85,12 @@ grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" "$OU
 SIGNATURE="$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' "$OUT/appcast.xml" | head -n 1)"
 "$TOOLS/sign_update" --verify "$OUT/$ZIP" "$SIGNATURE" || fail "the signature in the feed does not verify $ZIP."
 rm -f "$OUT/Paddock-$VERSION.md"
+# What Scripts/install.sh checks the download against.
+(cd "$OUT" && shasum -a 256 "$ZIP" > SHA256SUMS)
 
-echo "dist/release/ holds $ZIP and appcast.xml for $TAG."
+echo "dist/release/ holds $ZIP, SHA256SUMS and appcast.xml for $TAG."
 if [ "$PUBLISH" = 0 ]; then
-  echo "Nothing was published. To publish: Scripts/release.sh $VERSION --publish --unsigned"
+  echo "Nothing was published. To publish: Scripts/release.sh $VERSION --publish"
   exit 0
 fi
 
@@ -100,8 +100,8 @@ git -C "$ROOT" diff --cached --quiet || git -C "$ROOT" commit -q -m "Release $VE
 git -C "$ROOT" tag "$TAG"
 git -C "$ROOT" push -q origin main "$TAG"
 if [ -f "$NOTES" ]; then
-  gh release create "$TAG" "$OUT/$ZIP" "$OUT/appcast.xml" -R "$REPO" --title "Paddock $VERSION" --notes-file "$NOTES"
+  gh release create "$TAG" "$OUT/$ZIP" "$OUT/SHA256SUMS" "$OUT/appcast.xml" -R "$REPO" --title "Paddock $VERSION" --notes-file "$NOTES"
 else
-  gh release create "$TAG" "$OUT/$ZIP" "$OUT/appcast.xml" -R "$REPO" --title "Paddock $VERSION" --generate-notes
+  gh release create "$TAG" "$OUT/$ZIP" "$OUT/SHA256SUMS" "$OUT/appcast.xml" -R "$REPO" --title "Paddock $VERSION" --generate-notes
 fi
 echo "Paddock $VERSION is published. Installed copies find it within a day, or from Check for Updates…"
