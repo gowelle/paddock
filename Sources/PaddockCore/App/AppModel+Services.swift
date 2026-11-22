@@ -14,6 +14,8 @@ public struct ServiceRow: Identifiable, Equatable, Sendable {
     public let canStop: Bool
     /// It has a page (Mail's inbox) and runs.
     public let canOpen: Bool
+    /// Its page is Paddock's own Mail window, not one for the browser.
+    public let opensMailWindow: Bool
     /// PostgreSQL, while it runs.
     public let canCreateDatabase: Bool
 }
@@ -75,6 +77,7 @@ extension AppModel {
             return ServiceRow(id: service.id, name: service.name, stateText: Messages.serviceState(service.state),
                               portText: Messages.servicePorts(service), notes: notes,
                               canStart: startable, canStop: stoppable, canOpen: running && service.openURL != nil,
+                              opensMailWindow: running && service.kind == "mail",
                               canCreateDatabase: running && service.kind == "postgres")
         }
     }

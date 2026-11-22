@@ -46,6 +46,10 @@ public final class MailModel: ObservableObject {
     @Published public private(set) var remoteAllowed = false
     /// One quiet line; cleared by the next read that works.
     @Published public private(set) var lastError: String?
+    /// What the list is narrowed to; empty shows every message.
+    @Published public private(set) var query = ""
+    /// True while `Clear…` is asking whether to delete every message.
+    @Published public private(set) var isAskingToClear = false
 
     /// How many messages the list holds.
     public static let listLimit = 100
@@ -69,6 +73,26 @@ public final class MailModel: ObservableObject {
     /// True when the menu should offer the Mail window: a mail service has been added.
     public var isAdded: Bool { endpoint != .notAdded }
 
+    /// True while there is a mailbox to search and clear.
+    public var isRunning: Bool {
+        if case .running = endpoint { return true }
+        return false
+    }
+
+    /// Clear… has something to delete.
+    public var canClear: Bool { isRunning && total > 0 }
+
+    /// `Delete all 3 caught messages?`
+    public var clearQuestion: String {
+        total == 1 ? "Delete the 1 caught message?" : "Delete all \(total) caught messages?"
+    }
+
+    /// The search as Mailpit gets it: nil when the field holds nothing but spaces.
+    private var search: String? {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     /// What to say in place of the list when it has nothing to show; nil while it has messages.
     public var emptyListText: String? {
         switch endpoint {
@@ -78,6 +102,7 @@ public final class MailModel: ObservableObject {
             return "Mail isn't running. Start it in Settings\u{2026} \u{2192} Services."
         case .running(_, let smtpPort):
             guard messages.isEmpty else { return nil }
+            if let search { return "No mail matches \u{201C}\(search)\u{201D}." }
             let port = smtpPort.map { " port \($0)" } ?? ""
             return "No mail yet. Point your app's mailer at 127.0.0.1\(port) and what it sends appears here."
         }
@@ -116,9 +141,16 @@ public final class MailModel: ObservableObject {
             clear()
             return
         }
+        let asked = search
         do {
-            let inbox = try await client.inbox(at: base, limit: Self.listLimit)
-            guard endpoint == found else { return }
+            let inbox: MailInbox
+            if let asked {
+                inbox = try await client.search(at: base, query: asked, limit: Self.listLimit)
+            } else {
+                inbox = try await client.inbox(at: base, limit: Self.listLimit)
+            }
+            // An answer for a search the reader has since changed is dropped; the newer one is on its way.
+            guard endpoint == found, search == asked else { return }
             if inbox.messages != messages { messages = inbox.messages }
             if inbox.unread != unread { unread = inbox.unread }
             if inbox.total != total { total = inbox.total }
@@ -126,6 +158,61 @@ public final class MailModel: ObservableObject {
             lastError = nil
         } catch {
             show(error)
+        }
+    }
+
+    /// Narrows the list to the messages matching `text`; an empty text shows them all again.
+    public func search(for text: String) async {
+        guard text != query else { return }
+        query = text
+        await refresh()
+    }
+
+    /// Deletes one message; the one open is closed first.
+    public func delete(_ id: String) async {
+        guard case .running(let base, _) = endpoint else { return }
+        do {
+            // Never an empty list here: to the mail service that means every message.
+            try await client.delete(at: base, ids: [id])
+            if selection == id { close() }
+            await refresh()
+        } catch {
+            show(error, doing: "delete the message")
+        }
+    }
+
+    /// Marks the open message unread again and closes it, so choosing it again reads it afresh.
+    public func markOpenedUnread() async {
+        guard let id = opened?.id, case .running(let base, _) = endpoint else { return }
+        do {
+            try await client.setRead(at: base, ids: [id], read: false)
+            close()
+            await refresh()
+        } catch {
+            show(error, doing: "mark the message unread")
+        }
+    }
+
+    /// `Clear…`: asks first. Nothing is deleted until `confirmClear`.
+    public func askToClear() {
+        guard canClear else { return }
+        isAskingToClear = true
+    }
+
+    public func cancelClear() {
+        isAskingToClear = false
+    }
+
+    /// Deletes every caught message, and only as the answer to the question `askToClear` put.
+    public func confirmClear() async {
+        guard isAskingToClear, case .running(let base, _) = endpoint else { return }
+        isAskingToClear = false
+        do {
+            try await client.delete(at: base, ids: [])
+            close()
+            await refresh()
+        } catch {
+            show(error, doing: "delete the mail")
         }
     }
 
@@ -229,10 +316,12 @@ public final class MailModel: ObservableObject {
         if total != 0 { total = 0 }
         if selection != nil { close() }
         if lastError != nil { lastError = nil }
+        if isAskingToClear { isAskingToClear = false }
     }
 
-    private func show(_ error: Error) {
+    /// `Paddock couldn't delete the message: Mail didn't answer.`
+    private func show(_ error: Error, doing action: String = "read the mail") {
         let sentence = (error as? MailError)?.sentence ?? MailError.unreadable.sentence
-        lastError = "Paddock couldn't read the mail: " + sentence
+        lastError = "Paddock couldn't \(action): " + sentence
     }
 }
