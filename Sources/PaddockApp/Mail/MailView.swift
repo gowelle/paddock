@@ -27,6 +27,7 @@ struct MailView: View {
         }
         .frame(minWidth: 760, minHeight: 440)
         .foregroundStyle(Theme.ink)
+        .tint(Theme.honeyText)
         .background(Theme.ground)
         // The mail service's state comes from the daemon's status, so both are read while the window shows.
         .background(VisibilityReporter { visible in
@@ -216,7 +217,7 @@ private struct MailHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(message.subject.isEmpty ? "(No subject)" : message.subject)
-                    .font(.title3.weight(.heavy))
+                    .font(Theme.heading(17))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 12)

@@ -1,3 +1,4 @@
+import AppKit
 import PaddockCore
 import SwiftUI
 
@@ -10,7 +11,7 @@ struct AboutView: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 64, height: 64)
-            Text("Paddock").font(.title2.weight(.heavy))
+            Text("Paddock").font(Theme.heading(26))
             Text("Version \(Self.version)").foregroundStyle(Theme.inkMuted)
             TabView {
                 textPanel("Paddock License", text: Self.license)
@@ -23,6 +24,7 @@ struct AboutView: View {
         .padding(20)
         .frame(width: 560, height: 500)
         .foregroundStyle(Theme.ink)
+        .tint(Theme.honeyText)
         .background(Theme.ground)
     }
 
@@ -31,22 +33,20 @@ struct AboutView: View {
     }
 
     private func textPanel(_ title: String, text: String) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title).font(.headline)
-                Text(text)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(8)
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title).font(.headline).padding([.top, .horizontal], 8)
+            LongText(text: text)
         }
         .background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
     }
 
-    static var license: String {
+    static let license = loadLicense()
+    /// `THIRD-PARTY-NOTICES` from the bundle's resources (the repo root when run from a build folder).
+    static let notices = loadNotices()
+
+    private static func loadLicense() -> String {
         let candidates = [
             Bundled.resources.appendingPathComponent("LICENSE"),
             Bundled.resources.deletingLastPathComponent().appendingPathComponent("LICENSE"),
@@ -57,8 +57,7 @@ struct AboutView: View {
         return "LICENSE is missing from this build."
     }
 
-    /// `THIRD-PARTY-NOTICES` from the bundle's resources (the repo root when run from a build folder).
-    static var notices: String {
+    private static func loadNotices() -> String {
         let candidates = [
             Bundled.resources.appendingPathComponent("THIRD-PARTY-NOTICES"),
             Bundled.resources.deletingLastPathComponent().appendingPathComponent("THIRD-PARTY-NOTICES"),
@@ -67,5 +66,34 @@ struct AboutView: View {
             if let text = try? String(contentsOf: file, encoding: .utf8) { return text }
         }
         return "THIRD-PARTY-NOTICES is missing from this build."
+    }
+}
+
+/// A long plain text, selectable and scrolling. The notices are thousands of lines: AppKit's text view lays out
+/// only what is on show, where a SwiftUI `Text` measures all of it before drawing any.
+struct LongText: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = false
+        guard let view = scroll.documentView as? NSTextView else { return scroll }
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.textContainerInset = NSSize(width: 8, height: 8)
+        view.textContainer?.lineFragmentPadding = 0
+        scroll.scrollerStyle = .overlay
+        view.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize - 1, weight: .regular)
+        view.textColor = NSColor(Theme.ink)
+        view.layoutManager?.allowsNonContiguousLayout = true
+        view.string = text
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? NSTextView, view.string != text else { return }
+        view.string = text
     }
 }

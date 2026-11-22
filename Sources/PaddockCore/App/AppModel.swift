@@ -98,6 +98,9 @@ public final class AppModel: ObservableObject {
     public private(set) var ownsDaemon = false
 
     public static let unavailableCaption = "Not available for this Paddock home."
+    /// What the login setting starts: the part that serves, not this app's window on it.
+    public static let startsAtLoginCaption =
+        "Your sites, services and tasks start when you log in. The menu bar app opens when you open it."
     /// The action offered while setup is unfinished; it runs the same start path.
     public static let finishSetupTitle = "Finish Setup\u{2026}"
     /// The action offered while the web ports are held; it runs the same start path.

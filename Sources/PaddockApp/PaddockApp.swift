@@ -6,6 +6,7 @@ import SwiftUI
 enum Entry {
     @MainActor static func main() {
         let arguments = CommandLine.arguments
+        Theme.registerFonts()
         if let index = arguments.firstIndex(of: "--snapshots") {
             let directory = arguments.count > index + 1 ? arguments[index + 1] : "dist/snapshots"
             exit(Snapshots.write(to: URL(fileURLWithPath: directory, isDirectory: true)) ? 0 : 1)
@@ -70,7 +71,7 @@ struct LicenseAcceptanceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Paddock License Agreement")
-                .font(.title2.weight(.heavy))
+                .font(Theme.heading(22))
             Text("Review the license before using Paddock.")
                 .foregroundStyle(Theme.inkMuted)
             ScrollView {
@@ -98,6 +99,7 @@ struct LicenseAcceptanceView: View {
         .padding(20)
         .frame(width: 640)
         .foregroundStyle(Theme.ink)
+        .tint(Theme.honeyText)
         .background(Theme.ground)
     }
 }

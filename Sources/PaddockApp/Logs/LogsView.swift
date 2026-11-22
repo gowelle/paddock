@@ -20,6 +20,7 @@ struct LogsView: View {
         }
         .frame(minWidth: 760, minHeight: 420)
         .foregroundStyle(Theme.ink)
+        .tint(Theme.honeyText)
         .background(Theme.ground)
         // The list of logs comes from the daemon's status, so both are read while the window shows.
         .background(VisibilityReporter { visible in

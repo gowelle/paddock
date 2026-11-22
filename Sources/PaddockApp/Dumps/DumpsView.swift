@@ -51,6 +51,7 @@ struct DumpsView: View {
         }
         .frame(minWidth: 520, minHeight: 360)
         .foregroundStyle(Theme.ink)
+        .tint(Theme.honeyText)
         .background(Theme.ground)
         // Listening lasts as long as the window is open (not only while it is in front): closing it is what
         // sends dumps back to the page.

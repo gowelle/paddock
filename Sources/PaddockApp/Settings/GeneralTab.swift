@@ -14,7 +14,7 @@ struct GeneralTab: View {
                         get: { model.startsAtLogin },
                         set: { on in Task { await model.setStartsAtLogin(on) } }))
                         .disabled(!model.systemIntegrationEnabled)
-                    if !model.systemIntegrationEnabled { Caption(AppModel.unavailableCaption) }
+                    Caption(model.systemIntegrationEnabled ? AppModel.startsAtLoginCaption : AppModel.unavailableCaption)
                 }
 
                 Section("Sites folders") {

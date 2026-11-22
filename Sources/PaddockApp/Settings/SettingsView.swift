@@ -42,10 +42,24 @@ extension View {
 extension View {
     /// A table drawn on the design system's surface, with a hairline edge, instead of the system's white.
     func tableSurface() -> some View {
-        scrollContentBackground(.hidden)
+        plainRows()
+            .scrollContentBackground(.hidden)
             .background(Theme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
+    }
+}
+
+extension View {
+    /// Without the system's alternating row stripes, which are white in the light appearance and would sit on
+    /// the theme's surface as bars. (The system offers this from macOS 14; on 13 the stripes stay.)
+    @ViewBuilder
+    func plainRows() -> some View {
+        if #available(macOS 14, *) {
+            alternatingRowBackgrounds(.disabled)
+        } else {
+            self
+        }
     }
 }
 

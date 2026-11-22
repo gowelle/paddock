@@ -598,7 +598,7 @@ Tests/
   IntegrationTests/   End-to-end tests.
   PaddockTestSupport/ Shared test helpers.
   FakeService/        A stand-in service for the service framework's tests.
-Resources/        App icon, Info.plist, service recipes and the vendored router.
+Resources/        App icon, headline font, Info.plist, service recipes and the vendored router.
 Scripts/          Fetch, build and bundle scripts; version lock file.
 Vendor/           Fetched third-party binaries (gitignored).
 docs/images/      The pictures in this README.
@@ -614,8 +614,8 @@ and derivative works are not permitted. See [LICENSE](LICENSE).
 
 The Paddock source is public for transparency only; no open-source license is
 granted by its availability. Third-party components bundled with Paddock
-(Caddy, PHP, Composer, the Valet router, swift-argument-parser, and the
-libraries inside Paddock's PHP builds) are licensed under their own terms. See
+(Caddy, PHP, Xdebug, Composer, the Valet router, swift-argument-parser, the
+Bricolage Grotesque typeface, and the libraries inside Paddock's PHP builds) are licensed under their own terms. See
 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
 
 ## Contributing
