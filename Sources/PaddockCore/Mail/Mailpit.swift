@@ -227,6 +227,16 @@ public protocol MailClient: Sendable {
     func part(at base: URL, messageID: String, partID: String) async throws -> Data
 }
 
+/// The reading part of the mail service, and no more of it: what `paddock mcp` is given, so nothing it does can
+/// delete a message or mark one. (Asking for a whole message still marks it read in Mailpit, as opening it does.)
+public protocol MailReading: Sendable {
+    func inbox(at base: URL, limit: Int) async throws -> MailInbox
+    func search(at base: URL, query: String, limit: Int) async throws -> MailInbox
+    func message(at base: URL, id: String) async throws -> MailMessage
+}
+
+extension HTTPMailClient: MailReading {}
+
 /// Mailpit's HTTP API on loopback.
 public struct HTTPMailClient: MailClient {
     private let session: URLSession
