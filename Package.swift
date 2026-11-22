@@ -13,6 +13,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        // The updater. A prebuilt framework from its publisher, pinned; Scripts/bundle.sh puts it in the app.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         .target(name: "PaddockCore"),
@@ -24,7 +26,12 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
-        .executableTarget(name: "PaddockApp", dependencies: ["PaddockCore"]),
+        .executableTarget(
+            name: "PaddockApp",
+            dependencies: ["PaddockCore", .product(name: "Sparkle", package: "Sparkle")],
+            // In the app bundle the framework is in Contents/Frameworks, beside Contents/MacOS.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
+        ),
         // C, because Swift cannot see launch_activate_socket from <launch.h>.
         .executableTarget(name: "paddock-ports"),
         .target(name: "PaddockTestSupport", dependencies: ["PaddockCore"], path: "Tests/PaddockTestSupport"),

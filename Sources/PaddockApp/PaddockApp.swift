@@ -134,10 +134,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let logs = LogsModel(find: { LogCatalog.sections(paths: .current, status: model.status) },
                                 reveal: { NSWorkspace.shared.activateFileViewerSelecting([$0]) })
 
+    /// Checks for a newer Paddock once a day and when asked. Made at launch, so the daily check runs
+    /// without the menu ever being opened.
+    static let updates = Updates()
+
     /// Reads the mail service wherever the daemon's status says it answers.
     static let mail = MailModel(client: HTTPMailClient(), services: { model.status?.services ?? [] })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = Self.updates
         if UserDefaults.standard.bool(forKey: Self.licenseAcceptedKey) {
             // Every accepted launch: start Paddock exactly as `paddock start` does.
             Task {

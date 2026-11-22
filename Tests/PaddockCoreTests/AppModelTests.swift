@@ -345,6 +345,17 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(services.startCalls, 1)
     }
 
+    func testLaunchStartsAgainWhenTheDaemonIsFromAnotherBuild() async {
+        // Paddock updated itself while its daemon ran: starting is what replaces the daemon.
+        let services = FakeServices()
+        var status = sampleStatus()
+        status.version = PaddockBuild.number - 1
+        let stale = status
+        let model = AppModel(client: FakeClient { _ in .ok(stale) }, services: services)
+        await model.launch()
+        XCTAssertEqual(services.startCalls, 1)
+    }
+
     func testStopUsesTheServicesAndShowsStopped() async {
         let client = FakeClient { _ in .ok(sampleStatus()) }
         let services = FakeServices()
