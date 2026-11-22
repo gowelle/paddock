@@ -13,6 +13,7 @@
   <a href="#what-you-get">What you get</a> ·
   <a href="#the-paddock-cli">CLI</a> ·
   <a href="#services">Services</a> ·
+  <a href="#the-mail-window">Mail</a> ·
   <a href="#site-tasks-and-paddockjson">Site tasks</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#building-from-source">Build</a>
@@ -47,6 +48,7 @@ you a question Paddock could answer itself.
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [The menu-bar app](#the-menu-bar-app)
+  - [The Mail window](#the-mail-window)
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
@@ -71,6 +73,7 @@ you a question Paddock could answer itself.
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
 | **One-action services** | Add PostgreSQL, Redis (Valkey), Meilisearch or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
+| **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
 
 ## Requirements
@@ -112,7 +115,16 @@ you a question Paddock could answer itself.
 
    PostgreSQL 18 is downloaded, initialized and started, and its `.env` lines
    are printed.
-7. **Keep a Laravel project's workers running.** Inside the project:
+7. **Catch your app's mail.**
+
+   ```sh
+   paddock service add mail
+   ```
+
+   Put the `.env` lines it prints into your app. Mail the app sends now stops
+   at Paddock instead of going out, and you read it from the menu's **Mail**
+   row. See [The Mail window](#the-mail-window).
+8. **Keep a Laravel project's workers running.** Inside the project:
 
    ```sh
    paddock tasks init
@@ -123,9 +135,9 @@ you a question Paddock could answer itself.
 
 ## The menu-bar app
 
-The menu shows whether Paddock is running, your sites and the default PHP
-version. Everything else lives in Settings…, in five tabs: General, PHP, Sites,
-Services and Tasks.
+The menu shows whether Paddock is running, your sites, the default PHP version
+and, once a mail service is added, your unread mail. Settings… has five tabs:
+General, PHP, Sites, Services and Tasks.
 
 <p align="center">
   <img src="docs/images/settings-sites-light.png" width="420" alt="The Sites tab: each site with a Secure checkbox and a PHP version picker">
@@ -147,8 +159,30 @@ Services and Tasks.
 When something else holds ports 80 or 443, the menu names the program and
 offers to quit it. Paddock never fights another web server for its ports.
 
-The pictures above are rendered from sample data by the app's own snapshot
-tool (`PaddockApp --snapshots <dir>`).
+### The Mail window
+
+Once the mail service is added, the menu gains a **Mail** row with the unread
+count. It opens a window listing the mail your apps sent to the catcher,
+newest first, updated as mail arrives.
+
+<p align="center">
+  <img src="docs/images/mail-text-light.png" width="720" alt="The Mail window: caught messages on the left, the chosen message's headers, text and attachment on the right">
+</p>
+
+- Read a message as **HTML**, **Text** or **Source** (exactly as it arrived,
+  headers included).
+- Remote images, styles and fonts in an HTML message are **blocked until you
+  choose Load Remote Content**, so a tracking pixel is not fetched just because
+  you looked. Scripts never run, and links open in your browser.
+- Save attachments with one click.
+- Opening a message marks it read.
+
+The window needs the mail service running; when it isn't added or isn't
+running, the window says so and how to fix it. Mailpit's own web page is still
+there too: `paddock service open mail`.
+
+The pictures in this section are rendered from sample data by the app's own
+snapshot tool (`PaddockApp --snapshots <dir>`).
 
 ## The `paddock` CLI
 
@@ -234,7 +268,7 @@ initializes and starts a service with working defaults. There are no forms.
 | `postgres` | PostgreSQL | 18, 17, 16 | Includes PostGIS 3.6.4 (no raster or topology). |
 | `redis` | Redis (Valkey) | 9 | Valkey, a Redis-compatible server. Laravel's Redis client works unchanged. Bundled, so adding it needs no download. |
 | `meilisearch` | Meilisearch | 1.57 | A random master key is generated per instance and shown in its `.env`. Search indexes are tied to the series. |
-| `mail` | Mail (Mailpit) | 1 | An SMTP catcher on port 1025 with a web page and API on port 8025. |
+| `mail` | Mail (Mailpit) | 1 | An SMTP catcher on port 1025 with a web page and API on port 8025. Paddock's [Mail window](#the-mail-window) reads from it. |
 
 Every service:
 

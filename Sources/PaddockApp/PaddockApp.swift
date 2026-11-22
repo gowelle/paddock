@@ -17,14 +17,23 @@ enum Entry {
 struct PaddockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var model = AppDelegate.model
+    @ObservedObject private var mail = AppDelegate.mail
 
     var body: some Scene {
         // Window style, so the menu's content is one plain SwiftUI view the snapshot tool can render too.
         MenuBarExtra("Paddock", systemImage: "pedestrian.gate.closed") {
             MenuContentView()
                 .environmentObject(model)
+                .environmentObject(mail)
         }
         .menuBarExtraStyle(.window)
+
+        Window("Mail", id: MailView.windowID) {
+            MailView()
+                .environmentObject(model)
+                .environmentObject(mail)
+        }
+        .defaultSize(MailView.size)
 
         Settings {
             SettingsView()
@@ -93,6 +102,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         copyText: Pasteboard.copy,
                         open: { NSWorkspace.shared.open($0) })
     }()
+
+    /// Reads the mail service wherever the daemon's status says it answers.
+    static let mail = MailModel(client: HTTPMailClient(), services: { model.status?.services ?? [] })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if UserDefaults.standard.bool(forKey: Self.licenseAcceptedKey) {
