@@ -12,8 +12,16 @@ final class Updates: ObservableObject {
     /// Whether a check can start now (not while one is under way).
     @Published private(set) var canCheck = false
     private let controller: SPUStandardUpdaterController?
+    private let isPreview: Bool
 
-    init() {
+    /// `preview` is for the snapshot tool: the menu shows its row as a built app does, and nothing checks.
+    init(preview: Bool = false) {
+        isPreview = preview
+        if preview {
+            controller = nil
+            canCheck = true
+            return
+        }
         guard Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") is String else {
             controller = nil
             return
@@ -25,7 +33,7 @@ final class Updates: ObservableObject {
     }
 
     /// Whether this build can update itself at all.
-    var isAvailable: Bool { controller != nil }
+    var isAvailable: Bool { controller != nil || isPreview }
 
     /// The menu's "Check for Updates…": Sparkle's window says what it found.
     func check() {

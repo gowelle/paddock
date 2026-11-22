@@ -136,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Checks for a newer Paddock once a day and when asked. Made at launch, so the daily check runs
     /// without the menu ever being opened.
-    static let updates = Updates()
+    static let updates = Updates(preview: CommandLine.arguments.contains("--snapshots"))
 
     /// Reads the mail service wherever the daemon's status says it answers.
     static let mail = MailModel(client: HTTPMailClient(), services: { model.status?.services ?? [] })

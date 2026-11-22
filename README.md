@@ -43,7 +43,7 @@ offline. No Homebrew, no MacPorts, nothing else to install, and nothing asks
 you a question Paddock could answer itself.
 
 <p align="center">
-  <img src="docs/images/menu-running-light.png" width="280" alt="Paddock's menu bar menu: Running, Sites, PHP 8.5, Open Sites Folder, Stop, Settings, About, Quit">
+  <img src="docs/images/menu-running-light.png" width="280" alt="Paddock's menu bar menu: Running, Sites, PHP 8.5, Logs, Dumps, Open Sites Folder, Stop, Settings, About Paddock, Check for Updates, Quit">
   &nbsp;&nbsp;
   <img src="docs/images/menu-running-dark.png" width="280" alt="The same menu in dark appearance">
 </p>
