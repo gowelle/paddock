@@ -1,0 +1,53 @@
+name: Something isn't working
+description: A site that isn't served, a service that won't start, a window that shows the wrong thing.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Paddock runs on Intel Macs with macOS 13 or later.
+        Please leave out passwords, tokens and anything private from logs and paths.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what Paddock did instead. The exact words of any message help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      placeholder: |
+        1. paddock park ~/Sites
+        2. Open https://mysite.test
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Paddock version
+      description: From About Paddock in the menu.
+      placeholder: 0.1.1
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 15.6, iMac 2019 (Intel)
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `paddock status`
+      description: Paste what it prints. If the command itself fails, paste that.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The lines around the problem, from the Logs window (Paddock, Web server, or the service or task concerned).
+      render: text

@@ -634,6 +634,9 @@ and `Scripts/build-valkey.sh`. The locked versions and checksums live in
 swift test
 ```
 
+The unit tests run on every push and pull request, on an Intel Mac
+([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+
 - [`Tests/PaddockCoreTests`](Tests/PaddockCoreTests): unit tests for the core
   library (Caddyfile generation, DNS messages, IPC, PHP resolution, path and
   port handling, the app model, and more).
@@ -690,3 +693,7 @@ a contribution you grant the owner the rights described in
 [CONTRIBUTING.md](CONTRIBUTING.md). Please read it before opening a pull
 request, and do not submit confidential, third-party, patented, or GPL/LGPL
 code without prior written approval.
+
+Found a problem or have an idea? [Open an issue](https://github.com/gowelle/paddock/issues/new/choose).
+Please report security problems
+[privately](https://github.com/gowelle/paddock/security/advisories/new).
