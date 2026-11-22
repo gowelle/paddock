@@ -109,7 +109,7 @@ Tests/
   - `struct Bundled { static var resources: URL }` — the directory holding `caddy`, `composer.phar`, `router/`, `php/`, `php-manifest.json`. Resolves to `Paddock.app/Contents/Resources` when run from a bundle, else `PADDOCK_RESOURCES`, else `<repo>/Vendor`.
   - `Vendor/` layout after `fetch-vendor.sh`: `Vendor/caddy`, `Vendor/composer.phar`, `Vendor/php/<version>/default/{php,php-fpm}`, `Vendor/router` (symlink to `Resources/router`), `Vendor/php-manifest.json` (copy).
 
-- [ ] **Step 1:** `git init` in `/Users/johngowelle/Code/paddock`; add `.gitignore`; commit the existing `docs/`.
+- [ ] **Step 1:** `git init` in the project folder; add `.gitignore`; commit the existing `docs/`.
 - [ ] **Step 2:** Write `Package.swift`: tools version 6.0, `swiftLanguageModes: [.v5]`, macOS 13, dependency `swift-argument-parser` (from 1.3.0); targets `PaddockCore` (library), `paddockd`, `paddock`, `PaddockApp` (executables), `PaddockCoreTests`, `IntegrationTests`.
 - [ ] **Step 3:** Write the failing test.
 
