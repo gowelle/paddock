@@ -26,6 +26,7 @@
   <a href="#services">Services</a> ·
   <a href="#the-mail-window">Mail</a> ·
   <a href="#site-tasks-and-paddockjson">Site tasks</a> ·
+  <a href="#using-paddock-from-an-ai-agent">AI agents</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#building-from-source">Build</a>
 </p>
@@ -69,6 +70,7 @@ you a question Paddock could answer itself.
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
+- [Using Paddock from an AI agent](#using-paddock-from-an-ai-agent)
 - [How it works](#how-it-works)
 - [Files and directories](#files-and-directories)
 - [Environment variables](#environment-variables)
@@ -460,6 +462,12 @@ A service's name is like `mail` or `postgres-18`. A version is a series such as
 | `paddock tasks restart <task>` | Restart a task. |
 | `paddock tasks logs <task> [-f] [-n <n>]` | Show the end of a task's log, optionally following it. |
 
+### AI agents
+
+| Command | What it does |
+|---|---|
+| `paddock mcp [--read-only] [--no-logs]` | Serve Paddock to an AI agent over the Model Context Protocol. See [Using Paddock from an AI agent](#using-paddock-from-an-ai-agent). |
+
 ## Services
 
 `paddock service available` lists what Paddock can add. One action downloads,
@@ -519,6 +527,79 @@ review the new one.
 Tasks run in the site's folder, with that site's PHP version and your login
 shell's environment. The daemon supervises each one in its own process group:
 restart with backoff, and a clean SIGTERM-then-SIGKILL shutdown.
+
+## Using Paddock from an AI agent
+
+`paddock mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server, so an AI coding agent can ask Paddock about your local environment
+instead of guessing: a site's address and PHP version, a database's port and
+`.env` lines, what a log just said, whether the mail arrived. It can also make
+a few small changes for you.
+
+Add it to your agent as a server whose command is `paddock mcp`. Most clients
+take a configuration like this:
+
+```json
+{
+  "mcpServers": {
+    "paddock": { "command": "paddock", "args": ["mcp"] }
+  }
+}
+```
+
+If the client can't find `paddock` (an app started from the Dock doesn't read
+your terminal's settings), give the full path instead:
+`/Applications/Paddock.app/Contents/MacOS/paddock`.
+
+There is nothing to install or keep running. The client starts `paddock mcp`
+when it needs it, and it talks to Paddock the same way the `paddock` command
+does. It opens no network port.
+
+**What an agent can see**
+
+| Tool | What it gives |
+|---|---|
+| `status` | Whether Paddock is running, every site (name, URL, folder, PHP version, HTTPS), the installed PHP versions, and every service with its state, ports and `.env` lines, without the keys Paddock generated. |
+| `site` | One site and its tasks, by name or by any folder inside it. |
+| `logs_list`, `logs_read` | The logs the Logs window shows, and the last lines of one (up to 500, optionally only lines mentioning a word). |
+| `mail_list`, `mail_read` | The mail your applications sent, and one message's text and attachment names. Reading a message marks it read, as opening it in the Mail window does. |
+
+**What an agent can change**
+
+| Tool | What it does |
+|---|---|
+| `site_php` | Pin a site to an installed PHP version, or put it back on the default. |
+| `xdebug` | Switch Xdebug on or off for an installed PHP version. |
+| `service_control` | Start, stop or restart a service you added. |
+| `database_create` | Create a database in a running PostgreSQL or MySQL service. |
+| `task_control` | Start, stop or restart a site task you already approved. |
+
+None of them removes anything, and all but creating a database are undone with
+the same tool. `paddock mcp --read-only` leaves them all out.
+
+**What an agent cannot do**, whatever it is asked:
+
+- Approve a site's `paddock.json`. Deciding which commands run on your Mac
+  stays yours, in the app or with `paddock tasks on`. If the file changes after
+  you approved it, the version you approved is the one that keeps running.
+- Change what macOS trusts, or turn HTTPS on or off for a site (turning it on
+  can ask for your password).
+- Remove a service, its data or a PHP version, or stop or uninstall Paddock.
+- Read the keys Paddock generated for a service, such as a search key. `status`
+  gives the `.env` lines without them.
+- Change which folders are served, or the default PHP version.
+- Download anything: install a PHP version, add or update a service.
+
+**Logs are passed on as they are.** `logs_read` gives an agent what your
+applications and tasks wrote, for every site, and that can include a token or
+a request's contents. Only logs the Logs window lists can be read, never a
+file of the agent's choosing, and a site's log is read only if it really is
+inside that site's folder. If you would rather an agent saw no logs at all,
+use `paddock mcp --no-logs`.
+
+Logs and mail contain text that came from outside (a form someone filled in,
+a webhook). The tools tell the agent to treat that text as data, not as
+instructions, but how well it does so is up to the agent.
 
 ## How it works
 
