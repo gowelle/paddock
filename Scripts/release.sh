@@ -81,7 +81,7 @@ cp "$ROOT/dist/$ZIP" "$OUT/$ZIP"
 NOTES="$ROOT/docs/releases/$VERSION.md"
 if [ -f "$NOTES" ]; then cp "$NOTES" "$OUT/Paddock-$VERSION.md"; fi
 
-# The earlier releases a delta is made from, and the feed as it stands (its entries are kept as they are).
+# The earlier releases a delta is made from.
 EARLIER="$(gh release list -R "$REPO" --exclude-drafts --exclude-pre-releases --limit 20 --json tagName -q '.[].tagName' \
   | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "$TAG" | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n "$DELTAS" || true)"
 mkdir -p "$CACHE"
@@ -97,16 +97,17 @@ for tag in $EARLIER; do
   fi
   cp "$CACHE/$old" "$OUT/$old"
 done
-if [ -n "$EARLIER" ]; then
-  gh release download "$(tail -n 1 <<< "$EARLIER")" -R "$REPO" -p appcast.xml -D "$OUT" \
-    || fail "the current update feed could not be downloaded."
-fi
 
 echo "Writing the update feed…"
 # Signs the zip (and each delta) with the Keychain's key and adds one entry for this version.
 "$TOOLS/generate_appcast" --download-url-prefix "$PREFIX" --link "https://github.com/$REPO" \
   --embed-release-notes --maximum-deltas "$DELTAS" -o "$OUT/appcast.xml" "$OUT" >/dev/null
 for tag in $EARLIER; do rm -f "$OUT/Paddock-${tag#v}.zip"; done
+# The tool also lists the earlier zips, at this release's address, where they are not. The feed names this
+# version only: it is the one every copy updates to.
+[ -f "$OUT/appcast.xml" ] || fail "no update feed was written."
+VERSION="$VERSION" perl -0pi -e 's{[ \t]*<item>.*?</item>\n?}{ index($&, "<sparkle:shortVersionString>$ENV{VERSION}</sparkle:shortVersionString>") >= 0 ? $& : "" }gse' "$OUT/appcast.xml"
+[ "$(grep -c '<item>' "$OUT/appcast.xml")" = 1 ] || fail "the update feed should name exactly one version."
 [ -f "$OUT/appcast.xml" ] || fail "no update feed was written."
 grep -q "sparkle:edSignature=" "$OUT/appcast.xml" || fail "the update feed has no signature for $ZIP."
 grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" "$OUT/appcast.xml" \

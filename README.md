@@ -614,7 +614,10 @@ Scripts/release.sh 0.2.0 --publish   # also commit, tag, push, create the GitHub
 `Scripts/release.sh` writes the version, raises the build number, runs
 `Scripts/bundle.sh`, signs the zip with the update key in the login Keychain
 and writes `appcast.xml`, the feed installed copies read, and `SHA256SUMS`,
-which `Scripts/install.sh` checks the download against. `--publish` runs
+which `Scripts/install.sh` checks the download against. It also fetches the last
+two releases and makes a delta from each, so a copy that is one or two
+versions behind downloads only what changed (a few kilobytes when little
+did) instead of the whole app. `--publish` runs
 from `main` only. Release notes in
 `docs/releases/<version>.md` appear in the update window and on GitHub.
 
