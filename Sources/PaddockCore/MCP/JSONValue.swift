@@ -89,7 +89,9 @@ public enum JSONValue: Codable, Equatable, Sendable {
     static func strings(_ values: [String]) -> JSONValue { .array(values.map(JSONValue.string)) }
 }
 
-extension JSONValue: ExpressibleByStringLiteral, ExpressibleByBooleanLiteral, ExpressibleByIntegerLiteral {
+extension JSONValue: ExpressibleByStringLiteral, ExpressibleByBooleanLiteral, ExpressibleByIntegerLiteral,
+    ExpressibleByFloatLiteral {
+    public init(floatLiteral value: Double) { self = .number(value) }
     public init(stringLiteral value: String) { self = .string(value) }
     public init(booleanLiteral value: Bool) { self = .bool(value) }
     public init(integerLiteral value: Int) { self = .number(Double(value)) }
