@@ -559,7 +559,7 @@ does. It opens no network port.
 
 | Tool | What it gives |
 |---|---|
-| `status` | Whether Paddock is running, every site (name, URL, folder, PHP version, HTTPS), the installed PHP versions, and every service with its state, ports and `.env` lines, without secrets. |
+| `status` | Whether Paddock is running, every site (name, URL, folder, PHP version, HTTPS), the installed PHP versions, and every service with its state, ports and `.env` lines, without the keys Paddock generated. |
 | `site` | One site and its tasks, by name or by any folder inside it. |
 | `logs_list`, `logs_read` | The logs the Logs window shows, and the last lines of one (up to 500, optionally only lines mentioning a word). |
 | `mail_list`, `mail_read` | The mail your applications sent, and one message's text and attachment names. Reading a message marks it read, as opening it in the Mail window does. |
@@ -574,8 +574,8 @@ does. It opens no network port.
 | `database_create` | Create a database in a running PostgreSQL or MySQL service. |
 | `task_control` | Start, stop or restart a site task you already approved. |
 
-Each of these is undone with the same tool. `paddock mcp --read-only` leaves
-them all out.
+None of them removes anything, and all but creating a database are undone with
+the same tool. `paddock mcp --read-only` leaves them all out.
 
 **What an agent cannot do**, whatever it is asked:
 
@@ -585,15 +585,16 @@ them all out.
 - Change what macOS trusts, or turn HTTPS on or off for a site (turning it on
   can ask for your password).
 - Remove a service, its data or a PHP version, or stop or uninstall Paddock.
-- Read a service's secrets, such as a search key. `status` gives the `.env`
-  lines without them.
+- Read the keys Paddock generated for a service, such as a search key. `status`
+  gives the `.env` lines without them.
 - Change which folders are served, or the default PHP version.
 - Download anything: install a PHP version, add or update a service.
 
 **Logs are passed on as they are.** `logs_read` gives an agent what your
 applications and tasks wrote, for every site, and that can include a token or
 a request's contents. Only logs the Logs window lists can be read, never a
-file of the agent's choosing. If you would rather an agent saw no logs at all,
+file of the agent's choosing, and a site's log is read only if it really is
+inside that site's folder. If you would rather an agent saw no logs at all,
 use `paddock mcp --no-logs`.
 
 Logs and mail contain text that came from outside (a form someone filled in,

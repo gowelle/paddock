@@ -45,7 +45,7 @@ extension MCPTools {
         MCPToolDefinition(
             name: "task_control",
             description: "Starts, stops or restarts one of a site's tasks. Only tasks the owner has approved run; "
-                + "approving a site's paddock.json is the owner's to do, in Paddock or with: paddock tasks approve",
+                + "approving a site's paddock.json is the owner's to do, in Paddock or with: paddock tasks on",
             inputSchema: mcpSchema([
                 "site": .object(["type": "string", "description": "The site's name: shop or shop.test."]),
                 "task": .object(["type": "string", "description": "The task's name, from the site tool."]),
