@@ -47,6 +47,10 @@ enum Snapshots {
              MailView.size),
             ("mail-no-match", AnyView(MailView().environmentObject(running).environmentObject(mailModel(searching: "invoice"))),
              MailView.size),
+            ("logs", AnyView(LogsView().environmentObject(running).environmentObject(logsModel(filter: ""))), LogsView.size),
+            ("logs-filtered", AnyView(LogsView().environmentObject(running).environmentObject(logsModel(filter: "payment"))),
+             LogsView.size),
+            ("logs-none", AnyView(LogsView().environmentObject(running).environmentObject(LogsModel(find: { [] }))), LogsView.size),
             ("mail-none", AnyView(MailView().environmentObject(running).environmentObject(noMail)), MailView.size),
         ]
         var ok = true
@@ -164,6 +168,60 @@ enum Snapshots {
         ServiceStatus(id: id, name: name, kind: kind, version: "1", displayName: name, state: state, ports: ports,
                       env: [], openURL: openURL, dataPath: "/Users/you/Library/Application Support/Paddock/services/\(id)/data",
                       autostart: true, mainPort: ports["main"] ?? ports["smtp"], notes: notes)
+    }
+
+    // MARK: - Logs
+
+    /// A few logs, with a site's Laravel log on show: an error (its trace unfolded), a warning and ordinary lines.
+    private static func logsModel(filter: String) -> LogsModel {
+        let folder = "/Users/you/Library/Application Support/Paddock/log"
+        let site = "/Users/you/Paddock/shop/storage/logs"
+        let laravel = LogSource(title: "laravel.log", url: URL(fileURLWithPath: "\(site)/laravel.log"))
+        let sections = [
+            LogSection(title: "Paddock", sources: [
+                LogSource(title: "Paddock", url: URL(fileURLWithPath: "\(folder)/paddockd.log")),
+                LogSource(title: "Web server", url: URL(fileURLWithPath: "\(folder)/caddy.log")),
+            ]),
+            LogSection(title: "PHP", sources: [
+                LogSource(title: "PHP 8.5 errors", url: URL(fileURLWithPath: "\(folder)/php-8.5.log")),
+                LogSource(title: "PHP-FPM 8.5", url: URL(fileURLWithPath: "\(folder)/php-fpm-8.5.log")),
+            ]),
+            LogSection(title: "Services", sources: [
+                LogSource(title: "PostgreSQL 18", url: URL(fileURLWithPath: "\(folder)/service-postgres-18.log")),
+                LogSource(title: "Mail", url: URL(fileURLWithPath: "\(folder)/service-mail.log")),
+            ]),
+            LogSection(title: "shop: tasks", sources: [
+                LogSource(title: "queue", url: URL(fileURLWithPath: "\(folder)/tasks/shop/queue.log")),
+                LogSource(title: "scheduler", url: URL(fileURLWithPath: "\(folder)/tasks/shop/scheduler.log")),
+            ]),
+            LogSection(title: "shop: logs", sources: [
+                laravel,
+                LogSource(title: "payments.log", url: URL(fileURLWithPath: "\(site)/payments.log")),
+            ]),
+        ]
+        let lines = [
+            "[2026-11-22 10:14:02] local.INFO: Order 1042 placed {\"user\":7}",
+            "[2026-11-22 10:14:03] local.INFO: Payment authorised for order 1042",
+            "[2026-11-22 10:14:05] local.WARNING: Payment gateway answered slowly (2.4s)",
+            "[2026-11-22 10:14:09] local.ERROR: Call to undefined method App\\Models\\Order::ship() {\"exception\":\"[object] (Error(code: 0))",
+            "[stacktrace]",
+            "#0 /Users/you/Paddock/shop/app/Http/Controllers/OrderController.php(42): App\\Services\\Shipping->dispatch()",
+            "#1 /Users/you/Paddock/shop/vendor/laravel/framework/src/Illuminate/Routing/Controller.php(54): ...",
+            "#2 {main}",
+            "[2026-11-22 10:14:10] local.INFO: Mail queued: Your order #1042 has shipped",
+            "[2026-11-22 10:14:12] local.DEBUG: select * from \"orders\" where \"id\" = 1042 limit 1",
+        ]
+        let model = LogsModel(find: { sections }, read: { url, position in
+            guard position == nil else { return LogChunk(lines: [], position: position, restarted: false) }
+            return LogChunk(lines: url == laravel.url ? lines : [], position: LogPosition(offset: 1, file: 1), restarted: true)
+        })
+        settle {
+            model.refreshSections()
+            await model.select(laravel.id)
+            if let error = model.entries.first(where: \.isProblem) { model.toggle(error) }
+            model.setFilter(filter)
+        }
+        return model
     }
 
     // MARK: - Mail

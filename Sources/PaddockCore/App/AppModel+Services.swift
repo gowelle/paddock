@@ -200,6 +200,17 @@ extension AppModel {
         openItem?(url)
     }
 
+    /// Shows the service's log (in the Logs window, where the app has one); says so when there is none yet.
+    public func openServiceLog(_ id: String) {
+        guard let row = serviceRows.first(where: { $0.id == id }), let paths = logPaths else { return }
+        let log = paths.serviceLog(id)
+        guard FileManager.default.fileExists(atPath: log.path) else {
+            showNotice("\(row.name) hasn't written a log yet.", tasks: false)
+            return
+        }
+        show(log: log)
+    }
+
     /// Creates a database in a running PostgreSQL; a name the daemon would refuse is refused here first.
     public func createDatabase(in id: String, named database: String) async {
         // One action per service, whatever the name typed: creating any database there clears its earlier error.

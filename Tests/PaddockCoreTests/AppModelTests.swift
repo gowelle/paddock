@@ -797,6 +797,38 @@ extension AppModelTests {
         return (model, client, outside)
     }
 
+    /// A task's or a service's Open Log goes to the app's Logs window when it has one, else to the system's
+    /// handler; a log not written yet says so and opens nothing.
+    func testOpenLogShowsTheLogInTheLogsWindowWhenThereIsOne() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("pdk openlog-\(UUID().uuidString)", isDirectory: true)
+        let paths = Paths(home: home)
+        try FileManager.default.createDirectory(at: paths.log, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+        try Data("x\n".utf8).write(to: paths.serviceLog("mail"))
+        let reply = statusWith(services: [mail, postgres])
+
+        let shown = Locked<[URL]>([])
+        let opened = Locked<[URL]>([])
+        let model = AppModel(client: FakeClient { _ in .ok(reply) }, paths: paths,
+                             open: { url in opened.withValue { $0.append(url) } },
+                             showLog: { url in shown.withValue { $0.append(url) } })
+        await model.refresh()
+        model.openServiceLog("mail")
+        XCTAssertEqual(shown.value, [paths.serviceLog("mail")])
+        XCTAssertEqual(opened.value, [], "not handed to another app")
+
+        model.openServiceLog("postgres-18")
+        XCTAssertEqual(shown.value.count, 1, "nothing to show")
+        XCTAssertEqual(model.serviceNotice, "PostgreSQL 18 hasn't written a log yet.")
+
+        // Without a Logs window (as in a client that has none), the system's handler gets it.
+        let plain = AppModel(client: FakeClient { _ in .ok(reply) }, paths: paths,
+                             open: { url in opened.withValue { $0.append(url) } })
+        await plain.refresh()
+        plain.openServiceLog("mail")
+        XCTAssertEqual(opened.value, [paths.serviceLog("mail")])
+    }
+
     func testXdebugFollowsTheStatusAndSwitchingSendsTheRequest() async {
         var status = sampleStatus()
         status.xdebug = [v84]

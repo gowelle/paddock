@@ -4,6 +4,8 @@ import SwiftUI
 /// The settings window: three tabs, nothing else.
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var logs: LogsModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         TabView {
@@ -15,6 +17,11 @@ struct SettingsView: View {
         }
         .frame(width: SettingsView.size.width, height: SettingsView.size.height)
         .settingsTheme()
+        // A tab's Open Log chose a log: bring the Logs window forward to show it.
+        .onChange(of: logs.openRequests) { _ in
+            activateApp()
+            openWindow(id: LogsView.windowID)
+        }
         .background(VisibilityReporter { visible in
             visible ? model.beginWatching() : model.endWatching()
         })

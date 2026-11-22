@@ -49,6 +49,7 @@ you a question Paddock could answer itself.
 - [Quick start](#quick-start)
 - [The menu-bar app](#the-menu-bar-app)
   - [The Mail window](#the-mail-window)
+  - [The Logs window](#the-logs-window)
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
@@ -74,6 +75,7 @@ you a question Paddock could answer itself.
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
 | **One-action services** | Add PostgreSQL, MySQL, Redis (Valkey), Meilisearch, S3-compatible object storage or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
+| **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
 
@@ -151,8 +153,8 @@ General, PHP, Sites, Services and Tasks.
 - **Sites:** open a site, secure it with a checkbox, pin its PHP version.
 - **PHP:** install and remove versions, choose the default, switch Xdebug on
   or off for a version, open `php.ini`.
-- **Services:** add, start, stop, restart and remove services, and copy a
-  service's `.env` lines.
+- **Services:** add, start, stop, restart and remove services, copy a
+  service's `.env` lines, and open its log.
 - **Tasks:** review and approve a site's `paddock.json`, then start, stop and
   restart its tasks and open their logs.
 - **General:** start at login, manage parked folders, add Paddock to your
@@ -186,6 +188,34 @@ The window needs the mail service running; when it isn't added or isn't
 running, the window says so and how to fix it. The mail service's Open button
 in Settings… → Services opens this window too. Mailpit's own web page is still
 there: `paddock service open mail`.
+
+### The Logs window
+
+**Logs** in the menu opens every log in one place, grouped:
+
+- **Paddock:** the daemon and the web server.
+- **PHP:** each version's errors and PHP-FPM's own log.
+- **Services:** one per added service.
+- **A site's tasks:** one per task in its `paddock.json`.
+- **A site's logs:** every `.log` file in its `storage/logs`, `laravel.log`
+  first, then the most recently written (the newest 20).
+
+<p align="center">
+  <img src="docs/images/logs-light.png" width="760" alt="The Logs window: logs grouped on the left; a Laravel log on the right with a warning, and an error whose stack trace is unfolded">
+</p>
+
+- The chosen log shows from its end and **follows as it is written**: a new
+  line appears within about a second, with no refresh.
+- In a Laravel log, an entry's stack trace is **folded under it**; click the
+  chevron to see it. Errors are bold with a bar beside them, warnings amber.
+- **Filter** narrows to entries mentioning a word, stack traces included.
+- **Pause** stops new lines arriving while you read; it catches up when you
+  go on.
+- **Reveal in Finder** shows the file itself.
+- Open Log on a task or a service in Settings… opens this window at that log.
+
+Paddock only reads these files. It never rotates, clears or edits a site's
+own logs.
 
 The pictures in this section are rendered from sample data by the app's own
 snapshot tool (`PaddockApp --snapshots <dir>`).

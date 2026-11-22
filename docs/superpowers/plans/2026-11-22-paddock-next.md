@@ -216,37 +216,56 @@ session only when a request asks for one**.
 
 Not done:
 
-- Zed itself has not been driven: the test speaks the debugger protocol
-  directly, which is what Zed's Xdebug adapter does, but a breakpoint
-  stopping inside Zed's window is the owner's to try.
 - Xdebug is built for the two series shipped. A new PHP series needs
   `Scripts/build-xdebug.sh <series>` and its lock and manifest lines.
 - Every request enters through Paddock's router, so "break at first line"
   stops in `router/server.php`. Documented in the README; not changed.
 
-Done when: a breakpoint in the owner's editor stops on a request to a `.test`
-site, and turning it off returns PHP to its normal speed. (The second half
-is covered by the test; the first, inside Zed, is the owner's to try.)
+Done: the owner confirmed on 2026-11-22 that a breakpoint stops in Zed on
+t-market. (Zed's adapter listens on port 9003 for as long as a session runs;
+starting a second session fails with "address already in use" until the
+first is stopped.)
 
 ## Stage 4: log viewer
 
-A window for the logs Paddock already keeps under `log/`: Paddock's own,
-each service's, each site task's, and a site's Laravel log.
+Built on 2026-11-22.
 
-Decision first: **is a site's `storage/logs/laravel.log` in scope?** It is the
-log people look at most, but it belongs to the project, not Paddock.
-Recommended: yes, read-only, for Laravel sites only.
+Decided by the owner: a site's own logs are shown too, **every `.log` file in
+its `storage/logs`**, read-only.
 
-- [ ] A model that lists the logs, tails one, and follows it while the window
-      shows (bounded memory; the files are already bounded on disk).
-- [ ] A Logs window: sources on the left, the tail on the right, a filter
-      field, a pause switch, Reveal in Finder.
-- [ ] The Tasks and Services tabs' log buttons open this window at that log.
-- [ ] Laravel log entries split into level, time and message, with the stack
-      trace folded.
+- [x] `LogCatalog` lists the logs: Paddock's (daemon, web server), PHP's per
+      version, each service's, each site task's, and each site's own
+      (`laravel.log` first, then the most recently written, the newest 20;
+      regular files only, a symlink is never followed).
+- [x] `LogTail` reads a log's last 256 KB and then only what is added; a
+      rotated or cut-down file starts over; a line still being written waits
+      for its end; terminal colour sequences and control characters are
+      dropped.
+- [x] `LogParser` makes a Laravel (Monolog) entry of a line and what follows
+      it, with its level; a long trace is cut with a count. Any other log is a
+      line per entry.
+- [x] `LogsModel`: one look a second while the window shows, at most 3,000
+      entries kept, a filter (traces included), pause and catch up, fold and
+      unfold, Reveal in Finder.
+- [x] A Logs window, and a Logs row in the menu.
+- [x] Open Log on a task and (new) on a service opens the window at that log.
+- [x] Checked against the owner's real logs, read-only: every group found;
+      t-market's `laravel.log` (1,316 lines) became 252 entries with 10 traces
+      folded, in 36 ms.
+
+Not done:
+
+- Not tried by hand in the running app (scrolling to the newest line, the
+  split view, selecting text across entries).
+- Only Laravel's format gets levels and folding. PHP's, Caddy's and the
+  services' logs are shown a line at a time.
+- A site's logs are listed only for sites Paddock serves, and only directly in
+  `storage/logs` (no subfolders).
+- Nothing clears or rotates a log from the window; it only reads.
 
 Done when: an error thrown in a site shows in the window within two seconds
-without a refresh.
+without a refresh. (Covered by a test with a real file and the one-second
+look; the owner's to see in the app.)
 
 ## Stage 5: dumps window
 

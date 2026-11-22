@@ -18,6 +18,7 @@ struct PaddockApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var model = AppDelegate.model
     @ObservedObject private var mail = AppDelegate.mail
+    @ObservedObject private var logs = AppDelegate.logs
 
     var body: some Scene {
         // Window style, so the menu's content is one plain SwiftUI view the snapshot tool can render too.
@@ -35,9 +36,17 @@ struct PaddockApp: App {
         }
         .defaultSize(MailView.size)
 
+        Window("Logs", id: LogsView.windowID) {
+            LogsView()
+                .environmentObject(model)
+                .environmentObject(logs)
+        }
+        .defaultSize(LogsView.size)
+
         Settings {
             SettingsView()
                 .environmentObject(model)
+                .environmentObject(logs)
         }
 
         Window("About Paddock", id: AboutView.windowID) {
@@ -100,8 +109,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return AppModel(client: PaddockClient(), services: LiveAppServices(), quitter: AppKitQuitter(),
                         availablePHP: Array(Set(manifest)), paths: .current,
                         copyText: Pasteboard.copy,
-                        open: { NSWorkspace.shared.open($0) })
+                        open: { NSWorkspace.shared.open($0) },
+                        showLog: { log in Task { await logs.request(path: log.path) } })
     }()
+
+    /// Lists Paddock's logs and each site's own from the daemon's status, and reads the one on show.
+    static let logs = LogsModel(find: { LogCatalog.sections(paths: .current, status: model.status) },
+                                reveal: { NSWorkspace.shared.activateFileViewerSelecting([$0]) })
 
     /// Reads the mail service wherever the daemon's status says it answers.
     static let mail = MailModel(client: HTTPMailClient(), services: { model.status?.services ?? [] })
