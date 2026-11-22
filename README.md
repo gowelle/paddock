@@ -69,6 +69,7 @@ you a question Paddock could answer itself.
 | **Zero-configuration sites** | Park a directory once and every folder inside it is served at `http://<folder>.test`. Or link a single folder to `<name>.test`. |
 | **Trusted local HTTPS** | `paddock secure` serves a site over HTTPS and makes macOS trust Paddock's local certificate authority, so browsers never complain. |
 | **PHP versions side by side** | Paddock ships with the newest stable PHP. Other versions are the only downloads, and only when you ask (`paddock use 8.4`). Each site can pin its own. |
+| **Xdebug, one switch per PHP version** | Paddock's own Xdebug build loads into a PHP version when you switch it on, and starts a session only when a request asks for one. Your `php.ini` is never edited. |
 | **`php` and `composer` that follow you** | The `php` and `composer` commands in your terminal use the PHP version of the site whose folder you are in. |
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
 | **One-action services** | Add PostgreSQL, MySQL, Redis (Valkey), Meilisearch, S3-compatible object storage or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
@@ -148,7 +149,8 @@ General, PHP, Sites, Services and Tasks.
 </p>
 
 - **Sites:** open a site, secure it with a checkbox, pin its PHP version.
-- **PHP:** install and remove versions, choose the default, open `php.ini`.
+- **PHP:** install and remove versions, choose the default, switch Xdebug on
+  or off for a version, open `php.ini`.
 - **Services:** add, start, stop, restart and remove services, and copy a
   service's `.env` lines.
 - **Tasks:** review and approve a site's `paddock.json`, then start, stop and
@@ -217,6 +219,36 @@ take a site default to the one containing the current directory.
 | `paddock unisolate` | Return the current site to the default PHP version. |
 
 Paddock supports PHP 8.1 and later.
+
+### Xdebug
+
+| Command | What it does |
+|---|---|
+| `paddock xdebug` | Show which PHP versions have Xdebug on. |
+| `paddock xdebug on [8.4]` | Switch Xdebug on for a PHP version (default: the current site's, else the default). |
+| `paddock xdebug off [8.4]` | Switch it off. |
+
+Xdebug is switched per PHP version: every site on that version follows, and so
+does `php` in the terminal. Switching restarts that version's PHP-FPM, nothing
+else. While it is on:
+
+- A debugging session starts **only when asked for**: the Xdebug browser
+  extension, `?XDEBUG_TRIGGER=1` on a URL, or `XDEBUG_TRIGGER=1 php artisan …`
+  in the terminal. Other requests run as usual.
+- Your editor listens on **port 9003** on this Mac, Xdebug's default. No path
+  mappings are needed: the files are where your editor sees them. To use
+  another port or host, set `xdebug.client_port` or `xdebug.client_host` in
+  that version's `php.ini`.
+- Every request enters through Paddock's router, so with "break at first line"
+  on, your editor stops in `router/server.php` first. Set a breakpoint in your
+  own code instead.
+- `composer` never loads Xdebug.
+- For test coverage, switch Xdebug on and run
+  `XDEBUG_MODE=coverage php artisan test --coverage`.
+
+Xdebug is Paddock's own build of Xdebug 3.5.3, in the app, so switching it on
+needs no network. Paddock loads it from PHP's command line; your `php.ini` is
+never edited.
 
 ### Lifecycle
 
@@ -367,7 +399,7 @@ Everything Paddock writes lives under
 
 | Path | Contents |
 |---|---|
-| `bin/` | The `php` and `composer` shims, and `php-versions/` with installed PHP builds. |
+| `bin/` | The `php` and `composer` shims, `php-versions/` with installed PHP builds, and `php-extensions/` with Paddock's Xdebug for the versions it was switched on for. |
 | `config/` | Regenerated configuration, including the `Caddyfile` and the vendored router home. |
 | `php/` | Your PHP settings, such as `php/8.4/php.ini`. Never regenerated. |
 | `run/` | Owner-only Unix sockets and pid files. |
@@ -420,9 +452,9 @@ bundled binaries and Paddock's own PHP, PostGIS and Valkey archives (so
 installing another version needs no network), signs it ad hoc and verifies the
 signature.
 
-Paddock's own PHP, PostGIS and Valkey artifacts are built with
-`Scripts/build-php.sh`, `Scripts/build-postgis.sh` and
-`Scripts/build-valkey.sh`. The locked versions and checksums live in
+Paddock's own PHP, Xdebug, PostGIS and Valkey artifacts are built with
+`Scripts/build-php.sh`, `Scripts/build-xdebug.sh`, `Scripts/build-postgis.sh`
+and `Scripts/build-valkey.sh`. The locked versions and checksums live in
 [`Scripts/versions.lock`](Scripts/versions.lock).
 
 ## Testing

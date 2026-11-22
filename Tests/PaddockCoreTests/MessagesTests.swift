@@ -2,6 +2,17 @@ import XCTest
 @testable import PaddockCore
 
 final class MessagesTests: XCTestCase {
+    func testXdebugStatusListsEveryInstalledVersionNewestFirst() {
+        let v83 = PHPVersion("8.3")!, v84 = PHPVersion("8.4")!, v85 = PHPVersion("8.5")!
+        XCTAssertEqual(Messages.xdebugStatus(installed: [v83, v84, v85], on: [v84], available: [v84, v85]),
+                       "PHP 8.5  off\nPHP 8.4  on\nPHP 8.3  not available")
+        XCTAssertEqual(Messages.xdebugStatus(installed: [], on: [], available: []), MultiCall.noPHPMessage)
+        XCTAssertEqual(Messages.xdebugTurnedOn(v84),
+                       "Xdebug is on for PHP 8.4. It starts when a request asks for it; your editor listens on port 9003.")
+        XCTAssertEqual(Messages.xdebugTurnedOff(v84), "Xdebug is off for PHP 8.4.")
+        XCTAssertEqual(Messages.xdebugNotAvailable(v83), "Paddock has no Xdebug for PHP 8.3.")
+    }
+
     func testPortsBlockedNamesCommandAndPid() {
         let holder = PortHolder(port: 80, pid: 123, command: "nginx", ownedByCurrentUser: true)
         XCTAssertEqual(Messages.portsBlocked([holder]),

@@ -118,7 +118,7 @@ enum Snapshots {
             status = EngineStatus(running: sample == .running, blockedBy: blocked,
                                   sites: sites, installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
                                   resolverInstalled: true, trustEnabled: true, dnsRunning: true,
-                                  portHelperInstalled: true)
+                                  portHelperInstalled: true, xdebug: [v84], xdebugAvailable: [v84, v85])
         case .stopped:
             status = nil
         }

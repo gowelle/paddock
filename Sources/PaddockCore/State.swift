@@ -14,11 +14,13 @@ public struct State: Codable, Equatable, Sendable {
     public var services: [ServiceInstance]
     /// Site name -> the tasks the user approved for it (`paddock tasks on`).
     public var taskApprovals: [String: ApprovedTasks]
+    /// The PHP versions Xdebug is switched on for.
+    public var xdebug: Set<PHPVersion>
 
     public init(parked: [String] = [], links: [String: String] = [:], secured: Set<String> = [],
                 phpPins: [String: PHPVersion] = [:], defaultPHP: PHPVersion? = nil,
                 previousResolver: String? = nil, services: [ServiceInstance] = [],
-                taskApprovals: [String: ApprovedTasks] = [:]) {
+                taskApprovals: [String: ApprovedTasks] = [:], xdebug: Set<PHPVersion> = []) {
         self.parked = parked
         self.links = links
         self.secured = secured
@@ -27,10 +29,11 @@ public struct State: Codable, Equatable, Sendable {
         self.previousResolver = previousResolver
         self.services = services
         self.taskApprovals = taskApprovals
+        self.xdebug = xdebug
     }
 
     private enum CodingKeys: String, CodingKey {
-        case parked, links, secured, phpPins, defaultPHP, previousResolver, services, taskApprovals
+        case parked, links, secured, phpPins, defaultPHP, previousResolver, services, taskApprovals, xdebug
     }
 
     /// As before services existed, plus `services` (absent in older files: none) and `taskApprovals` (absent:
@@ -46,6 +49,8 @@ public struct State: Codable, Equatable, Sendable {
         services = try c.decodeIfPresent([ServiceInstance].self, forKey: .services) ?? []
         taskApprovals = ((try? c.decodeIfPresent([String: Lenient<ApprovedTasks>].self, forKey: .taskApprovals)) ?? [:])
             .compactMapValues(\.value)
+        // Absent in older files, and never worth the file: off.
+        xdebug = Set(((try? c.decodeIfPresent([Lenient<PHPVersion>].self, forKey: .xdebug)) ?? []).compactMap(\.value))
     }
 
     /// First-run state: `~/Paddock` parked, expanded to an absolute path.

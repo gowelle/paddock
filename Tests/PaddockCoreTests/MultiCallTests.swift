@@ -47,6 +47,30 @@ final class MultiCallTests: XCTestCase {
                        .exec(path: binary, arguments: [binary, "-r", "echo 1;"], setEnvironment: [:]))
     }
 
+    /// With Xdebug switched on for the version and its library in place, `php` loads it (after the ini, before
+    /// the user's own arguments); `composer` never does; and a switch with no library adds nothing.
+    func testPhpLoadsXdebugWhenItIsOnAndInstalled() throws {
+        try installPHP()
+        let binary = paths.phpDir(v85).appendingPathComponent("php").path
+        try StateStore(paths: paths).update { $0.xdebug = [self.v85] }
+        // Switched on, but no library yet: nothing is added (PHP would warn about a missing file).
+        XCTAssertEqual(plan("php", ["-v"]), .exec(path: binary, arguments: [binary, "-v"], setEnvironment: [:]))
+
+        let library = Xdebug.library(v85, paths: paths)
+        try FileManager.default.createDirectory(at: library.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("so".utf8).write(to: library)
+        let loading = ["-d", "zend_extension=\(library.path)", "-d", "xdebug.mode=debug",
+                       "-d", "xdebug.start_with_request=trigger"]
+        XCTAssertEqual(plan("php", ["artisan", "test"]),
+                       .exec(path: binary, arguments: [binary] + loading + ["artisan", "test"], setEnvironment: [:]))
+        let composer = resources.appendingPathComponent("composer.phar").path
+        XCTAssertEqual(plan("composer", ["install"]),
+                       .exec(path: binary, arguments: [binary, composer, "install"], setEnvironment: [:]))
+
+        try StateStore(paths: paths).update { $0.xdebug = [] }
+        XCTAssertEqual(plan("php", ["-v"]), .exec(path: binary, arguments: [binary, "-v"], setEnvironment: [:]))
+    }
+
     func testPhpUsesIniOnlyWhenItExists() throws {
         try installPHP()
         let binary = paths.phpDir(v85).appendingPathComponent("php").path

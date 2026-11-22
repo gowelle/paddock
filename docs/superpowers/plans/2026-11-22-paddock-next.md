@@ -171,36 +171,52 @@ lines alone, and both appear in the Services tab's Add Service… list.
 
 ## Stage 3: Xdebug toggle
 
-The core design already proved the hard part: Xdebug 3.5.0 built from source
-loads into Paddock's static PHP as a Zend extension, and the installer keeps
-`extension_dir` across PHP updates. What remains is building `xdebug.so` per
-PHP minor, shipping it, and a switch.
+Built on 2026-11-22.
 
-Decisions first:
+Decided by the owner: **one switch per PHP version**, and Xdebug **starts a
+session only when a request asks for one**.
 
-1. **Scope of the switch.** One switch per PHP version (simplest, what Herd
-   does), or per site? Recommended: per PHP version.
-2. **What "on" means.** `xdebug.mode=debug` with
-   `start_with_request=trigger` (no slowdown until a debugger asks), or
-   `start_with_request=yes`? Recommended: trigger.
+- [x] `Scripts/build-xdebug.sh`: Xdebug 3.5.3 as `xdebug.so` for each PHP
+      series Paddock ships (8.4, 8.5), locked in `Scripts/versions.lock`
+      (`xdebug-<series>`) and named by `Resources/php-manifest.json`. Pinned
+      sources, a neutral build folder, privacy and link checks and a
+      reproducible archive, as the other build scripts.
+- [x] Paddock's PHP is static, so there are no installed headers to build
+      against. The script takes the same php.net release the PHP build used,
+      installs only its headers, phpize and php-config, and refuses to build
+      unless those agree with the shipped binary on the PHP version, the API
+      numbers, thread safety, debug build, Zend signals and DTrace. The
+      shipped `php` must then load the result.
+- [x] The archives are in the app (`Resources/builds/`), so switching on needs
+      no network. `bundle.sh` and `fetch-vendor.sh` verify them.
+- [x] Loaded from PHP's command line (`-d zend_extension=…`, `xdebug.mode=debug`,
+      `xdebug.start_with_request=trigger`): the user's `php.ini` is never
+      edited, and it can still set the debugger's host and port.
+- [x] Kept in `bin/php-extensions/<version>/`, outside the PHP build's folder
+      (which an update replaces) and outside the user's `ext/`.
+- [x] Daemon request to switch it; only that version's PHP-FPM restarts. The
+      choice is saved in `state.json`.
+- [x] `paddock xdebug`, `paddock xdebug on|off [version]`; a checkbox per
+      installed version on the PHP tab.
+- [x] `php` in the terminal follows the same switch; `composer` never loads it.
+- [x] Tests: the switch against a real PHP-FPM, including a DBGp session that
+      starts on the trigger and not without it.
 
-Shape of the work:
+Not done:
 
-- [ ] `Scripts/build-xdebug.sh`: one `xdebug.so` per supported PHP minor,
-      locked in `Scripts/versions.lock` like the PHP builds.
-- [ ] Ship or download it with each PHP version (decide in the design: in the
-      PHP archive, or a separate small artifact).
-- [ ] A Paddock-owned ini fragment that loads it, so the user's `php.ini` is
-      never edited.
-- [ ] Daemon request to turn it on and off; restart only that version's FPM
-      pool.
-- [ ] `paddock xdebug on|off|status`; a switch on the PHP tab.
-- [ ] The CLI `php` follows the same setting.
-- [ ] Editor setup lines (port 9003, path mappings are not needed locally)
-      printed by `paddock xdebug status`.
+- No editor has been attached by hand. The test accepts Xdebug's connection
+  and reads its greeting, which is the same handshake an editor starts with.
+- Xdebug is built for the two series shipped. A new PHP series needs
+  `Scripts/build-xdebug.sh <series>` and its lock and manifest lines.
+- Every request enters through Paddock's router, so "break at first line"
+  stops in `router/server.php`. Documented in the README; not changed.
+- Paddock sets `xdebug.mode=debug` on the command line, so `php.ini` cannot
+  add `develop` or `coverage` for web requests. In the terminal,
+  `XDEBUG_MODE=coverage` works.
 
 Done when: a breakpoint in VS Code or PhpStorm stops on a request to a
-`.test` site, and turning it off returns PHP to its normal speed.
+`.test` site, and turning it off returns PHP to its normal speed. (The second
+half is covered by the test; the first is the owner's to try.)
 
 ## Stage 4: log viewer
 

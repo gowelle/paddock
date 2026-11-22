@@ -28,6 +28,11 @@ public struct PHPResolver {
         return paths.phpDir(v).appendingPathComponent("php")
     }
 
+    /// What loads Xdebug for `version`, when it is switched on and installed; none otherwise.
+    public func xdebugArguments(for version: PHPVersion) -> [String] {
+        Xdebug.arguments(for: version, state: StateStore(paths: paths).load(), paths: paths)
+    }
+
     /// The user's php.ini for `version`, only if the file exists.
     public func ini(for version: PHPVersion) -> URL? {
         let ini = paths.phpIni(version)

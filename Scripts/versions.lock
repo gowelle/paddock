@@ -1,8 +1,10 @@
 caddy	https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_mac_amd64.tar.gz	22af256a2cc45606f6bfa8786cd89130529331319665926f4e972234a658fb30
 php-8.5-cli	paddock-builds://php-8.5.13-cli-macos-x86_64.tar.gz	e3fa9c926675c04f1a4f6d608d0501660b4db3fc0ef022c02168e8ab7ceeda08
 php-8.5-fpm	paddock-builds://php-8.5.13-fpm-macos-x86_64.tar.gz	b1e5d774790db7f714096ed1c2acddff903388d84f83f197d3ec97e835e73f71
+xdebug-8.5	paddock-builds://xdebug-3.5.3-php8.5-macos-x86_64.tar.gz	3ccf41077871946d571fb1a9501bf3aa4e7092b2746a7783edeb2a7f0e651508
 php-8.4-cli	paddock-builds://php-8.4.28-cli-macos-x86_64.tar.gz	fe91bbdb046e985b2e5a6c789685854c4debe094cb44e5dc4bddb1804e8e547c
 php-8.4-fpm	paddock-builds://php-8.4.28-fpm-macos-x86_64.tar.gz	f5c7550bf34be9c6e5c377e8f94ddc125f3ea212bbc70bad7e491b449bb93c0a
+xdebug-8.4	paddock-builds://xdebug-3.5.3-php8.4-macos-x86_64.tar.gz	666fc2fb96751b2e332911eaaa9981405adc246abaada8fe6258fc548fe5a75c
 composer	https://getcomposer.org/download/2.11.2/composer.phar	dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028
 postgis-pg18	paddock-builds://postgis-3.6.4-pg18-macos-x86_64.tar.gz	4a6f7956d86ea2b34bed0e310470dd524d1e251a3c21699b67d8ef979b544cd4
 postgis-pg17	paddock-builds://postgis-3.6.4-pg17-macos-x86_64.tar.gz	d3da6e51565721d108273bec99c7ef6a4acee4189da737d1c439d42f15a27dda

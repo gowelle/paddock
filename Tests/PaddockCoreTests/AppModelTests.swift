@@ -797,6 +797,26 @@ extension AppModelTests {
         return (model, client, outside)
     }
 
+    func testXdebugFollowsTheStatusAndSwitchingSendsTheRequest() async {
+        var status = sampleStatus()
+        status.xdebug = [v84]
+        status.xdebugAvailable = [v84, v85]
+        let reply = status
+        let client = FakeClient { _ in .ok(reply) }
+        let model = AppModel(client: client)
+        XCTAssertFalse(model.canSwitchXdebug(v84), "nothing before the first status")
+        XCTAssertNil(model.xdebugCaption)
+        await model.refresh()
+        XCTAssertTrue(model.isXdebugOn(v84))
+        XCTAssertFalse(model.isXdebugOn(v85))
+        XCTAssertTrue(model.canSwitchXdebug(v85))
+        XCTAssertFalse(model.canSwitchXdebug(PHPVersion("8.3")!), "no Xdebug build, or not installed")
+        XCTAssertEqual(model.xdebugCaption, "Xdebug starts when a request asks for it; your editor listens on port 9003.")
+        await model.perform(.xdebug(version: v85, enabled: true))
+        XCTAssertTrue(client.requests.contains(.xdebug(version: v85, enabled: true)))
+        XCTAssertFalse(model.isSwitchingXdebug(v85), "done")
+    }
+
     func testARunningDatabaseServerOffersCreateDatabase() async {
         let mysql = service("mysql-8-4", name: "MySQL 8.4", kind: "mysql", state: .running, ports: ["main": 3306])
         let stopped = service("mysql-9-7", name: "MySQL 9.7", kind: "mysql", state: .stopped, ports: ["main": 3307])

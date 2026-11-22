@@ -13,6 +13,11 @@
         "url": "paddock-builds://php-8.4.28-fpm-macos-x86_64.tar.gz",
         "sha256": "f5c7550bf34be9c6e5c377e8f94ddc125f3ea212bbc70bad7e491b449bb93c0a",
         "size": 26338317
+      },
+      "xdebug": {
+        "url": "paddock-builds://xdebug-3.5.3-php8.4-macos-x86_64.tar.gz",
+        "sha256": "666fc2fb96751b2e332911eaaa9981405adc246abaada8fe6258fc548fe5a75c",
+        "size": 145247
       }
     },
     {
@@ -28,6 +33,11 @@
         "url": "paddock-builds://php-8.5.13-fpm-macos-x86_64.tar.gz",
         "sha256": "b1e5d774790db7f714096ed1c2acddff903388d84f83f197d3ec97e835e73f71",
         "size": 26859227
+      },
+      "xdebug": {
+        "url": "paddock-builds://xdebug-3.5.3-php8.5-macos-x86_64.tar.gz",
+        "sha256": "3ccf41077871946d571fb1a9501bf3aa4e7092b2746a7783edeb2a7f0e651508",
+        "size": 145497
       }
     }
   ]

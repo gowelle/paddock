@@ -238,6 +238,23 @@ public final class AppModel: ObservableObject {
     public var systemIntegrationEnabled: Bool { services?.isSystemIntegrationEnabled ?? false }
     public var sitesFolder: URL? { parked.first.map { URL(fileURLWithPath: $0, isDirectory: true) } }
 
+    /// Xdebug is switched on for the version.
+    public func isXdebugOn(_ v: PHPVersion) -> Bool { status?.xdebug.contains(v) ?? false }
+
+    /// The version is installed and Paddock has an Xdebug for it.
+    public func canSwitchXdebug(_ v: PHPVersion) -> Bool { status?.xdebugAvailable.contains(v) ?? false }
+
+    /// True while the version's Xdebug is being switched either way.
+    public func isSwitchingXdebug(_ v: PHPVersion) -> Bool {
+        isBusy(.xdebug(version: v, enabled: true)) || isBusy(.xdebug(version: v, enabled: false))
+    }
+
+    /// Said under the PHP list while Xdebug is on for some version; nil otherwise.
+    public var xdebugCaption: String? {
+        guard let on = status?.xdebug, !on.isEmpty else { return nil }
+        return "Xdebug starts when a request asks for it; your editor listens on port 9003."
+    }
+
     /// The version's user-edited php.ini, once it exists.
     public func phpIni(_ v: PHPVersion) -> URL? {
         guard let ini = paths?.phpIni(v), FileManager.default.fileExists(atPath: ini.path) else { return nil }

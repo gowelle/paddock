@@ -94,6 +94,13 @@ public struct Paths: Sendable {
             .appendingPathComponent(variant, isDirectory: true)
     }
 
+    /// Extensions Paddock adds to a PHP version (Xdebug): outside the version's own folder, which an update
+    /// replaces, and outside the user's `ext/`.
+    public func phpExtensions(_ v: PHPVersion) -> URL {
+        bin.appendingPathComponent("php-extensions", isDirectory: true)
+            .appendingPathComponent(v.description, isDirectory: true)
+    }
+
     public func fpmSocket(_ v: PHPVersion) -> URL {
         run.appendingPathComponent("php-\(v).sock")
     }
