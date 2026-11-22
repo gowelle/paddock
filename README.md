@@ -9,6 +9,15 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/gowelle/paddock/releases/latest"><img src="https://img.shields.io/github/v/release/gowelle/paddock?label=release&color=d49a1e" alt="Latest release"></a>
+  <a href="https://github.com/gowelle/paddock/actions/workflows/tests.yml"><img src="https://github.com/gowelle/paddock/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B%20%C2%B7%20Intel-2f6659" alt="macOS 13 or later, Intel">
+  <img src="https://img.shields.io/badge/PHP-8.4%20%C2%B7%208.5-777bb4" alt="PHP 8.4 and 8.5">
+  <img src="https://img.shields.io/badge/Swift-6-f05138" alt="Swift 6">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-proprietary-5c5041" alt="Licence: proprietary"></a>
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#the-paddock-cli">CLI</a> ·
