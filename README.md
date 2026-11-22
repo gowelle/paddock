@@ -19,6 +19,7 @@
 </p>
 
 <p align="center">
+  <a href="https://gowelle.github.io/paddock/">Website</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#the-paddock-cli">CLI</a> ·
