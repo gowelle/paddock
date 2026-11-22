@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paddock: a local PHP and Laravel environment for Intel Macs</title>
+<meta name="description" content="Paddock serves any folder at its own .test address on an Intel Mac, with PHP, databases, mail, logs, dumps and Xdebug built in. One command to install.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Paddock: sites that just work, on Intel Macs">
+<meta property="og:description" content="A local PHP and Laravel environment for Intel Macs. One command to install; nothing else to set up.">
+<meta property="og:url" content="https://gowelle.github.io/paddock/">
+<meta property="og:image" content="https://gowelle.github.io/paddock/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("fonts/BricolageGrotesque.ttf") format("truetype");
+  font-weight: 200 800;
+  font-display: swap;
+}
+:root {
+  --ground: #e8e3d9; --surface: #f3efe7; --surface-sunken: #dbd5c9;
+  --line: #c9c1b2; --line-strong: #857a68;
+  --ink: #2b2014; --ink-muted: #5c5041;
+  --honey: #d49a1e; --on-honey: #2b2014; --honey-text: #7a5200;
+  --pasture: #2f6659; --pasture-tint: #cddfd6;
+  --night: #221a12; --on-night: #efe6d6; --on-night-muted: #b8aa94; --on-night-honey: #e2ad3f;
+  --shadow: 0 12px 32px rgba(43, 32, 20, 0.18), 0 2px 6px rgba(43, 32, 20, 0.1);
+  --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #1a1610; --surface: #262017; --surface-sunken: #120f0a;
+    --line: #3a3226; --line-strong: #8a7c66;
+    --ink: #efe6d6; --ink-muted: #b8aa94;
+    --honey: #e2ad3f; --honey-text: #e6b655;
+    --pasture: #7fb8a6; --pasture-tint: #17332c;
+    --night: #0d0b07;
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--ground); color: var(--ink); font: 400 17px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+a { color: var(--honey-text); text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--honey-text); outline-offset: 2px; border-radius: 4px; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+header.top { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+.brand { display: flex; align-items: center; gap: 10px; font: 800 22px/1 var(--display); letter-spacing: -0.02em; color: var(--ink); text-decoration: none; }
+.brand img { width: 36px; height: 36px; }
+header.top nav a { margin-left: 20px; font-size: 15px; font-weight: 600; color: var(--ink); text-decoration: none; }
+header.top nav a:hover { color: var(--honey-text); }
+
+.hero { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr); gap: 48px; align-items: center; padding: 48px 0 40px; }
+.hero-install { padding-bottom: 64px; }
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 18px; font-size: 14px; font-weight: 600; color: var(--ink-muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pasture); box-shadow: 0 0 0 3px var(--pasture-tint); }
+h1 { margin: 0 0 20px; font: 800 clamp(44px, 7.4vw, 76px)/0.95 var(--display); letter-spacing: -0.035em; }
+.lede { margin: 0; max-width: 34em; font-size: 19px; color: var(--ink-muted); }
+.lede strong { color: var(--ink); font-weight: 600; }
+.hero-shot { display: block; margin: 0 auto; width: 100%; max-width: 300px; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: var(--shadow); }
+
+.install { background: var(--night); color: var(--on-night); border-radius: 18px; padding: 18px 18px 18px 22px; display: flex; align-items: center; gap: 14px; }
+.install code { flex: 1; min-width: 0; font: 400 14px/1.5 var(--mono); overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+.install code::-webkit-scrollbar { display: none; }
+.install .prompt { color: var(--on-night-honey); font-weight: 600; user-select: none; }
+.btn { appearance: none; border: 1px solid var(--honey-text); background: var(--honey); color: var(--on-honey); font: 600 14px/1 var(--sans); padding: 10px 16px; border-radius: 10px; cursor: pointer; text-decoration: none; display: inline-block; white-space: nowrap; }
+.btn:hover { filter: brightness(1.06); }
+.btn.quiet { background: var(--surface); border-color: var(--line-strong); color: var(--ink); }
+.under { margin: 12px 2px 0; font-size: 14px; color: var(--ink-muted); }
+
+section { padding: 56px 0; border-top: 1px solid var(--line); }
+h2 { margin: 0 0 12px; font: 800 clamp(30px, 4.4vw, 42px)/1.05 var(--display); letter-spacing: -0.025em; }
+.section-lede { margin: 0 0 36px; max-width: 40em; color: var(--ink-muted); }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
+.card h3 { margin: 0 0 6px; font: 700 19px/1.25 var(--display); letter-spacing: -0.01em; }
+.card p { margin: 0; font-size: 15.5px; color: var(--ink-muted); }
+.card code, .steps code, .faq code { font: 400 0.88em var(--mono); background: var(--surface-sunken); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+
+.shot { margin: 0 0 40px; }
+.shot:last-child { margin-bottom: 0; }
+.shot img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); box-shadow: var(--shadow); }
+.shot figcaption { margin-top: 14px; font-size: 15.5px; color: var(--ink-muted); max-width: 46em; }
+.shot figcaption strong { color: var(--ink); font-weight: 600; }
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-bottom: 40px; }
+.pair .shot { margin: 0; }
+
+.steps { counter-reset: step; list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.steps li { counter-increment: step; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 22px; font-size: 15.5px; color: var(--ink-muted); }
+.steps li::before { content: counter(step); display: grid; place-items: center; width: 30px; height: 30px; margin-bottom: 12px; border-radius: 50%; background: var(--honey); border: 1px solid var(--honey-text); color: var(--on-honey); font: 800 15px/1 var(--display); }
+.steps strong { display: block; margin-bottom: 4px; color: var(--ink); font: 700 18px/1.25 var(--display); }
+
+.faq { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 40px; }
+.faq h3 { margin: 0 0 6px; font: 700 18px/1.3 var(--display); }
+.faq p { margin: 0; font-size: 15.5px; color: var(--ink-muted); }
+
+.closing { text-align: center; }
+.closing .install { max-width: 760px; margin: 28px auto 0; text-align: left; }
+footer { border-top: 1px solid var(--line); padding: 28px 0 44px; font-size: 14px; color: var(--ink-muted); display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; gap: 36px; padding-top: 24px; }
+  .grid, .steps { grid-template-columns: 1fr 1fr; }
+  .faq, .pair { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  body { font-size: 16px; }
+  .wrap { padding: 0 16px; }
+  .grid, .steps { grid-template-columns: 1fr; }
+  header.top nav a:not(.keep) { display: none; }
+  .install { flex-direction: column; align-items: stretch; padding: 16px; }
+  .install .btn { text-align: center; }
+  section { padding: 44px 0; }
+}
+@media (prefers-reduced-motion: no-preference) { .btn { transition: filter 120ms ease; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="./"><img src="icon.svg" alt="">Paddock</a>
+    <nav>
+      <a href="#what">What you get</a>
+      <a href="#look">A look</a>
+      <a href="#questions">Questions</a>
+      <a class="keep" href="https://github.com/gowelle/paddock">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <div>
+        <p class="eyebrow"><span class="dot"></span>For Intel Macs, macOS 13 or later</p>
+        <h1>Sites that just work.</h1>
+        <p class="lede">Paddock is a local PHP and Laravel environment for Intel Macs. Install it, enter your password once, and <strong>every project folder is served at its own <code style="font-family:var(--mono);font-size:.92em">.test</code> address</strong>, with PHP, databases, mail, logs and Xdebug already there.</p>
+      </div>
+      <picture>
+        <source srcset="images/menu-running-dark.png" media="(prefers-color-scheme: dark)">
+        <img class="hero-shot" src="images/menu-running-light.png" width="560" height="584" alt="Paddock's menu in the menu bar: Running, Sites, PHP 8.5, Logs, Dumps, Open Sites Folder, Stop, Settings, About Paddock, Check for Updates, Quit">
+      </picture>
+    </div>
+    <div class="hero-install">
+      <div class="install">
+        <code id="cmd"><span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/gowelle/paddock/main/Scripts/install.sh | bash</code>
+        <button class="btn" type="button" data-copy>Copy</button>
+      </div>
+      <p class="under">Free. Checks the download against the release's SHA-256, asks for no password, runs nothing as root. <a href="https://github.com/gowelle/paddock#installing-by-hand">Other ways to install</a></p>
+    </div>
+
+    <section id="what">
+      <h2>Everything a PHP project needs, in one app.</h2>
+      <p class="section-lede">A menu bar app, a background service and a <code style="font-family:var(--mono);font-size:.9em">paddock</code> command. No Homebrew, no Docker, nothing else to install, and nothing asks you a question Paddock could answer itself.</p>
+      <div class="grid">
+        <div class="card"><h3>Sites without set-up</h3><p>Park a folder once and every project in it is served at <code>&lt;folder&gt;.test</code>. Laravel, WordPress and Symfony resolve the way you expect.</p></div>
+        <div class="card"><h3>Trusted HTTPS</h3><p><code>paddock secure blog</code> serves a site over HTTPS with a certificate your Mac trusts. Browsers never complain.</p></div>
+        <div class="card"><h3>PHP side by side</h3><p>PHP 8.5 and 8.4 are built in. Each site can use its own version, and <code>php</code> and <code>composer</code> in your terminal follow the site you are in.</p></div>
+        <div class="card"><h3>Services in one click</h3><p>PostgreSQL, MySQL, Redis, Meilisearch, S3-compatible storage and a mail catcher. Each gives you the exact <code>.env</code> lines.</p></div>
+        <div class="card"><h3>Xdebug when asked</h3><p>One switch per PHP version. It loads only when a request asks for it, and your <code>php.ini</code> is never edited.</p></div>
+        <div class="card"><h3>Tasks that stay up</h3><p>A <code>paddock.json</code> keeps a project's queue worker, scheduler and websocket server running, once you approve it.</p></div>
+      </div>
+    </section>
+
+    <section id="look">
+      <h2>See what your app is doing.</h2>
+      <p class="section-lede">Three windows replace a browser tab, a terminal full of <code style="font-family:var(--mono);font-size:.9em">tail -f</code> and a debug bar.</p>
+      <figure class="shot">
+        <img src="images/mail-text-light.png" width="1800" height="1120" loading="lazy" alt="The Mail window: caught messages on the left, the chosen message on the right with HTML, Text and Source views and an attachment">
+        <figcaption><strong>Mail.</strong> Every message your apps send is caught on your Mac and shown as HTML, plain text or source, with its attachments. Remote images stay blocked until you ask for them.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="images/logs-light.png" width="1960" height="1200" loading="lazy" alt="The Logs window: logs grouped by Paddock, PHP, services and each site on the left; a Laravel log on the right with an error and its folded stack trace">
+        <figcaption><strong>Logs.</strong> Paddock's logs, each service's, each task's and each site's own, followed as they are written. Laravel errors fold their stack traces.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="images/dumps-light.png" width="1520" height="1200" loading="lazy" alt="The Dumps window: two dumps, each with its file and line, the request that made it, and the value as a tree">
+        <figcaption><strong>Dumps.</strong> While the window is open, <code style="font-family:var(--mono);font-size:.9em">dump()</code> and <code style="font-family:var(--mono);font-size:.9em">dd()</code> from every site show here instead of in the page. Close it and they go back where they were.</figcaption>
+      </figure>
+      <div class="pair">
+        <figure class="shot">
+          <img src="images/settings-services-light.png" width="1080" height="840" loading="lazy" alt="The Services tab: Meilisearch, PostgreSQL and Mail, each with its state, ports and actions">
+          <figcaption><strong>Services.</strong> Add, start, stop and copy the <code style="font-family:var(--mono);font-size:.9em">.env</code> lines.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="images/settings-tasks-running-light.png" width="1080" height="840" loading="lazy" alt="The Tasks tab: a site's queue, scheduler and websocket tasks with their commands and state">
+          <figcaption><strong>Tasks.</strong> A project's background commands, restarted when they crash or the code changes.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="start">
+      <h2>Up in three steps.</h2>
+      <p class="section-lede">The first launch works offline: PHP, the web server and Composer are inside the app.</p>
+      <ol class="steps">
+        <li><strong>Install</strong>Run the command at the top of this page. Paddock opens and asks for your password once, to set up <code>.test</code> addresses.</li>
+        <li><strong>Park your projects</strong><code>paddock park ~/Sites</code> and every folder in it is a site. <code>~/Sites/blog</code> is now <code>blog.test</code>.</li>
+        <li><strong>Add what the app needs</strong><code>paddock service add postgres</code>, or pick it in Settings. Paste the <code>.env</code> lines it prints.</li>
+      </ol>
+    </section>
+
+    <section id="questions">
+      <h2>Questions.</h2>
+      <div class="faq" style="margin-top:28px">
+        <div><h3>Does it run on Apple Silicon?</h3><p>No. Paddock is built for Intel Macs only, and the installer says so on other Macs.</p></div>
+        <div><h3>Why Intel only?</h3><p>That is who needs it. Laravel Herd no longer supports Intel Macs, and the alternatives mean Homebrew, Docker or a lot of set-up by hand.</p></div>
+        <div><h3>Is it free?</h3><p>Yes. Paddock is free to use. Its source is public so you can see what it does; it is not open source, and the <a href="https://github.com/gowelle/paddock/blob/main/LICENSE">licence</a> says what you may do with it.</p></div>
+        <div><h3>Why does macOS question it?</h3><p>Paddock is not signed with an Apple Developer ID. The install command avoids the question; if you download the zip in a browser, <a href="https://github.com/gowelle/paddock#installing-by-hand">allow it once</a> in System Settings.</p></div>
+        <div><h3>What does it change on my Mac?</h3><p>One password prompt installs a <code>.test</code> DNS resolver and lets Paddock use ports 80 and 443. Nothing of Paddock's runs as root afterwards, and <a href="https://github.com/gowelle/paddock#uninstalling">uninstalling</a> puts it all back.</p></div>
+        <div><h3>How does it update?</h3><p>Paddock checks once a day and asks before installing. Updates are verified against a key built into the app, and your sites stay up while it updates.</p></div>
+      </div>
+    </section>
+
+    <section class="closing">
+      <h2>Try it on your Intel Mac.</h2>
+      <div class="install">
+        <code><span class="prompt">$ </span>curl -fsSL https://raw.githubusercontent.com/gowelle/paddock/main/Scripts/install.sh | bash</code>
+        <button class="btn" type="button" data-copy>Copy</button>
+      </div>
+      <p class="under" style="margin-top:18px"><a href="https://github.com/gowelle/paddock">Read the documentation on GitHub</a> · <a href="https://github.com/gowelle/paddock/issues/new/choose">Report a problem or an idea</a></p>
+    </section>
+  </main>
+
+  <footer>
+    <span>Paddock. Copyright © 2026 John Gowelle.</span>
+    <span><a href="https://github.com/gowelle/paddock/releases/latest">Latest release</a> · <a href="https://github.com/gowelle/paddock/blob/main/THIRD-PARTY-NOTICES">Third-party notices</a></span>
+  </footer>
+</div>
+<script>
+var command = "curl -fsSL https://raw.githubusercontent.com/gowelle/paddock/main/Scripts/install.sh | bash";
+document.querySelectorAll("[data-copy]").forEach(function (button) {
+  button.addEventListener("click", function () {
+    var done = function () { button.textContent = "Copied"; setTimeout(function () { button.textContent = "Copy"; }, 1600); };
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(command).then(done, function () {}); }
+  });
+});
+</script>
+</body>
+</html>
