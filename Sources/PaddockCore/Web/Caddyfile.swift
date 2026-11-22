@@ -17,7 +17,11 @@ public enum Caddyfile {
     /// its own block(s) where each route is handled before the PHP router; every other site renders as without.
     public static func render(sites: [Site], defaultPHP: PHPVersion, paths: Paths,
                               settings: Settings, namesAuthority: Bool = true,
-                              proxies: [String: [String: Int]] = [:]) -> String {
+                              proxies: [String: [String: Int]] = [:], dumpsTo: Int? = nil) -> String {
+        // With a listener for dumps, every PHP request is told to send its `dump()` output there
+        // (`DumpDestination`): two FastCGI variables, which PHP shows a site as `$_SERVER` entries.
+        let dumps = DumpDestination.environment(port: dumpsTo).sorted { $0.key < $1.key }
+            .map { "\n            env \($0.key) \(quote($0.value))" }.joined()
         let serverPHP = Bundled.resources.appendingPathComponent("router/server.php").path
         let httpBind = quote("unix/" + paths.httpSocket.path)
         let httpsBind = quote("unix/" + paths.httpsSocket.path)
@@ -46,7 +50,7 @@ public enum Caddyfile {
             reverse_proxy "unix/{args[0]}" {
                 transport fastcgi {
                     env SCRIPT_FILENAME \(quote(serverPHP))
-                    env PADDOCK_ROUTER_HOME \(quote(paths.routerHome.path))
+                    env PADDOCK_ROUTER_HOME \(quote(paths.routerHome.path))\(dumps)
                 }
                 @accel header X-Accel-Redirect *
                 handle_response @accel {

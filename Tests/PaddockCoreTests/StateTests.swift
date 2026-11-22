@@ -31,6 +31,20 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(decoded.parked, ["/p"], "the rest of the file is kept")
     }
 
+    func testWhereDumpsGoIsKeptAndAnUnusablePortIsDropped() throws {
+        let paths = try makePaths()
+        try StateStore(paths: paths).update { $0.dumpsTo = 9912 }
+        XCTAssertEqual(StateStore(paths: paths).load().dumpsTo, 9912)
+        let older = #"{"parked":[],"links":{},"secured":[],"phpPins":{}}"#
+        XCTAssertNil(try JSONDecoder().decode(State.self, from: Data(older.utf8)).dumpsTo)
+        for bad in [#""dumpsTo":80"#, #""dumpsTo":"9912""#, #""dumpsTo":99999"#] {
+            let json = #"{"parked":["/p"],"links":{},"secured":[],"phpPins":{},"# + bad + "}"
+            let state = try JSONDecoder().decode(State.self, from: Data(json.utf8))
+            XCTAssertNil(state.dumpsTo, bad)
+            XCTAssertEqual(state.parked, ["/p"], "the rest of the file is kept")
+        }
+    }
+
     func testRoundTrip() throws {
         let paths = try makePaths()
         let written = try StateStore(paths: paths).update {

@@ -33,6 +33,11 @@ public struct PHPResolver {
         Xdebug.arguments(for: version, state: StateStore(paths: paths).load(), paths: paths)
     }
 
+    /// What tells PHP to send its dumps to the listener there is, if there is one.
+    public func dumpEnvironment() -> [String: String] {
+        DumpDestination.environment(port: StateStore(paths: paths).load().dumpsTo)
+    }
+
     /// The user's php.ini for `version`, only if the file exists.
     public func ini(for version: PHPVersion) -> URL? {
         let ini = paths.phpIni(version)

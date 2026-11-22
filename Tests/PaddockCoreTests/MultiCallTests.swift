@@ -71,6 +71,20 @@ final class MultiCallTests: XCTestCase {
         XCTAssertEqual(plan("php", ["-v"]), .exec(path: binary, arguments: [binary, "-v"], setEnvironment: [:]))
     }
 
+    /// While something listens for dumps, `php` and `composer` are told where to send theirs; a choice already
+    /// made in the shell is left alone; with nothing listening, nothing is set.
+    func testPhpSendsItsDumpsToTheListenerWhileThereIsOne() throws {
+        try installPHP()
+        let binary = paths.phpDir(v85).appendingPathComponent("php").path
+        XCTAssertEqual(plan("php", ["-v"]), .exec(path: binary, arguments: [binary, "-v"], setEnvironment: [:]))
+        try StateStore(paths: paths).update { $0.dumpsTo = 9912 }
+        XCTAssertEqual(plan("php", ["-v"]),
+                       .exec(path: binary, arguments: [binary, "-v"],
+                             setEnvironment: ["VAR_DUMPER_FORMAT": "server", "VAR_DUMPER_SERVER": "127.0.0.1:9912"]))
+        XCTAssertEqual(plan("php", ["-v"], env: ["VAR_DUMPER_FORMAT": "cli"]),
+                       .exec(path: binary, arguments: [binary, "-v"], setEnvironment: [:]))
+    }
+
     func testPhpUsesIniOnlyWhenItExists() throws {
         try installPHP()
         let binary = paths.phpDir(v85).appendingPathComponent("php").path
