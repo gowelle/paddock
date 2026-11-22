@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      actions: read     # the deploy step looks up the artifact the step before it uploaded
       pages: write
       id-token: write
     environment:
