@@ -108,11 +108,11 @@ final class SiteTasksFileTests: XCTestCase {
             (#"{"tasks": {"queue": {"run": "x", "stopSeconds": 2.5}}}"#, #""stopSeconds" of task "queue" must be a whole number from 1 to 300"#),
             (#"{"tasks": {"queue": {"run": "x", "stopSeconds": true}}}"#, #""stopSeconds" of task "queue" must be a whole number from 1 to 300"#),
             (#"{"proxy": [1]}"#, #""proxy" must be an object of paths and ports"#),
-            (#"{"proxy": {"app": 8080}}"#, #"proxy path "app" must start with / and use only letters, digits and . _ ~ / -, without .. or //"#),
-            (#"{"proxy": {"/": 8080}}"#, #"proxy path "/" must start with / and use only letters, digits and . _ ~ / -, without .. or //"#),
-            (#"{"proxy": {"/a/../b": 8080}}"#, #"proxy path "/a/../b" must start with / and use only letters, digits and . _ ~ / -, without .. or //"#),
-            (#"{"proxy": {"/a//b": 8080}}"#, #"proxy path "/a//b" must start with / and use only letters, digits and . _ ~ / -, without .. or //"#),
-            (#"{"proxy": {"/a b": 8080}}"#, #"proxy path "/a b" must start with / and use only letters, digits and . _ ~ / -, without .. or //"#),
+            (#"{"proxy": {"app": 8080}}"#, #"proxy path "app" must start with / and be at most 64 characters: parts of letters, digits and . _ ~ - between single slashes, not . or .."#),
+            (#"{"proxy": {"/": 8080}}"#, #"proxy path "/" must start with / and be at most 64 characters: parts of letters, digits and . _ ~ - between single slashes, not . or .."#),
+            (#"{"proxy": {"/a/../b": 8080}}"#, #"proxy path "/a/../b" must start with / and be at most 64 characters: parts of letters, digits and . _ ~ - between single slashes, not . or .."#),
+            (#"{"proxy": {"/a//b": 8080}}"#, #"proxy path "/a//b" must start with / and be at most 64 characters: parts of letters, digits and . _ ~ - between single slashes, not . or .."#),
+            (#"{"proxy": {"/a b": 8080}}"#, #"proxy path "/a b" must start with / and be at most 64 characters: parts of letters, digits and . _ ~ - between single slashes, not . or .."#),
             (#"{"proxy": {"/app": 1023}}"#, #"the port for proxy path "/app" must be a whole number from 1024 to 65535"#),
             (#"{"proxy": {"/app": 65536}}"#, #"the port for proxy path "/app" must be a whole number from 1024 to 65535"#),
             (#"{"proxy": {"/app": "8080"}}"#, #"the port for proxy path "/app" must be a whole number from 1024 to 65535"#),
@@ -121,10 +121,29 @@ final class SiteTasksFileTests: XCTestCase {
         for (text, expected) in cases {
             XCTAssertEqual(try reason(text), expected, text)
         }
-        let longPath = "/" + String(repeating: "p", count: 101)
+        // Nothing that could reach Caddy's syntax ever passes: braces, wildcards, quotes, spaces, line breaks.
+        for hostile in ["/app/", "/a/./b", "/a{b}", "/a*", "/a\\\"b", "/a\\nrespond hi", "/a\\tb", "/{path}", "/a;b"] {
+            XCTAssertEqual(try reason("{\"proxy\": {\"\(hostile)\": 8080}}")?.hasSuffix("must start with / and be at most 64 "
+                           + "characters: parts of letters, digits and . _ ~ - between single slashes, not . or .."), true, hostile)
+        }
+        let sixtyFour = "/" + String(repeating: "p", count: 63)
+        try write("{\"proxy\": {\"\(sixtyFour)\": 8080}}")
+        guard case .file = load() else { return XCTFail("64 characters are allowed") }
+        let longPath = "/" + String(repeating: "p", count: 64)
         XCTAssertEqual(try reason("{\"proxy\": {\"\(longPath)\": 8080}}"),
-                       "proxy path \"\(longPath.prefix(64))\" must start with / and use only letters, digits and . _ ~ / -, without .. or //",
+                       "proxy path \"\(longPath.prefix(64))\" must start with / and be at most 64 characters: parts of letters, digits and . _ ~ - between single slashes, not . or ..",
                        "a name from the file is shown at most 64 characters long")
+    }
+
+    /// Forwarding paths match whatever the case, so two that differ only in case are refused.
+    func testTwoPathsDifferingOnlyInCaseAreRefused() throws {
+        XCTAssertEqual(try reason(#"{"proxy": {"/app": 8080, "/App": 9000}}"#),
+                       "Two forwarding paths differ only in upper and lower case: /App and /app")
+        XCTAssertEqual(try reason(#"{"proxy": {"/api/v1": 8080, "/api/V1": 8080}}"#),
+                       "Two forwarding paths differ only in upper and lower case: /api/V1 and /api/v1")
+        try write(#"{"proxy": {"/app": 8080, "/apps": 9000}}"#)
+        guard case .file = load() else { return XCTFail("different paths are fine") }
+        XCTAssertTrue(Messages.forwardingIgnoresCase.contains("upper and lower case"))
     }
 
     func testAtMostSixteenTasksAndSixteenProxyPaths() throws {

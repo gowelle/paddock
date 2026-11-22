@@ -161,6 +161,22 @@ final class ServiceRecipeTests: XCTestCase {
         }
     }
 
+    /// Mailpit stays on this Mac: its web page answers only for its own loopback host names, and nothing in its
+    /// arguments opens cross-origin API access, relays or forwards mail, or lets it fetch internal addresses.
+    func testMailpitKeepsItsSafeConfiguration() throws {
+        let mail = try XCTUnwrap(try ServiceCatalog.bundled().recipe(kind: "mail", version: nil))
+        let arguments = mail.start.arguments.flatMap(\.templates)
+        let allowed = try XCTUnwrap(arguments.firstIndex(of: "--allowed-hosts"), "\(arguments)")
+        XCTAssertLessThan(allowed + 1, arguments.count)
+        XCTAssertEqual(Set(arguments[allowed + 1].split(separator: ",").map(String.init)),
+                       ["127.0.0.1:{port.http}", "localhost:{port.http}"])
+        for flag in ["--api-cors", "--smtp-relay-config", "--smtp-relay-all", "--smtp-forward-config",
+                     "--allow-internal-http-requests"] {
+            XCTAssertFalse(arguments.contains { $0 == flag || $0.hasPrefix(flag + "=") }, flag)
+        }
+        XCTAssertTrue(mail.start.environment.keys.allSatisfy { !$0.hasPrefix("MP_") }, "no Mailpit settings by environment")
+    }
+
     /// PostgreSQL 18, 17 and 16 from theseus-rs, each pinned to one archive; the integration tests run them.
     func testBundledCatalogHasPostgreSQL18To16() throws {
         let catalog = try ServiceCatalog.bundled()

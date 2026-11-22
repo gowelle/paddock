@@ -70,7 +70,7 @@ enum CLI {
         switch try sendRaw(request, timeout: timeout) {
         case .ok(let status), .removed(_, let status), .databaseCreated(_, _, let status): return status
         case .error(_, let message): throw failure(message)
-        case .catalog: throw unexpectedAnswer()
+        case .catalog, .envLines: throw unexpectedAnswer()
         }
     }
 

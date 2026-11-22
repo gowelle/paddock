@@ -14,7 +14,7 @@ private func ensureInstalled(_ version: PHPVersion, status: EngineStatus) throws
     case .error(let code, let message):
         if code == ErrorCode.phpNotAvailable { throw CLI.failure(Messages.phpNotAvailable(version)) }
         throw CLI.failure(message)
-    case .catalog, .removed, .databaseCreated:
+    case .catalog, .removed, .databaseCreated, .envLines:
         throw CLI.unexpectedAnswer()
     }
 }

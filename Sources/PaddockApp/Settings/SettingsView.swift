@@ -10,6 +10,8 @@ struct SettingsView: View {
             GeneralTab().tabItem { Label("General", systemImage: "gearshape") }
             PHPTab().tabItem { Label("PHP", systemImage: "chevron.left.forwardslash.chevron.right") }
             SitesTab().tabItem { Label("Sites", systemImage: "globe") }
+            ServicesTab().tabItem { Label("Services", systemImage: "shippingbox") }
+            TasksTab().tabItem { Label("Tasks", systemImage: "terminal") }
         }
         .frame(width: SettingsView.size.width, height: SettingsView.size.height)
         .settingsTheme()

@@ -153,10 +153,13 @@ site to a local port:
 
 - `"/app": 8080` forwards `https://t-market.test/app/…` (including
   websocket upgrades) to `127.0.0.1:8080`.
-- The project then uses the site's normal address: `REVERB_PORT=443`,
-  `REVERB_SCHEME=https`, and the server side listens on
-  `REVERB_SERVER_HOST=127.0.0.1`, `REVERB_SERVER_PORT=8080`. This is the
-  standard production arrangement for Reverb.
+- The project's `.env` splits server and browser. Server side (Reverb
+  listens, and PHP broadcasts to it): `REVERB_SERVER_HOST=127.0.0.1`,
+  `REVERB_SERVER_PORT=8080`, `REVERB_HOST=127.0.0.1`, `REVERB_PORT=8080`,
+  `REVERB_SCHEME=http`. Browser side: `VITE_REVERB_HOST=<site host>` (such as
+  `t-market.test`), `VITE_REVERB_PORT=443`, `VITE_REVERB_SCHEME=https`. PHP
+  broadcasts straight to Reverb on this Mac; only the browser goes through
+  the site's HTTPS and this forwarding.
 - Proxy targets are local ports only. Proxy routes are part of what the
   user approves.
 

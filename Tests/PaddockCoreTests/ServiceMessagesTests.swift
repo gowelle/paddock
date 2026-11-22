@@ -45,22 +45,42 @@ final class ServiceMessagesTests: XCTestCase {
                       Messages.serviceTable([noted]))
     }
 
-    /// `paddock service add` leaves a secret's value out of the .env lines it prints and says where it is.
+    /// `paddock service add` prints the .env lines the status has (never a secret's) and, for each secret, a
+    /// comment that is safe to paste and says how to get it.
     func testAddedEnvLinesLeaveSecretsOut() {
         let status = ServiceStatus(id: "meilisearch-1-57", name: "Meilisearch 1.57", kind: "meilisearch", version: "1.57.0",
                                    displayName: "Meilisearch", state: .running, ports: ["main": 7700],
-                                   env: ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700",
-                                         "MEILISEARCH_KEY=s3cr3t-value"],
+                                   env: ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700"],
                                    openURL: nil, dataPath: "/d", autostart: true, mainPort: 7700,
                                    secretEnvNames: ["MEILISEARCH_KEY"])
         XCTAssertEqual(Messages.addedEnvLines(status),
                        ["SCOUT_DRIVER=meilisearch", "MEILISEARCH_HOST=http://127.0.0.1:7700",
-                        "MEILISEARCH_KEY=…   (secret; see: paddock service env meilisearch-1-57)"])
-        XCTAssertFalse(Messages.serviceTable([status]).contains("s3cr3t"))
+                        "# MEILISEARCH_KEY: run \"paddock service env meilisearch-1-57\""])
         let plain = ServiceStatus(id: "mail", name: "Mail", kind: "mail", version: "1", displayName: "Mail", state: .running,
                                   ports: [:], env: ["MAIL_PORT=1025"], openURL: nil, dataPath: "/d", autostart: true,
                                   mainPort: nil)
         XCTAssertEqual(Messages.addedEnvLines(plain), ["MAIL_PORT=1025"])
+    }
+
+    /// `paddock service remove --delete-data` asks on a terminal, needs `--yes` otherwise, and takes only the
+    /// service's name typed exactly.
+    func testDeletingDataIsConfirmedByTypingTheName() {
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: true, interactive: false), .proceed)
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: true, interactive: true), .proceed)
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: false, interactive: true), .ask)
+        XCTAssertEqual(DeleteDataConfirmation.decide(yes: false, interactive: false), .refuse)
+        XCTAssertTrue(DeleteDataConfirmation.accepts(typed: "PostgreSQL 18", name: "PostgreSQL 18"))
+        for typed in [nil, "", "postgresql 18", "PostgreSQL", " PostgreSQL 18", "PostgreSQL 18 ", "y", "yes"] {
+            XCTAssertFalse(DeleteDataConfirmation.accepts(typed: typed, name: "PostgreSQL 18"), "\(typed ?? "nil")")
+        }
+        XCTAssertEqual(DeleteDataConfirmation.prompt(name: "PostgreSQL 18", dataPath: "/h/services/postgres-18/data"), [
+            "PostgreSQL 18: its data is in /h/services/postgres-18/data.",
+            "This deletes its data permanently. Paddock keeps no backups.",
+        ])
+        XCTAssertEqual(DeleteDataConfirmation.question(name: "PostgreSQL 18"),
+                       "Type the service's name (PostgreSQL 18) to delete it: ")
+        XCTAssertEqual(DeleteDataConfirmation.needsYes, "Add --yes to delete data without being asked.")
+        XCTAssertEqual(DeleteDataConfirmation.notConfirmed, "The name didn't match, so nothing was removed or deleted.")
     }
 
     func testStates() {
@@ -85,6 +105,22 @@ final class ServiceMessagesTests: XCTestCase {
             mail      Mail        1       MIT         11 MB
             postgres  PostgreSQL  18, 17  PostgreSQL  ?
             reverb    Reverb      1       MIT         none
+            """)
+    }
+
+    /// A series this Mac can't run is listed with the reason, after the table.
+    func testCatalogTableSaysWhatCantRunHere() {
+        let reason = "PostgreSQL 18 needs macOS 15 or later."
+        XCTAssertEqual(Messages.catalogTable([
+            CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18.1"],
+                         downloadBytes: nil, series: [CatalogSeries(series: "18", version: "18.1", downloadBytes: nil,
+                                                                    needsDownload: true, unavailableReason: reason)],
+                         unavailableReason: reason),
+        ]), """
+            KIND      SERVICE     SERIES  LICENCE     DOWNLOAD
+            postgres  PostgreSQL  18      PostgreSQL  ?
+
+            PostgreSQL 18 needs macOS 15 or later.
             """)
     }
 

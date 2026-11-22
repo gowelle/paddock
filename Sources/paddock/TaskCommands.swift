@@ -29,10 +29,28 @@ struct SiteOption: ParsableArguments {
 }
 
 extension CLI {
-    /// The site a tasks command acts on, and the status it was found in.
+    /// The site a tasks command acts on, and the status after reading its `paddock.json` again.
     static func taskSite(_ option: SiteOption) throws -> (Site, EngineStatus) {
-        let status = try send(.status, timeout: 30)
-        return (try option.site(in: status), status)
+        let site = try option.site(in: try send(.status, timeout: 30))
+        return try freshTasks(of: site.name)
+    }
+
+    /// The site and the status after the daemon read the site's `paddock.json` again (a read-only request).
+    static func freshTasks(of name: String) throws -> (Site, EngineStatus) {
+        let status = try send(.tasksStatus(site: name), timeout: 30)
+        guard let site = status.sites.first(where: { $0.name == name }) else {
+            throw failure(Messages.taskError(.unknownSite(name)))
+        }
+        return (site, status)
+    }
+
+    /// Runs `work`; if it takes more than three seconds, says it is waiting for the task to finish.
+    @discardableResult
+    static func whileWaiting<T>(for task: String, _ work: () throws -> T) rethrows -> T {
+        let notice = SlowNotice()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { notice.show(Messages.waitingForTask(task)) }
+        defer { notice.finish() }
+        return try work()
     }
 
     /// The task as the user typed it, if the site has it (as running or approved) or has a log for it.
@@ -50,7 +68,7 @@ extension CLI {
             return "\(name): unknown"
         }
         if case .running(let pid) = task.state { return "\(name) is running (pid \(pid))." }
-        return "\(name): \(Messages.taskState(task.state))"
+        return "\(name): \(Messages.taskState(task.state, task: name))"
     }
 }
 
@@ -66,21 +84,24 @@ struct TasksList: ParsableCommand {
             let registry = SiteRegistry(state: StateStore(paths: CLI.paths).load(),
                                         defaultPHP: status.defaultPHP ?? PHPVersion(major: 8, minor: 5))
             guard let here = registry.site(containing: CLI.currentDirectory),
-                  let served = status.sites.first(where: { $0.name == here.name }) else {
+                  status.sites.contains(where: { $0.name == here.name }) else {
                 let lines = Messages.siteTasksLines(status.sites)
                 return print(lines.isEmpty ? Messages.noSiteHasTasks : lines.joined(separator: "\n"))
             }
-            target = served
+            target = try CLI.freshTasks(of: here.name).0
         } else {
-            target = try site.site(in: status)
+            target = try CLI.freshTasks(of: try site.site(in: status).name).0
         }
         guard let tasks = target.tasks, tasks.approval != .none else {
             return print(Messages.taskError(.noTasksFile(site: target.name)))
         }
         switch tasks.approval {
-        case .needsApproval: print(Messages.tasksWaitingForApproval(site: target.name))
+        case .needsApproval:
+            print(Messages.tasksWaitingForApproval(site: target.name))
+            if let notice = tasks.notice { print(notice) }
         case .invalid(let reason): print(Messages.tasksFileInvalid(site: target.name, reason: reason))
-        case .approved, .changed, .none: print(Messages.taskTable(tasks))
+        case .approved, .changed, .none:
+            print(Messages.taskTable(tasks, routes: Messages.routeLines(tasks, site: target)))
         }
     }
 }
@@ -102,6 +123,7 @@ struct TasksInit: ParsableCommand {
             print(Messages.tasksExample(site: target.name, path: file.path))
             print("")
             print(SiteTasksFile.example, terminator: "")
+            print(Messages.forwardingIgnoresCase)
             return
         }
         try CLI.refuseChangesFromDevelopmentBuild()
@@ -113,7 +135,8 @@ struct TasksInit: ParsableCommand {
 struct TasksOn: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "on",
-        abstract: "Show every command in the site's paddock.json and approve them, so they run with Paddock.")
+        abstract: "Show every command in the site's paddock.json and approve them, so they run with Paddock.",
+        discussion: Messages.forwardingIgnoresCase)
     @OptionGroup var site: SiteOption
     @Flag(name: .customLong("show"), help: "Only show what would be approved.") var show = false
 
@@ -134,15 +157,17 @@ struct TasksOn: ParsableCommand {
         guard !file.isEmpty else { return print(Messages.nothingToApprove(path: path)) }
         // Exactly what will run, each command as written (a command that can't be shown that way is refused).
         print(show ? "\(path) would run:" : "Approving what \(path) runs:")
-        for line in Messages.approvalLines(SiteTasksStatus.pendingLines(file)) { print("  " + line) }
-        if let hidden = file.tasks.keys.sorted().first(where: { !Messages.isShowable(file.tasks[$0]!.run) }) {
-            throw CLI.failure(Messages.commandNotShowable(task: hidden))
+        for line in Messages.approvalLines(SiteTasksStatus.pendingLines(file), site: target) { print("  " + line) }
+        for task in file.tasks.keys.sorted() {
+            if let problem = Messages.commandProblem(in: file.tasks[task]!.run) {
+                throw CLI.failure(Messages.commandNotShowable(task: task, problem: problem))
+            }
         }
         guard !show else { return print("Approve it with: paddock tasks on") }
-        let status = try CLI.send(.tasksApprove(site: target.name, hash: hash))
+        let status = try CLI.send(.tasksApprove(site: target.name, hash: hash, folder: folder.path))
         print("Approved.")
         for task in status.sites.first(where: { $0.name == target.name })?.tasks?.tasks ?? [] {
-            print("  \(task.name): \(Messages.taskState(task.state))")
+            print("  \(task.name): \(Messages.taskState(task.state, task: task.name))")
         }
     }
 }
@@ -155,7 +180,7 @@ struct TasksOff: ParsableCommand {
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
         let (target, _) = try CLI.taskSite(site)
-        try CLI.send(.tasksRevoke(site: target.name))
+        try CLI.whileWaiting(for: "\(target.name)'s tasks") { try CLI.send(.tasksRevoke(site: target.name)) }
         print("Stopped \(target.name)'s tasks and withdrew their approval.")
     }
 }
@@ -182,7 +207,7 @@ struct TaskStop: ParsableCommand {
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
         let (target, _) = try CLI.taskSite(site)
-        try CLI.send(.taskStop(site: target.name, task: task))
+        try CLI.whileWaiting(for: task) { try CLI.send(.taskStop(site: target.name, task: task)) }
         print("\(task) stopped.")
     }
 }
@@ -190,12 +215,21 @@ struct TaskStop: ParsableCommand {
 struct TaskRestart: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "restart", abstract: "Restart a task.")
     @Argument(help: "The task's name, such as queue.") var task: String
+    @Flag(name: .customLong("force"),
+          help: "Also stop the processes an earlier run of this task left behind in the site's folder (and only those).")
+    var force = false
     @OptionGroup var site: SiteOption
 
     func run() throws {
         try CLI.refuseChangesFromDevelopmentBuild()
         let (target, _) = try CLI.taskSite(site)
-        let status = try CLI.send(.taskRestart(site: target.name, task: task))
+        let status = try CLI.whileWaiting(for: task) {
+            try CLI.send(force ? .taskForceRestart(site: target.name, task: task) : .taskRestart(site: target.name, task: task))
+        }
+        if force, let report = status.sites.first(where: { $0.name == target.name })?.tasks?.tasks
+            .first(where: { $0.name == task })?.warning {
+            print(report)
+        }
         print(CLI.taskLine(task, site: target.name, in: status))
     }
 }
@@ -231,33 +265,14 @@ struct TaskLogs: ParsableCommand {
             .map(String.init).dropLast(text.hasSuffix("\n") ? 1 : 0).suffix(count))
     }
 
-    /// Prints what is appended to the file from now on, until interrupted; starts over when the file is
-    /// rotated (replaced or emptied). Reads the file only: the daemon isn't involved.
+    /// Prints what is appended to the file from now on, until interrupted, across rotations (`LogFollower`).
+    /// Reads the file only: the daemon isn't involved.
     static func follow(_ url: URL) -> Never {
-        var handle = try? FileHandle(forReadingFrom: url)
-        var offset = (try? handle?.seekToEnd()) ?? 0
-        var identity = fileIdentity(url)
+        let follower = LogFollower(url: url)
         while true {
             Thread.sleep(forTimeInterval: 0.25)
-            let now = fileIdentity(url)
-            if handle == nil || now?.inode != identity?.inode || (now?.size ?? 0) < offset {
-                try? handle?.close()
-                handle = try? FileHandle(forReadingFrom: url)
-                offset = 0
-                identity = now
-            }
-            guard let handle else { continue }
-            try? handle.seek(toOffset: offset)
-            let data = (try? handle.readToEnd()) ?? Data()
-            guard !data.isEmpty else { continue }
-            offset += UInt64(data.count)
-            FileHandle.standardOutput.write(data)
+            let data = follower.read()
+            if !data.isEmpty { FileHandle.standardOutput.write(data) }
         }
-    }
-
-    private static func fileIdentity(_ url: URL) -> (inode: UInt64, size: UInt64)? {
-        var info = stat()
-        guard stat(url.path, &info) == 0 else { return nil }
-        return (UInt64(info.st_ino), UInt64(info.st_size))
     }
 }

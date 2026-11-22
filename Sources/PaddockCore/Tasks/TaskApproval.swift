@@ -1,5 +1,30 @@
 import Foundation
 
+/// Which folder this is, beyond its path: its device, inode and creation time. A folder deleted and made again,
+/// or another folder renamed into its place, has another identity at the same path.
+public struct FolderIdentity: Codable, Equatable, Hashable, Sendable {
+    public let device: Int64
+    public let inode: UInt64
+    public let birthSeconds: Int
+    public let birthNanoseconds: Int
+
+    public init(device: Int64, inode: UInt64, birthSeconds: Int, birthNanoseconds: Int) {
+        self.device = device
+        self.inode = inode
+        self.birthSeconds = birthSeconds
+        self.birthNanoseconds = birthNanoseconds
+    }
+
+    /// The identity of the directory at `path` (following links), or nil when there is none.
+    public static func of(path: String) -> FolderIdentity? {
+        var info = stat()
+        guard stat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return nil }
+        return FolderIdentity(device: Int64(info.st_dev), inode: UInt64(info.st_ino),
+                              birthSeconds: Int(info.st_birthtimespec.tv_sec),
+                              birthNanoseconds: Int(info.st_birthtimespec.tv_nsec))
+    }
+}
+
 /// A site's approved tasks, as kept in state.json: the definition exactly as approved (it is what runs, even
 /// after the file changes), the folder it was approved for, and the tasks the user stopped by hand.
 public struct ApprovedTasks: Codable, Equatable, Sendable {
@@ -13,16 +38,22 @@ public struct ApprovedTasks: Codable, Equatable, Sendable {
     /// When the site was last seen gone (its folder missing or no longer a site); the approval is dropped a
     /// while after that. Nil while the site is there.
     public var goneSince: Date?
+    /// The identity of the folder at `sitePath` when it was approved: the approval holds only for that very
+    /// folder. Nil in an approval stored before Paddock remembered it (adopted once at the next start when the
+    /// site is served from that path; until then it holds for no folder).
+    public var folder: FolderIdentity?
 
-    public init(hash: String, file: StoredTasksFile, sitePath: String, stopped: Set<String>, goneSince: Date? = nil) {
+    public init(hash: String, file: StoredTasksFile, sitePath: String, stopped: Set<String>, goneSince: Date? = nil,
+                folder: FolderIdentity? = nil) {
         self.hash = hash
         self.file = file
         self.sitePath = sitePath
         self.stopped = stopped
         self.goneSince = goneSince
+        self.folder = folder
     }
 
-    private enum CodingKeys: String, CodingKey { case hash, file, sitePath, stopped, goneSince }
+    private enum CodingKeys: String, CodingKey { case hash, file, sitePath, stopped, goneSince, folder }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -31,11 +62,19 @@ public struct ApprovedTasks: Codable, Equatable, Sendable {
         sitePath = try c.decode(String.self, forKey: .sitePath)
         stopped = (try? c.decodeIfPresent(Set<String>.self, forKey: .stopped)) ?? []
         goneSince = try? c.decodeIfPresent(Date.self, forKey: .goneSince)
+        folder = try? c.decodeIfPresent(FolderIdentity.self, forKey: .folder)
+    }
+
+    /// It holds for the folder at `path` whose identity is `identity`: intact, approved for that path and that
+    /// very folder.
+    public func holds(at path: String, identity: FolderIdentity?) -> Bool {
+        isIntact && sitePath == path && folder != nil && folder == identity
     }
 
     /// The stored definition follows the file's rules and hashes (with this build's canonical form) to `hash`.
     /// Anything else approves nothing: a hand-edited state file, or an approval made with another form.
-    public var isIntact: Bool { file.problem() == nil && file.hash == hash }
+    /// (Forwarding paths that today's rules refuse don't count against it: `TaskApproval.refusedPaths`.)
+    public var isIntact: Bool { file.problem(checkingPaths: false) == nil && file.hash == hash }
 
     /// How long an approval is kept after its site went away, in case the folder comes back.
     public static let keptAfterSiteGone: TimeInterval = 30 * 24 * 60 * 60
@@ -51,13 +90,56 @@ public enum TaskApproval {
         public let pending: SiteTasksFile?
         /// Why the current file can't be used, when it can't.
         public let problem: String?
+        /// Forwarding paths of the running (approved) definition that today's rules refuse: left out.
+        public var refusedPaths: [String] = []
+        /// There is an approval for this path, but the folder there now is not the one it was approved for.
+        public var folderReplaced = false
+
+        init(approval: TaskApprovalState, running: SiteTasksFile?, pending: SiteTasksFile?, problem: String?,
+             refusedPaths: [String] = [], folderReplaced: Bool = false) {
+            self.approval = approval
+            self.running = running
+            self.pending = pending
+            self.problem = problem
+            self.refusedPaths = refusedPaths
+            self.folderReplaced = folderReplaced
+        }
     }
 
-    /// The one rule: only an intact approval made for this very folder runs anything, and it runs its stored
-    /// definition: a file that changed, went away or broke keeps the approved version running (`changed`).
-    /// Without such an approval nothing runs.
+    /// The one rule: only an intact approval made for this very folder (its path and its identity) runs anything,
+    /// and it runs its stored definition: a file that changed, went away or broke keeps the approved version
+    /// running (`changed`). Without such an approval nothing runs; an approval for this path whose folder was
+    /// replaced says so (`folderReplaced`).
     public static func evaluate(current: SiteTasksFile.LoadResult, approved: ApprovedTasks?,
-                                sitePath: String) -> Evaluation {
+                                sitePath: String, folderIdentity: FolderIdentity? = nil) -> Evaluation {
+        let replaced = approved.map { $0.isIntact && $0.sitePath == sitePath && !$0.holds(at: sitePath, identity: folderIdentity) }
+            ?? false
+        var evaluation = evaluateFile(current: current, approved: replaced ? nil : approved, sitePath: sitePath)
+        evaluation.folderReplaced = replaced
+        // An approval made before today's path rules: its tasks run, the paths those rules refuse are left out,
+        // and it needs approving again.
+        if let running = evaluation.running {
+            evaluation.refusedPaths = refusedPaths(running.proxy)
+            if !evaluation.refusedPaths.isEmpty && evaluation.approval == .approved {
+                evaluation = Evaluation(approval: .changed, running: running, pending: nil, problem: nil,
+                                        refusedPaths: evaluation.refusedPaths)
+            }
+        }
+        return evaluation
+    }
+
+    /// The paths of `routes` that today's rules refuse (one that is not plain, or a case twin of another).
+    public static func refusedPaths(_ routes: [String: Int]) -> [String] {
+        var refused = Set(routes.keys.filter { !SiteTasksFile.isProxyPath($0) })
+        var seen: [String: String] = [:]
+        for path in routes.keys.sorted() where !refused.contains(path) {
+            if seen[path.lowercased()] != nil { refused.insert(path) } else { seen[path.lowercased()] = path }
+        }
+        return refused.sorted()
+    }
+
+    private static func evaluateFile(current: SiteTasksFile.LoadResult, approved: ApprovedTasks?,
+                                     sitePath: String) -> Evaluation {
         if let approved, approved.isIntact, approved.sitePath == sitePath {
             switch current {
             case .file(_, let hash) where hash == approved.hash:
@@ -80,6 +162,28 @@ public enum TaskApproval {
         case .invalid(let reason):
             return Evaluation(approval: .invalid(reason: reason), running: nil, pending: nil, problem: reason)
         }
+    }
+}
+
+extension TaskApproval {
+    /// The routes that can be used: the paths today's rules accept, to a port that isn't Paddock's own.
+    public static func usableRoutes(_ routes: [String: Int], reservedPorts: Set<Int>) -> [String: Int] {
+        let refused = Set(refusedPaths(routes))
+        return routes.filter { !refused.contains($0.key) && !reservedPorts.contains($0.value) }
+    }
+
+    /// The proxy routes Paddock serves: for each served site, the routes of an intact approval made for that very
+    /// folder (the approved definition, whatever the file says now), less any to one of `reservedPorts` (Paddock's
+    /// own).
+    public static func routes(state: State, sites: [Site], reservedPorts: Set<Int>) -> [String: [String: Int]] {
+        var routes: [String: [String: Int]] = [:]
+        for site in sites {
+            guard let approval = state.taskApprovals[site.name], let path = SiteTasksFile.realPath(site.path),
+                  approval.holds(at: path, identity: FolderIdentity.of(path: path)) else { continue }
+            let usable = usableRoutes(approval.file.proxy, reservedPorts: reservedPorts)
+            if !usable.isEmpty { routes[site.name] = usable }
+        }
+        return routes
     }
 }
 
@@ -154,6 +258,11 @@ public enum TaskState: Codable, Equatable, Sendable {
     /// A process an earlier Paddock left running that Paddock can't prove is its own: left alone, and no
     /// second copy is started.
     case alreadyRunning(pid: Int32)
+    /// Its stop was asked for and it is being given its grace.
+    case stopping
+    /// Processes an earlier run left in the task's group (its first process gone) still run: left alone, and no
+    /// second copy is started (`paddock tasks restart <task> --force` stops them).
+    case leftFromEarlierRun
 
     private enum Wire: Codable {
         case running(pid: Int32)
@@ -162,6 +271,8 @@ public enum TaskState: Codable, Equatable, Sendable {
         case crashed(reason: String)
         case waitingForApproval
         case alreadyRunning(pid: Int32)
+        case stopping
+        case leftFromEarlierRun
     }
 
     /// A state this build doesn't know reads as crashed with an "unknown state" reason.
@@ -173,6 +284,8 @@ public enum TaskState: Codable, Equatable, Sendable {
         case .crashed(let reason)?: self = .crashed(reason: reason)
         case .waitingForApproval?: self = .waitingForApproval
         case .alreadyRunning(let pid)?: self = .alreadyRunning(pid: pid)
+        case .stopping?: self = .stopping
+        case .leftFromEarlierRun?: self = .leftFromEarlierRun
         case nil: self = .crashed(reason: "unknown state")
         }
     }
@@ -186,6 +299,8 @@ public enum TaskState: Codable, Equatable, Sendable {
         case .crashed(let reason): wire = .crashed(reason: reason)
         case .waitingForApproval: wire = .waitingForApproval
         case .alreadyRunning(let pid): wire = .alreadyRunning(pid: pid)
+        case .stopping: wire = .stopping
+        case .leftFromEarlierRun: wire = .leftFromEarlierRun
         }
         try wire.encode(to: encoder)
     }
@@ -219,11 +334,16 @@ public struct PendingTask: Codable, Equatable, Sendable {
     public let run: String?
     /// For a proxy line, the port on this Mac the path is forwarded to.
     public let port: Int?
+    /// The command's length in Unicode scalars (as the 2000 limit counts), so a view can always show the whole
+    /// command or say how long it is.
+    public let runLength: Int?
 
-    public init(name: String, run: String?, port: Int?) {
+    /// `runLength` defaults to the length of `run`.
+    public init(name: String, run: String?, port: Int?, runLength: Int? = nil) {
         self.name = name
         self.run = run
         self.port = port
+        self.runLength = runLength ?? run?.unicodeScalars.count
     }
 }
 
@@ -237,17 +357,24 @@ public struct SiteTasksStatus: Codable, Equatable, Sendable {
     /// The hash of what `pending` shows: approving names it, so only what was shown is approved.
     public let pendingHash: String?
     public let notice: String?
+    /// The approved proxy routes in effect: path prefix -> port on 127.0.0.1.
+    public let routes: [String: Int]
+    /// The site's folder, symlinks resolved: where `pending` was read, and what approving names
+    /// (`tasksApprove`'s `folder`). Nil from an older daemon.
+    public let folder: String?
 
     public init(approval: TaskApprovalState, tasks: [TaskStatus], pending: [PendingTask], pendingHash: String?,
-                notice: String?) {
+                notice: String?, routes: [String: Int] = [:], folder: String? = nil) {
         self.approval = approval
         self.tasks = tasks
         self.pending = pending
         self.pendingHash = pendingHash
         self.notice = notice
+        self.routes = routes
+        self.folder = folder
     }
 
-    private enum CodingKeys: String, CodingKey { case approval, tasks, pending, pendingHash, notice }
+    private enum CodingKeys: String, CodingKey { case approval, tasks, pending, pendingHash, notice, routes, folder }
 
     /// Tolerant: missing lists are empty, and one task this build can't read never costs the rest.
     public init(from decoder: Decoder) throws {
@@ -257,12 +384,17 @@ public struct SiteTasksStatus: Codable, Equatable, Sendable {
         pending = (try? c.decodeIfPresent([Lenient<PendingTask>].self, forKey: .pending))?.compactMap(\.value) ?? []
         pendingHash = try? c.decodeIfPresent(String.self, forKey: .pendingHash)
         notice = try? c.decodeIfPresent(String.self, forKey: .notice)
+        routes = ((try? c.decodeIfPresent([String: Int].self, forKey: .routes)) ?? nil) ?? [:]
+        folder = try? c.decodeIfPresent(String.self, forKey: .folder)
     }
 
     /// The pending lines for a file: its tasks by name, then its proxy paths, each shown as `Messages` shows
     /// text from a file.
     public static func pendingLines(_ file: SiteTasksFile) -> [PendingTask] {
-        file.tasks.keys.sorted().map { PendingTask(name: $0, run: Messages.shownCommand(file.tasks[$0]!.run), port: nil) }
+        file.tasks.keys.sorted().map { name in
+            let run = file.tasks[name]!.run
+            return PendingTask(name: name, run: Messages.shownCommand(run), port: nil, runLength: run.unicodeScalars.count)
+        }
             + file.proxy.keys.sorted().map { PendingTask(name: $0, run: nil, port: file.proxy[$0]) }
     }
 }

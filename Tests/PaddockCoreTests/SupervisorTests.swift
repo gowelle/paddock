@@ -108,6 +108,45 @@ final class SupervisorTests: XCTestCase {
         XCTAssertEqual(log, (ServiceManager.realPath(folder.path) ?? "?") + "\n")
     }
 
+    /// A log over 20 MB is set aside as `<name>.1` (replacing an older one) before the process opens it; a smaller
+    /// one is kept and appended to.
+    func testALargeLogIsSetAsideBeforeTheProcessStarts() throws {
+        supervisor = Supervisor()
+        let log = dir.appendingPathComponent("big.log")
+        let old = URL(fileURLWithPath: log.path + ".1")
+        try Data("older".utf8).write(to: old)
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: log)
+        try handle.truncate(atOffset: 21 * 1024 * 1024)
+        try handle.close()
+        try supervisor.start(shell("big", "echo fresh; exec sleep 60"))
+        XCTAssertTrue(waitUntil(5) { self.lines("big.log") == 1 })
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: old.path)[.size] as? UInt64, 21 * 1024 * 1024)
+        XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), "fresh\n")
+
+        let small = dir.appendingPathComponent("small.log")
+        try Data("kept\n".utf8).write(to: small)
+        try supervisor.start(shell("small", "echo more; exec sleep 60"))
+        XCTAssertTrue(waitUntil(5) { self.lines("small.log") == 2 })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: small.path + ".1"))
+    }
+
+    /// The daemon's own log, held open by the daemon itself (as its stdout and stderr): set aside at its start and
+    /// the descriptors moved to a fresh file, so nothing goes on writing to the old one.
+    func testALogTheDaemonHoldsIsSetAsideAndReopened() throws {
+        let log = dir.appendingPathComponent("paddockd.log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        let held = open(log.path, O_WRONLY | O_APPEND)
+        XCTAssertGreaterThanOrEqual(held, 0)
+        defer { close(held) }
+        XCTAssertEqual(ftruncate(held, 25 * 1024 * 1024), 0)
+        XCTAssertTrue(LogFiles.rotateHeldLog(log, descriptors: [held]))
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: log.path + ".1")[.size] as? UInt64, 25 * 1024 * 1024)
+        _ = "new line\n".withCString { write(held, $0, strlen($0)) }
+        XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), "new line\n", "the descriptor writes to the fresh file")
+        XCTAssertFalse(LogFiles.rotateHeldLog(log, descriptors: [held]), "small now: left alone")
+    }
+
     func testEnvironmentAndLogFile() throws {
         supervisor = Supervisor()
         try supervisor.start(shell("env", "echo \"value=$PDK_TEST\"; echo err >&2; exec sleep 60",

@@ -1,5 +1,22 @@
 import Foundation
 
+/// Why a process of a task's recorded group isn't provably left from that task's earlier run.
+public enum LeftoverReason: Equatable, Sendable {
+    case notInSiteFolder, startedEarlier, anotherUser, anotherBoot, runByPaddock
+}
+
+/// Why a task's command can't be approved (`Messages.commandProblem`).
+public enum CommandProblem: Equatable, Sendable {
+    /// A character that would show other than it runs, by position (Unicode scalars, from 1) and code point.
+    case character(position: Int, codePoint: UInt32)
+    /// Characters not in NFC.
+    case decomposed
+    /// A space at the start or the end.
+    case edgeSpace
+    /// A ninth space in a row, at this position.
+    case spaceRun(position: Int)
+}
+
 /// The plain sentences Paddock's clients print. Pure functions, so they can be tested without a daemon.
 public enum Messages {
     public static let notRunning = "Paddock isn't running."
@@ -92,7 +109,7 @@ public enum Messages {
         } else if status.hasReplacedRootsToClean {
             lines.append(olderCertificateStillTrusted)
         }
-        return lines
+        return lines + status.notices
     }
 
     public static let securedSitesNeedTrust = "Secured sites need your approval once: run paddock trust"
@@ -296,16 +313,30 @@ public enum Messages {
     /// Replaces the `.env` lines that name a service's Unix socket when its path would be too long.
     public static let unixSocketDisabled = "# Unix socket disabled: Paddock's folder path is too long"
 
-    /// The `.env` lines `paddock service add` prints: a secret's value (a master key) is left out and the
-    /// line says where to get it, so it isn't left in a terminal's scrollback by every add.
+    /// The `.env` lines `paddock service add` prints: the status's (which never hold a secret), then for each
+    /// secret a comment saying how to get it, safe to paste into `.env` as it is.
     public static func addedEnvLines(_ status: ServiceStatus) -> [String] {
-        let secret = Set(status.secretEnvNames ?? [])
-        return status.env.map { line in
-            guard let name = line.split(separator: "=", maxSplits: 1).first.map(String.init), secret.contains(name) else {
-                return line
-            }
-            return "\(name)=…   (secret; see: paddock service env \(status.id))"
-        }
+        status.env + (status.secretEnvNames ?? []).map { secretEnvComment($0, id: status.id) }
+    }
+
+    /// `# MEILISEARCH_KEY: run "paddock service env meilisearch-1-57"`
+    public static func secretEnvComment(_ name: String, id: String) -> String {
+        "# \(name): run \"paddock service env \(id)\""
+    }
+
+    /// What `paddock service remove` prints (and the app shows).
+    public static func serviceRemoved(_ name: String, dataPath: String, deletedData: Bool) -> String {
+        deletedData ? "Removed \(name) and deleted its data." : "Removed \(name). Its data is still at \(dataPath)."
+    }
+
+    /// A log a running process holds has grown very large (it is never cut while it runs).
+    public static func logVeryLarge(megabytes: Int, path: String) -> String {
+        "Its log is very large (\(megabytes) MB): \(path). Restart it to start a fresh log."
+    }
+
+    /// A service whose saved key was gone while its data stayed got a new one.
+    public static func serviceNewKey(name: String, id: String) -> String {
+        "\(name) has a new key because its saved key was missing. Update your project's .env: paddock service env \(id)."
     }
 
     /// What `paddock service create-db` prints.
@@ -422,13 +453,18 @@ public enum Messages {
     }
 
     /// Columns: kind, name, series (newest first), licence, the newest series' download size (`none` for a
-    /// service that downloads nothing).
+    /// service that downloads nothing); then, after a blank line, why a series can't run on this Mac.
     public static func catalogTable(_ entries: [CatalogEntry]) -> String {
-        table([["KIND", "SERVICE", "SERIES", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
+        var reasons: [String] = []
+        for reason in entries.flatMap({ $0.series.compactMap(\.unavailableReason) }) where !reasons.contains(reason) {
+            reasons.append(reason)
+        }
+        let rows = table([["KIND", "SERVICE", "SERIES", "LICENCE", "DOWNLOAD"]] + entries.map { entry in
             let bytes = entry.series.first.map(\.downloadBytes) ?? entry.downloadBytes
             return [entry.kind, entry.displayName, entry.series.map(\.series).joined(separator: ", "), entry.licence,
                     bytes.map { $0 == 0 ? "none" : "\(max(1, Int((Double($0) / 1_000_000).rounded()))) MB" } ?? "?"]
         })
+        return reasons.isEmpty ? rows : rows + "\n\n" + reasons.joined(separator: "\n")
     }
 
     /// Left-aligned columns two spaces apart; the last column is not padded.
@@ -443,22 +479,44 @@ public enum Messages {
 
     // MARK: - Site tasks
 
-    /// Whether a command shows exactly as it runs: no control, format (bidirectional overrides among them),
-    /// separator, private-use, surrogate or unassigned characters, no escape sequences, and no whitespace but
-    /// the plain space. A command that doesn't can't be approved: the user would approve text they can't see.
-    public static func isShowable(_ command: String) -> Bool {
-        command.unicodeScalars.allSatisfy { scalar in
-            if scalar == " " { return true }
-            if scalar.properties.isWhitespace { return false }
-            switch scalar.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator, .spaceSeparator, .privateUse, .surrogate,
-                 .unassigned:
-                return false
+    /// Why a command wouldn't show exactly as it runs: nil when it is plain text. In order: a space at either
+    /// end; characters not in NFC (an accent typed as a separate mark: Paddock never changes the bytes it shows,
+    /// hashes and runs, so it asks for them to be retyped); then, by position (in Unicode scalars, from 1), the
+    /// first control, format (bidirectional overrides among them), surrogate, private-use or unassigned character,
+    /// line or paragraph separator, combining mark (which can lay one character over another), default-ignorable
+    /// code point (Hangul fillers, variation selectors…), braille blank, whitespace other than the ASCII space, or
+    /// a ninth space in a row.
+    public static func commandProblem(in command: String) -> CommandProblem? {
+        let scalars = Array(command.unicodeScalars)
+        if scalars.first == " " || scalars.last == " " { return .edgeSpace }
+        if Array(command.precomposedStringWithCanonicalMapping.unicodeScalars) != scalars { return .decomposed }
+        var spaces = 0
+        for (index, scalar) in scalars.enumerated() {
+            let position = index + 1
+            if scalar == " " {
+                spaces += 1
+                if spaces > 8 { return .spaceRun(position: position) }
+                continue
+            }
+            spaces = 0
+            let properties = scalar.properties
+            if properties.isWhitespace || properties.isDefaultIgnorableCodePoint || scalar.value == 0x2800 {
+                return .character(position: position, codePoint: scalar.value)
+            }
+            switch properties.generalCategory {
+            case .nonspacingMark, .enclosingMark, .format, .control, .surrogate, .privateUse, .unassigned,
+                 .lineSeparator, .paragraphSeparator, .spaceSeparator:
+                return .character(position: position, codePoint: scalar.value)
             default:
-                return true
+                continue
             }
         }
+        return nil
     }
+
+    /// Whether a command shows exactly as it runs (`commandProblem` finds nothing). A command that doesn't can't
+    /// be approved: the user would approve text they can't see.
+    public static func isShowable(_ command: String) -> Bool { commandProblem(in: command) == nil }
 
     /// A task's command as Paddock shows it: exactly as written when it `isShowable`, else what `displayName`
     /// leaves of it.
@@ -476,6 +534,14 @@ public enum Messages {
             + "Review the change with: paddock tasks on --show"
     }
 
+    /// An approval for this path whose folder is not the one approved (deleted and made again, or another folder
+    /// moved into its place): nothing of it runs or forwards.
+    public static let tasksFolderReplaced =
+        "This folder was replaced since its tasks were approved. Review and approve again."
+
+    /// `tasksApprove` named another folder than the site has now.
+    public static let tasksFolderChanged = "This site now points at a different folder. Review and approve again."
+
     public static func tasksFileRemoved(site: String) -> String {
         "\(site): paddock.json is gone; the approved tasks keep running. Stop them with: paddock tasks off"
     }
@@ -488,18 +554,80 @@ public enum Messages {
         "\(site): paddock.json can't be used: \(reason)."
     }
 
-    public static func commandNotShowable(task: String) -> String {
-        "The command of task \"\(task)\" contains characters that cannot be shown, so Paddock won't approve it. "
-            + "Make it plain text in paddock.json."
+    public static func commandNotShowable(task: String, problem: CommandProblem) -> String {
+        switch problem {
+        case .character(let position, let codePoint):
+            return "The command of task \"\(task)\" has a character that cannot be shown, at position \(position) "
+                + "(U+\(String(format: "%04X", codePoint))), so Paddock won't approve it. Make it plain text in paddock.json."
+        case .decomposed:
+            return "Paddock won't approve the command of task \"\(task)\". This command contains decomposed characters "
+                + "(for example an accent typed separately). Retype that part."
+        case .edgeSpace:
+            return "Paddock won't approve the command of task \"\(task)\": it starts or ends with a space."
+        case .spaceRun(let position):
+            return "Paddock won't approve the command of task \"\(task)\": it has more than 8 spaces in a row at "
+                + "position \(position)."
+        }
     }
 
-    public static let tasksUseBasicEnvironment = "Paddock couldn't read your shell's environment, so tasks run with a "
-        + "basic PATH. Check your shell's startup files, then run: paddock tasks on"
+    /// The notice of a site whose tasks run with the basic environment, and why.
+    public static func tasksUseBasicEnvironment(_ reason: ShellEnvironment.FallbackReason) -> String {
+        let why: String
+        switch reason {
+        case .timedOut: why = "your shell took longer than \(Int(ShellEnvironment.timeout)) seconds to start"
+        case .shellFailed: why = "your shell exited with an error"
+        case .tooLarge: why = "its environment is larger than \(ShellEnvironment.maximumEnvironmentBytes / 1024) KB"
+        case .markerMissing: why = "your shell didn't print its environment"
+        }
+        return "Paddock couldn't read your shell's environment (\(why)), so tasks run with a basic PATH. "
+            + "Check your shell's startup files, then run: paddock tasks on"
+    }
 
     /// A task that kept finishing by itself.
-    public static let taskKeepsExiting = "It finished by itself \(SiteTaskManager.exitedLimit) times within "
-        + "\(Int(SiteTaskManager.exitedWindow)) seconds, so Paddock stopped restarting it. A task should be a command "
-        + "that keeps running."
+    public static func taskKeepsFinishing(task: String) -> String {
+        "\(task) keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running."
+    }
+
+    /// The warning of a task listening beyond this Mac (it keeps running); nil for an address only this Mac can
+    /// reach. A port Paddock doesn't know is left out.
+    public static func listening(_ address: ListeningAddress) -> String? {
+        guard !address.isLoopback else { return nil }
+        let port = address.port.map { " (port \($0))" } ?? ""
+        if address.isEverywhere {
+            return "Listening on all network interfaces\(port). Add --host=127.0.0.1 or similar to keep it on this Mac."
+        }
+        return "Listening on \(printable(address.host) ?? "?")\(port), which other devices can reach."
+    }
+
+    /// The line in a task's log when the site's code changed.
+    public static let taskRestartingForChange = "The site's code changed; restarting."
+
+    /// `paddock tasks stop` (or `off`) after a few seconds.
+    public static func waitingForTask(_ task: String) -> String { "Waiting for \(task) to finish…" }
+
+    /// What `paddock tasks restart --force` stopped, and what it left (and why).
+    public static func leftoversStopped(task: String, stopped: [Int32], left: [(Int32, LeftoverReason)]) -> String {
+        let leftList = left.map { "\($0.0) (\(leftoverReason($0.1)))" }.joined(separator: ", ")
+        if stopped.isEmpty {
+            guard !left.isEmpty else { return "Found no processes left from an earlier run of \(task)." }
+            return "Found no processes left from an earlier run of \(task) that are provably that task's. "
+                + "Left \(left.count): \(leftList)."
+        }
+        var text = "Stopped \(stopped.count) process\(stopped.count == 1 ? "" : "es") left from an earlier run of \(task): "
+            + stopped.map(String.init).joined(separator: ", ") + "."
+        if !left.isEmpty { text += " Left \(left.count) that aren't provably that task's: \(leftList)." }
+        return text
+    }
+
+    static func leftoverReason(_ reason: LeftoverReason) -> String {
+        switch reason {
+        case .notInSiteFolder: return "not in the site's folder"
+        case .startedEarlier: return "started before the task's record"
+        case .anotherUser: return "another user's process; Paddock can't inspect or stop it"
+        case .anotherBoot: return "the record is from another boot"
+        case .runByPaddock: return "run by Paddock"
+        }
+    }
 
     public static func taskRestarting(status: Int32) -> String {
         "exited with status \(status); Paddock restarts it in a moment"
@@ -520,8 +648,8 @@ public enum Messages {
 
     public static let taskSiteGone = "The site's folder is gone, so Paddock stopped this task."
 
-    /// `running (pid 12)`, `stopped by you`…
-    public static func taskState(_ state: TaskState) -> String {
+    /// `running (pid 12)`, `stopped by you`…; with `task`, a state the user must clear names how.
+    public static func taskState(_ state: TaskState, task: String? = nil) -> String {
         switch state {
         case .running(let pid): return "running (pid \(pid))"
         case .starting: return "starting"
@@ -532,9 +660,13 @@ public enum Messages {
             case .notAutostart?: return "stopped (doesn't start with Paddock)"
             case .unknown?, nil: return "stopped"
             }
+        case .stopping: return "stopping"
         case .crashed(let reason): return "crashed: \(reason)"
         case .waitingForApproval: return "waiting for your approval"
         case .alreadyRunning(let pid): return "already running (pid \(pid)), not started by this Paddock"
+        case .leftFromEarlierRun:
+            return "already running (processes left from an earlier run), not started by this Paddock"
+                + (task.map { "; run: paddock tasks restart \($0) --force" } ?? "")
         }
     }
 
@@ -543,23 +675,33 @@ public enum Messages {
     public static func siteTasksLines(_ sites: [Site]) -> [String] {
         var lines: [String] = []
         for site in sites {
-            guard let tasks = site.tasks else { continue }
+            guard let tasks = site.tasks else {
+                if let notice = site.notice { lines.append("\(site.name): \(notice)") }
+                continue
+            }
             switch tasks.approval {
             case .none: break
-            case .needsApproval: lines.append(tasksWaitingForApproval(site: site.name))
+            case .needsApproval:
+                lines.append(tasksWaitingForApproval(site: site.name))
+                // Why (a replaced folder), when the site says.
+                if let notice = tasks.notice { lines.append("\(site.name): \(notice)") }
             case .invalid(let reason): lines.append(tasksFileInvalid(site: site.name, reason: reason))
             case .approved, .changed:
-                for task in tasks.tasks { lines.append("\(site.name)/\(task.name): \(taskState(task.state))") }
+                for task in tasks.tasks { lines.append("\(site.name)/\(task.name): \(taskState(task.state, task: task.name))") }
+                lines += routeLines(tasks, site: site).map { "\(site.name): \($0)" }
                 if tasks.approval == .changed, let notice = tasks.notice { lines.append(notice) }
             }
         }
         return lines
     }
 
-    /// Columns: task, state, command; then the site's notice and each task's warning, one line each.
-    public static func taskTable(_ status: SiteTasksStatus) -> String {
+    /// Columns: task, state, command; then which tasks restart when code changes, the site's routes (`routes`,
+    /// as `routeLines` gives them), each task's warning and the site's notice, one line each.
+    public static func taskTable(_ status: SiteTasksStatus, routes: [String] = []) -> String {
         var lines = [table([["TASK", "STATE", "COMMAND"]]
-                           + status.tasks.map { [$0.name, taskState($0.state), $0.run] })]
+                           + status.tasks.map { [$0.name, taskState($0.state, task: $0.name), $0.run] })]
+        lines += status.tasks.filter(\.restartOnChange).map { "\($0.name): restarts when code changes" }
+        lines += routes
         lines += status.tasks.compactMap { task in task.warning.map { "\(task.name): \($0)" } }
         if let notice = status.notice { lines.append(notice) }
         return lines.joined(separator: "\n")
@@ -580,12 +722,50 @@ public enum Messages {
 
     public static func nothingToApprove(path: String) -> String { "\(path) has no tasks or proxy paths to approve." }
 
-    /// What approving shows: every task with its command, then every proxy line.
-    public static func approvalLines(_ pending: [PendingTask]) -> [String] {
+    /// What approving shows: every task with its command, then every proxy line, as the site's own address.
+    public static func approvalLines(_ pending: [PendingTask], site: Site) -> [String] {
         pending.map { line in
-            if let port = line.port { return "proxy \(line.name) → 127.0.0.1:\(port)" }
+            if let port = line.port { return forward(site, prefix: line.name, port: port) }
             return "\(line.name): \(line.run ?? "")"
         }
+    }
+
+    /// `forward https://shop.test/app → 127.0.0.1:8080`
+    public static func forward(_ site: Site, prefix: String, port: Int) -> String {
+        "forward \(site.secured ? "https" : "http")://\(site.host)\(prefix) → 127.0.0.1:\(port)"
+    }
+
+    /// A site's routes in effect, shortest prefix first.
+    public static func routeLines(_ status: SiteTasksStatus, site: Site) -> [String] {
+        status.routes.sorted { $0.key < $1.key }.map { forward(site, prefix: $0.key, port: $0.value) }
+    }
+
+    /// Caddy's answer on a route whose port nothing listens on.
+    public static func nothingListening(port: Int, prefix: String) -> String {
+        "Paddock: nothing is listening on port \(port) for \(prefix) (is the task running?)"
+    }
+
+    /// For `paddock tasks on` and the example file: how forwarding paths match.
+    public static let forwardingIgnoresCase = "Forwarding paths (\"proxy\") match whatever the upper and lower case: "
+        + "/app also forwards /App."
+
+    public static func forwardingPathNoLongerAccepted(_ path: String) -> String {
+        "A forwarding path in the approved file is no longer accepted: \(printable(path, limit: 120) ?? "?"). "
+            + "Edit paddock.json and approve again."
+    }
+
+    public static func routeOnPaddocksPort(prefix: String, port: Int) -> String {
+        "The route \(prefix) isn't used: port \(port) is Paddock's own."
+    }
+
+    /// A withdrawal (or other change) whose reload failed: what Caddy serves still forwards.
+    public static func forwardingStillActive(_ reason: String) -> String {
+        "Forwarding for this site is still active until Paddock can reload the web server: "
+            + "\(printable(reason, limit: 200) ?? "it refused the change")"
+    }
+
+    public static func proxyRoutesNotApplied(_ reason: String) -> String {
+        "Paddock couldn't apply this site's forwarding: \(printable(reason, limit: 200) ?? "the web server refused it")"
     }
 
     public static func taskError(_ error: SiteTaskError) -> String {
@@ -600,8 +780,15 @@ public enum Messages {
             return "\(site)'s tasks aren't approved yet. Review and approve them with: paddock tasks on"
         case .unknownTask(let site, let task):
             return "\(site) has no task named \"\(printable(task) ?? "?")\". See: paddock tasks"
-        case .notShowable(_, let task):
-            return commandNotShowable(task: task)
+        case .notShowable(_, let task, let problem):
+            return commandNotShowable(task: task, problem: problem)
+        case .stillStopping(let task):
+            return "\(task) is still stopping."
+        case .leftoverProcesses(_, let task):
+            return "\(task) is already running (processes left from an earlier run), not started by this Paddock. "
+                + "Stop them with: paddock tasks restart \(task) --force"
+        case .folderChanged:
+            return tasksFolderChanged
         case .changedSinceShown(let site):
             return "\(site)'s paddock.json changed after it was shown, so Paddock approved nothing. "
                 + "Review it again with: paddock tasks on --show"

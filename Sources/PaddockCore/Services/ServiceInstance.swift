@@ -147,7 +147,8 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
     public let id, name, kind, version, displayName: String
     public var state: ServiceState
     public let ports: [String: Int]
-    /// The `.env` lines for a Laravel app, rendered.
+    /// The `.env` lines for a Laravel app, rendered, less those holding a secret (`secretEnvNames`): every client
+    /// gets the status on every poll, so secrets are answered only to `serviceEnv`.
     public let env: [String]
     public let openURL: String?
     public let dataPath: String
@@ -162,8 +163,8 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
     public let series: String?
     /// Its recipe's notes (`Includes PostGIS 3.6.4 (no raster or topology).`); nil from an older daemon.
     public let notes: [String]?
-    /// The `.env` variables in `env` whose values are secrets (`MEILISEARCH_KEY`); nil when none. Clients
-    /// print them only when asked for the `.env` lines (`paddock service env`).
+    /// The `.env` variables whose values are secrets (`MEILISEARCH_KEY`), left out of `env`; nil when none.
+    /// `serviceEnv` (`paddock service env`) answers their lines.
     public let secretEnvNames: [String]?
 
     public init(id: String, name: String, kind: String, version: String, displayName: String, state: ServiceState,

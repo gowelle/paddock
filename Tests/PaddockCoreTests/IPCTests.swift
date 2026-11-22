@@ -49,6 +49,8 @@ final class IPCTests: XCTestCase {
             .serviceCreateDatabase(name: "postgres-18", database: "shop"),
             .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
             .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
+            .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail"),
+            .tasksApprove(site: "shop", hash: "v1:abc", folder: "/Users/me/Code/shop"),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -56,6 +58,12 @@ final class IPCTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 7, "serviceCreateDatabase is new: the build number moves on")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 8, "ServiceStatus.notes is new: the build number moves on")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 15, "serviceEnv is new and status leaves secrets out")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 16, "catalog entries say why they can't run here")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 17, "approvals name their folder; tasksApprove may too")
+        // An approval from a client that doesn't name the folder still reads.
+        let older = try JSONDecoder().decode(Request.self, from: Data(#"{"tasksApprove":{"site":"shop","hash":"v1:x"}}"#.utf8))
+        XCTAssertEqual(older, .tasksApprove(site: "shop", hash: "v1:x", folder: nil))
     }
 
     // MARK: - What a development build may send
@@ -71,7 +79,8 @@ final class IPCTests: XCTestCase {
          .serviceStart(name: "mail"), .serviceStop(name: "mail"), .serviceRestart(name: "mail"), .serviceCatalog,
          .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop"),
          .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
-         .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop")]
+         .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
+         .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail")]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -107,11 +116,14 @@ final class IPCTests: XCTestCase {
         case .taskStop: return "taskStop"
         case .taskRestart: return "taskRestart"
         case .tasksInit: return "tasksInit"
+        case .taskForceRestart: return "taskForceRestart"
+        case .tasksStatus: return "tasksStatus"
+        case .serviceEnv: return "serviceEnv"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 31, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 34, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }
@@ -129,11 +141,13 @@ final class IPCTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(seen.value.map(caseName), ["status", "serviceCatalog"],
+        XCTAssertEqual(seen.value.map(caseName), ["status", "serviceCatalog", "tasksStatus"],
                        "exactly the read-only requests were sent")
-        XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status", "serviceCatalog"],
+        XCTAssertEqual(everyRequest.filter(\.isReadOnly).map(caseName), ["status", "serviceCatalog", "tasksStatus"],
                        "listing the catalog only reads; every other service request, and every site task request, "
                            + "changes something")
+        XCTAssertFalse(Request.serviceEnv(id: "meilisearch-1-57").isReadOnly,
+                       "a service's .env lines hold its secrets: a development build may not fetch them from a real home")
 
         // A client of any other home, or of an installed build, sends everything.
         XCTAssertFalse(PaddockClient(paths: paths).readOnly, "not the real home")
@@ -148,6 +162,12 @@ final class IPCTests: XCTestCase {
                                    downloadBytes: 11_224_715)]),
             .removed(dataPath: "/h/services/mail/data", status: sampleStatus()),
             .databaseCreated(database: "shop", alreadyExisted: true, status: sampleStatus()),
+            .envLines(["MEILISEARCH_HOST=http://127.0.0.1:7700", "MEILISEARCH_KEY=s3cr3t"]),
+            .catalog([CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18.7.0"],
+                                   downloadBytes: nil,
+                                   series: [CatalogSeries(series: "18", version: "18.7.0", downloadBytes: nil,
+                                                          needsDownload: true, unavailableReason: "PostgreSQL 18 needs macOS 15 or later.")],
+                                   unavailableReason: "PostgreSQL 18 needs macOS 15 or later.")]),
         ]
         for response in responses {
             let data = try JSONEncoder().encode(response)
@@ -412,4 +432,15 @@ final class Locked<T>: @unchecked Sendable {
     init(_ value: T) { stored = value }
     var value: T { lock.lock(); defer { lock.unlock() }; return stored }
     func withValue(_ body: (inout T) -> Void) { lock.lock(); body(&stored); lock.unlock() }
+}
+
+extension IPCTests {
+    /// A catalog from an older daemon has no reasons: everything reads as available.
+    func testCatalogWithoutReasonsReadsAsAvailable() throws {
+        let json = #"[{"kind":"mail","displayName":"Mail","licence":"MIT","versions":["1.34.0"],"#
+            + #""series":[{"series":"1","version":"1.34.0","needsDownload":true}]}]"#
+        let entries = try JSONDecoder().decode([CatalogEntry].self, from: Data(json.utf8))
+        XCTAssertNil(entries[0].unavailableReason)
+        XCTAssertNil(entries[0].series[0].unavailableReason)
+    }
 }

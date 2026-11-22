@@ -46,6 +46,9 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
     public let tld: String
     /// The site's tasks (`paddock.json`), as the daemon last saw them; nil without a file or from an older daemon.
     public var tasks: SiteTasksStatus?
+    /// A sentence about the site itself when it has no tasks to show it under (its forwarding still active after a
+    /// withdrawal Paddock couldn't apply); nil otherwise, and from an older daemon.
+    public var notice: String?
 
     public var id: String { name }
     public var host: String { "\(name).\(tld)" }
@@ -63,7 +66,7 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
         self.tasks = tasks
     }
 
-    private enum CodingKeys: String, CodingKey { case name, path, kind, secured, php, pinned, tld, tasks }
+    private enum CodingKeys: String, CodingKey { case name, path, kind, secured, php, pinned, tld, tasks, notice }
 
     /// As before tasks existed; `tasks` that can't be read are left out rather than costing the site.
     public init(from decoder: Decoder) throws {
@@ -76,6 +79,7 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
         pinned = try c.decode(Bool.self, forKey: .pinned)
         tld = try c.decode(String.self, forKey: .tld)
         tasks = try? c.decodeIfPresent(SiteTasksStatus.self, forKey: .tasks)
+        notice = try? c.decodeIfPresent(String.self, forKey: .notice)
     }
 }
 

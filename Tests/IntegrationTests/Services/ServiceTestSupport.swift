@@ -64,6 +64,19 @@ enum FakeService {
             actions: actions, lockFiles: lockFiles, notes: notes)
     }
 
+    /// The fake with a secret in its environment and its .env lines (`FAKE_SECRET`).
+    static func keyedRecipe() -> ServiceRecipe {
+        let base = recipe()
+        return ServiceRecipe(
+            kind: base.kind, displayName: base.displayName, version: base.version, series: base.series,
+            seriesInID: base.seriesInID, licence: base.licence, assets: base.assets, initialise: base.initialise,
+            start: RecipeCommand(executable: base.start.executable, arguments: base.start.arguments,
+                                 environment: ["FAKE_KEY": "{secret.master_key}"]),
+            ready: base.ready, stopGraceSeconds: base.stopGraceSeconds, ports: base.ports, socket: base.socket,
+            env: base.env + ["FAKE_SECRET={secret.master_key}"], openURL: base.openURL,
+            secrets: [RecipeSecret(name: "master_key", bytes: 32)])
+    }
+
     /// Like createdb: `action <data> <database>` makes `made-<database>` in the data folder, and says
     /// `"<database>" already exists` the second time.
     static let createDatabase = RecipeAction(

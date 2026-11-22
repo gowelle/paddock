@@ -25,15 +25,24 @@ public enum Request: Codable, Equatable, Sendable {
     /// Creates a database in a running service (answered with `.databaseCreated`); one already there is not
     /// an error.
     case serviceCreateDatabase(name: String, database: String)
-    /// Approves the site's `paddock.json` as it is now, provided its hash is `hash` (what the user was shown),
-    /// and starts its tasks.
-    case tasksApprove(site: String, hash: String)
+    /// Approves the site's `paddock.json` as it is now, provided its hash is `hash` (what the user was shown) and,
+    /// when given, the site's folder (symlinks resolved) is still `folder` (where the user was shown it), and starts
+    /// its tasks.
+    case tasksApprove(site: String, hash: String, folder: String? = nil)
     /// Stops the site's tasks and withdraws the approval.
     case tasksRevoke(site: String)
     /// Start, stop or restart one approved task. A stop is remembered (across restarts) until a start.
     case taskStart(site: String, task: String), taskStop(site: String, task: String), taskRestart(site: String, task: String)
     /// Writes the starter `paddock.json` for a Laravel site that has none; never overwrites.
     case tasksInit(site: String)
+    /// Restarts the task after stopping only the processes an earlier run left in its group (answered with the
+    /// status; the task's warning says what was stopped).
+    case taskForceRestart(site: String, task: String)
+    /// The status, after reading the site's `paddock.json` again (nothing else changes).
+    case tasksStatus(site: String)
+    /// A service's full `.env` lines, its secrets' values included (answered with `.envLines`); changes nothing.
+    /// `status` leaves those lines out, so a secret is sent only to a client that asks for it.
+    case serviceEnv(id: String)
 }
 
 extension Request {
@@ -41,12 +50,27 @@ extension Request {
     /// home's daemon). Every case must be classified here: no `default`.
     public var isReadOnly: Bool {
         switch self {
-        case .status, .serviceCatalog:
+        case .status, .serviceCatalog, .tasksStatus:
             return true
         case .start, .stop, .restart, .shutdown, .park, .forget, .link, .unlink, .secure, .unsecure,
              .isolate, .unisolate, .use, .installPHP, .removePHP, .trust,
              .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceUpdate,
-             .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit:
+             .serviceCreateDatabase, .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit,
+             .taskForceRestart,
+             // Only reads, but answers secrets: a development build may not fetch them from the real home.
+             .serviceEnv:
+            return false
+        }
+    }
+}
+
+extension Request {
+    /// The site task requests that change something; they run outside the queue of other changes.
+    var isSiteTaskChange: Bool {
+        switch self {
+        case .tasksApprove, .tasksRevoke, .taskStart, .taskStop, .taskRestart, .tasksInit, .taskForceRestart:
+            return true
+        default:
             return false
         }
     }
@@ -61,6 +85,8 @@ public enum Response: Codable, Equatable, Sendable {
     case removed(dataPath: String, status: EngineStatus)
     /// `serviceCreateDatabase` worked: `database` was created, or was there already.
     case databaseCreated(database: String, alreadyExisted: Bool, status: EngineStatus)
+    /// A service's full `.env` lines, secrets included (`serviceEnv`).
+    case envLines([String])
 }
 
 /// The `code` values of `Response.error`.

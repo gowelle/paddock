@@ -226,9 +226,15 @@ final class ServiceRecipeAdditionsTests: XCTestCase {
         XCTAssertEqual(StateStore(paths: home.paths).load().services, [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.serviceBin(kind: "fake", version: "1.0").path),
                        "nothing downloaded")
+        // The catalog says so before anyone tries, in the refusal's words.
+        let listed = try XCTUnwrap(manager.catalogEntries().first)
+        XCTAssertEqual(listed.unavailableReason, "Fake needs macOS 15 or later.")
+        XCTAssertEqual(listed.series.map(\.unavailableReason), ["Fake needs macOS 15 or later."])
 
         let current = makeManager([fake(minimumMacOS: "15.0")],
                                   macOS: OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0))
+        XCTAssertNil(current.catalogEntries().first?.unavailableReason)
+        XCTAssertEqual(current.catalogEntries().first?.series.map(\.unavailableReason), [nil])
         _ = try await current.add(kind: "fake", version: nil)
     }
 

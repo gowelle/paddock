@@ -136,4 +136,94 @@ final class CaddyfileTests: XCTestCase {
         XCTAssertEqual(out.components(separatedBy: "bind \"unix//h/Paddock/run/https.sock\"").count - 1, 1)
         XCTAssertEqual(out.components(separatedBy: "bind ").count - 1, 4, out)
     }
+
+    // MARK: - Proxy routes
+
+    private func render(_ sites: [Site], proxies: [String: [String: Int]]) -> String {
+        var settings = Settings()
+        settings.httpPort = 18080
+        settings.httpsPort = 18443
+        return Caddyfile.render(sites: sites, defaultPHP: v84, paths: paths, settings: settings, proxies: proxies)
+    }
+
+    func testASecuredSiteProxiesOverHTTPSBeforeItsPHP() {
+        let out = render([site("shop", secured: true, pinned: true, php: v83)],
+                         proxies: ["shop": ["/app": 8080, "/app/admin": 9000]])
+        XCTAssertTrue(out.contains("""
+        https://shop.test, https://*.shop.test {
+            bind "unix//h/Paddock/run/https.sock"
+            tls internal
+            handle "/app/admin/*" {
+                reverse_proxy 127.0.0.1:9000
+            }
+            handle "/app/admin" {
+                reverse_proxy 127.0.0.1:9000
+            }
+            handle "/app/*" {
+                reverse_proxy 127.0.0.1:8080
+            }
+            handle "/app" {
+                reverse_proxy 127.0.0.1:8080
+            }
+            handle {
+                import paddock_php "/h/Paddock/run/php-8.3.sock"
+            }
+            handle_errors 502 {
+                @proxy0 path "/app/admin" "/app/admin/*"
+                respond @proxy0 "Paddock: nothing is listening on port 9000 for /app/admin (is the task running?)" 502
+                @proxy1 path "/app" "/app/*"
+                respond @proxy1 "Paddock: nothing is listening on port 8080 for /app (is the task running?)" 502
+            }
+        }
+        """), out)
+        XCTAssertTrue(out.contains("http://shop.test, http://*.shop.test {\n    bind \"unix//h/Paddock/run/http.sock\"\n"
+            + "    redir https://{host}:18443{uri}\n}"), "a secured site's HTTP still redirects: it proxies over HTTPS only")
+    }
+
+    func testAnUnsecuredSiteGetsItsOwnHTTPBlock() {
+        let out = render([site("blog")], proxies: ["blog": ["/ws": 6001]])
+        XCTAssertTrue(out.contains("""
+        http://blog.test, http://*.blog.test {
+            bind "unix//h/Paddock/run/http.sock"
+            handle "/ws/*" {
+                reverse_proxy 127.0.0.1:6001
+            }
+            handle "/ws" {
+                reverse_proxy 127.0.0.1:6001
+            }
+            handle {
+                import paddock_php "/h/Paddock/run/php-8.4.sock"
+            }
+            handle_errors 502 {
+                @proxy0 path "/ws" "/ws/*"
+                respond @proxy0 "Paddock: nothing is listening on port 6001 for /ws (is the task running?)" 502
+            }
+        }
+        """), out)
+        XCTAssertFalse(out.contains("https://blog.test"))
+    }
+
+    /// A site without routes, and every config without any, renders exactly as before.
+    func testNoRoutesRendersAsBefore() {
+        let sites = [site("plain"), site("blog", pinned: true, php: v83), site("shop", secured: true)]
+        XCTAssertEqual(render(sites, proxies: [:]), render(sites))
+        XCTAssertEqual(render(sites, proxies: ["shop": [:], "gone": ["/x": 9000]]), render(sites),
+                       "empty routes, and routes of a site that isn't served, change nothing")
+    }
+
+    /// Routes are validated before they get here; the renderer checks every prefix again (one that doesn't pass
+    /// the file's rule is left out, its site rendering as if it had no routes) and quotes those it keeps, and
+    /// builds every target from a number: nothing from a file can become a directive.
+    func testAHostilePrefixNeverReachesTheConfig() {
+        let hostile = ["/a\" {\n respond hacked\n}", "/{path}", "/a b", "/*", "/x\\"]
+        for prefix in hostile {
+            let out = render([site("shop")], proxies: ["shop": [prefix: 8080]])
+            XCTAssertEqual(out, render([site("shop")]), prefix)
+            XCTAssertFalse(out.contains("hacked"))
+        }
+        let mixed = render([site("shop")], proxies: ["shop": ["/ok": 8080, "/a\" {\n respond hacked\n}": 9000]])
+        XCTAssertTrue(mixed.contains(#"handle "/ok/*" {"#))
+        XCTAssertFalse(mixed.contains("hacked"))
+        XCTAssertFalse(mixed.contains("9000"))
+    }
 }

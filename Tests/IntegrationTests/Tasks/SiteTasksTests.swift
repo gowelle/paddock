@@ -25,8 +25,10 @@ final class SiteTasksTests: XCTestCase {
             kill(daemon.processIdentifier, SIGTERM)
             if !waitFor(30, { !daemon.isRunning }) { kill(daemon.processIdentifier, SIGKILL) }
         }
-        // Anything a test left behind: only processes in this test's own folders.
-        for pid in strays where kill(pid, 0) == 0 { kill(-pid, SIGKILL); kill(pid, SIGKILL) }
+        // Anything a test left behind, and only what provably belongs to this test's own scratch folders.
+        if let home {
+            for pid in Set(strays + home.leftoverProcesses()) where home.owns(pid) { kill(pid, SIGKILL) }
+        }
         home?.cleanUp()
     }
 
@@ -256,12 +258,14 @@ final class SiteTasksTests: XCTestCase {
 
         XCTAssertTrue(waitFor(30) { self.state(engine, "shop", "once") == .stopped(reason: .exited) },
                       "a command that finishes by itself is stopped, not crashed: \(String(describing: state(engine, "shop", "once")))")
-        XCTAssertEqual(log("shop", "once").components(separatedBy: "done").count - 1, 3)
-        XCTAssertNotNil(tasks(engine, "shop")?.tasks.first { $0.name == "once" }?.warning)
+        let runs = log("shop", "once").components(separatedBy: "\ndone").count - 1
+        XCTAssertTrue((3...10).contains(runs), "\(runs)")
+        XCTAssertEqual(tasks(engine, "shop")?.tasks.first { $0.name == "once" }?.warning,
+                       "once keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running.")
 
         engine.tasks.refresh()
         try await Task.sleep(nanoseconds: 500000000)
-        XCTAssertEqual(log("shop", "once").components(separatedBy: "done").count - 1, 3, "a refresh doesn't start it again")
+        XCTAssertEqual(log("shop", "once").components(separatedBy: "\ndone").count - 1, runs, "a refresh doesn't start it again")
         guard case .ok = await engine.handle(.taskRestart(site: "shop", task: "once")) else { return XCTFail("restart") }
         XCTAssertTrue(waitFor(10) { self.log("shop", "once").components(separatedBy: "done").count - 1 > 3 },
                       "restart runs it again")
@@ -345,6 +349,119 @@ final class SiteTasksTests: XCTestCase {
         XCTAssertNil(pid(engine, "shop", "queue"))
     }
 
+    /// A different folder put where the approved one was (deleted and cloned again, or another folder renamed into
+    /// its place) runs nothing of the approval, and the site says why; approving again runs it.
+    func testAReplacedFolderRunsNothingUntilApprovedAgain() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}, "proxy": {"/app": 48123}}"#
+        let folder = try home.makeSite("shop", tasks: text)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        XCTAssertNotNil(StateStore(paths: home.paths).load().taskApprovals["shop"]?.folder, "the folder is remembered")
+
+        // Deleted and made again with the same file, while the daemon runs.
+        try FileManager.default.removeItem(at: folder)
+        try home.makeSite("shop", tasks: text)
+        engine.tasks.refresh()
+        XCTAssertTrue(waitFor(10) { !self.alive(first) }, "stopped")
+        var status = try XCTUnwrap(tasks(engine, "shop"))
+        XCTAssertEqual(status.approval, .needsApproval)
+        XCTAssertEqual(status.routes, [:], "nothing forwards")
+        XCTAssertTrue(status.notice?.contains(Messages.tasksFolderReplaced) ?? false, status.notice ?? "no notice")
+        XCTAssertEqual(engine.desiredRoutes(), [:])
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertNil(pid(engine, "shop", "queue"))
+
+        try await approve(engine, "shop")
+        let second = try XCTUnwrap(waitForRunning(engine, "shop", "queue"), "approved again: it runs")
+
+        // Another folder renamed into its place.
+        let other = try home.makeSite("other", tasks: text, parent: home.otherSites)
+        let aside = home.root.appendingPathComponent("aside", isDirectory: true)
+        try FileManager.default.moveItem(at: folder, to: aside)
+        try FileManager.default.moveItem(at: other, to: folder)
+        engine.tasks.refresh()
+        XCTAssertTrue(waitFor(10) { !self.alive(second) })
+        status = try XCTUnwrap(tasks(engine, "shop"))
+        XCTAssertEqual(status.approval, .needsApproval)
+        XCTAssertTrue(status.notice?.contains(Messages.tasksFolderReplaced) ?? false, status.notice ?? "no notice")
+    }
+
+    /// Approving names the folder that was shown: a site that now points elsewhere is refused, and nothing runs.
+    func testAnApprovalForAnotherFolderThanShownIsRefused() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let engine = try await makeEngine()
+        engine.tasks.refresh()
+        let status = try XCTUnwrap(tasks(engine, "shop"))
+        let real = try XCTUnwrap(SiteTasksFile.realPath(folder.path))
+        XCTAssertEqual(status.folder, real, "the status says which folder it read")
+        let hash = try XCTUnwrap(status.pendingHash)
+        guard case .error(let code, let message) = await engine.handle(.tasksApprove(site: "shop", hash: hash,
+                                                                                      folder: "/somewhere/else")) else {
+            return XCTFail("approved")
+        }
+        XCTAssertEqual(code, ErrorCode.tasksChanged)
+        XCTAssertEqual(message, "This site now points at a different folder. Review and approve again.")
+        XCTAssertNil(StateStore(paths: home.paths).load().taskApprovals["shop"])
+        guard case .ok = await engine.handle(.tasksApprove(site: "shop", hash: hash, folder: real)) else {
+            return XCTFail("the folder shown")
+        }
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"))
+    }
+
+    /// Replaced while the daemon was stopped: at the next start nothing runs.
+    func testAFolderReplacedWhileTheDaemonWasStoppedRunsNothing() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#
+        let folder = try home.makeSite("shop", tasks: text)
+        var engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        engine.shutdown()
+        XCTAssertFalse(alive(first))
+
+        // An ordinary restart with the same folder keeps the approval.
+        engine = try await makeEngine()
+        let again = try XCTUnwrap(waitForRunning(engine, "shop", "queue"), "the same folder: it runs")
+        engine.shutdown()
+        XCTAssertFalse(alive(again))
+
+        try FileManager.default.removeItem(at: folder)
+        try home.makeSite("shop", tasks: text)
+        engine = try await makeEngine()
+        let status = try XCTUnwrap(tasks(engine, "shop"))
+        XCTAssertEqual(status.approval, .needsApproval)
+        XCTAssertTrue(status.notice?.contains(Messages.tasksFolderReplaced) ?? false, status.notice ?? "no notice")
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertNil(pid(engine, "shop", "queue"))
+    }
+
+    /// An approval stored before folders were remembered adopts the folder the site is served from at the next
+    /// start (once, logged); one whose site is gone never comes back for a folder that reappears there.
+    func testOlderApprovalsAdoptTheServedFolderOnceAndGoneOnesNeverRevive() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#
+        let shop = try home.makeSite("shop", tasks: text)
+        let stored = SiteTasksFile(tasks: ["queue": TaskDefinition(run: "exec sleep 600", restartOnChange: nil,
+                                                                   autostart: nil, stopSeconds: nil)], proxy: [:])
+        let shopPath = try XCTUnwrap(SiteTasksFile.realPath(shop.path))
+        let blogPath = try XCTUnwrap(SiteTasksFile.realPath(home.sites.path)) + "/blog"
+        try StateStore(paths: home.paths).update {
+            $0.taskApprovals["shop"] = ApprovedTasks(hash: stored.hash, file: stored, sitePath: shopPath, stopped: [])
+            $0.taskApprovals["blog"] = ApprovedTasks(hash: stored.hash, file: stored, sitePath: blogPath, stopped: [],
+                                                     goneSince: Date().addingTimeInterval(-86400))
+        }
+        let engine = try await makeEngine()
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"), "adopted: it runs")
+        XCTAssertEqual(StateStore(paths: home.paths).load().taskApprovals["shop"]?.folder, FolderIdentity.of(path: shopPath))
+
+        // A blog folder appears where the gone one was: its old approval is dropped, nothing runs.
+        try home.makeSite("blog", tasks: text)
+        engine.tasks.refresh()
+        XCTAssertNil(StateStore(paths: home.paths).load().taskApprovals["blog"])
+        XCTAssertEqual(tasks(engine, "blog")?.approval, .needsApproval)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertNil(pid(engine, "blog", "queue"))
+    }
+
     /// A process a pid record names that still runs but can't be proved Paddock's own (here: its parent, this
     /// test, is alive) is left alone, and no second copy starts.
     func testAProcessThatIsNotProvablyOursIsLeftAlone() async throws {
@@ -400,7 +517,8 @@ final class SiteTasksTests: XCTestCase {
     func testDevelopmentBuildCannotApproveOnARealHome() throws {
         let requests: [Request] = [.tasksApprove(site: "shop", hash: "v1:x"), .tasksRevoke(site: "shop"),
                                    .taskStart(site: "shop", task: "q"), .taskStop(site: "shop", task: "q"),
-                                   .taskRestart(site: "shop", task: "q"), .tasksInit(site: "shop")]
+                                   .taskRestart(site: "shop", task: "q"), .taskForceRestart(site: "shop", task: "q"),
+                                   .tasksInit(site: "shop")]
         let client = PaddockClient(paths: home.paths, readOnly: true)
         for request in requests {
             XCTAssertFalse(request.isReadOnly, "\(request)")
@@ -437,19 +555,392 @@ final class SiteTasksTests: XCTestCase {
         XCTAssertNil(StateStore(paths: home.paths).load().taskApprovals["shop"])
     }
 
-    /// Past 5 MB a task's log is copied aside (one previous file kept) and emptied; the task keeps appending.
-    func testTheLogIsRotatedPastItsLimit() async throws {
+    /// A task printing 20 MB at once: its log and the one previous file stay within 5 MB each, the daemon holds
+    /// at most one chunk of it, and the last lines printed are the last lines in the log.
+    func testALoudTaskKeepsItsLogBounded() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"loud": {"run": "head -c 20000000 /dev/zero | tr '\\0' x | fold -w 99; echo LAST-ONE; echo LAST-TWO; exec sleep 600"}}}"#)
         let engine = try await makeEngine()
-        let log = home.paths.taskLog(site: "shop", task: "queue")
-        try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(repeating: UInt8(ascii: "a"), count: Int(SiteTaskManager.logLimit)).write(to: log)
-        engine.tasks.rotateIfNeeded(log)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path + ".1"), "not past the limit yet")
-        try Data(repeating: UInt8(ascii: "b"), count: Int(SiteTaskManager.logLimit) + 1).write(to: log)
-        engine.tasks.rotateIfNeeded(log)
-        let previous = try FileManager.default.attributesOfItem(atPath: log.path + ".1")[.size] as? Int
-        XCTAssertEqual(previous, Int(SiteTaskManager.logLimit) + 1)
-        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: log.path)[.size] as? Int, 0)
+        try await approve(engine, "shop")
+        let log = home.paths.taskLog(site: "shop", task: "loud")
+        XCTAssertTrue(waitFor(60) { self.log("shop", "loud").hasSuffix("LAST-ONE\nLAST-TWO\n") })
+        let size = { (url: URL) in (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? -1 }
+        XCTAssertLessThanOrEqual(size(log), Int(SiteTaskManager.logLimit))
+        XCTAssertLessThanOrEqual(size(log.appendingPathExtension("1")), Int(SiteTaskManager.logLimit))
+        XCTAssertGreaterThan(size(log.appendingPathExtension("1")), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path + ".2"))
+        XCTAssertLessThanOrEqual(engine.tasks.logWriter(site: "shop", task: "loud").peakPendingBytes, RotatingLog.chunkSize)
+    }
+
+    // MARK: - Fix round 1
+
+    /// A command that runs a few seconds then exits 0 is restarted, never given up on as a crash, and settles as
+    /// stopped once it has kept finishing (times are scaled with the restart delays).
+    func testATaskThatKeepsFinishingSettlesAsExitedNotCrashed() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"short": {"run": "sleep 0.35; echo finished"}}}"#)
+        let engine = try await makeEngine(backoffScale: 0.1)
+        try await approve(engine, "shop")
+        var seen: [TaskState] = []
+        XCTAssertTrue(waitFor(90) {
+            if let state = self.state(engine, "shop", "short"), seen.last != state { seen.append(state) }
+            return self.state(engine, "shop", "short") == .stopped(reason: .exited)
+        }, "\(seen)")
+        XCTAssertEqual(tasks(engine, "shop")?.tasks.first?.warning,
+                       "short keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running.")
+        XCTAssertFalse(engine.tasks.supervisor.hasGivenUp("task/shop/short"))
+        XCTAssertFalse(seen.contains { if case .crashed = $0 { return true }; return false }, "never shown as crashed: \(seen)")
+        XCTAssertTrue(log("shop", "short").contains("keeps finishing by itself"))
+    }
+
+    /// Two tasks that ignore SIGTERM, with 4 seconds' grace, stop side by side: about 4 seconds, not 8.
+    func testStubbornTasksStopSideBySide() async throws {
+        try home.makeSite("shop", tasks: """
+        {"tasks": {
+          "a": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 4},
+          "b": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 4}
+        }}
+        """)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let pids = try ["a", "b"].map { try XCTUnwrap(waitForRunning(engine, "shop", $0)) }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let started = Date()
+        guard case .ok = await engine.handle(.tasksRevoke(site: "shop")) else { return XCTFail("off") }
+        let took = Date().timeIntervalSince(started)
+        XCTAssertGreaterThanOrEqual(took, 3.5)
+        XCTAssertLessThan(took, 7.5, "side by side, not one after the other")
+        for pid in pids { XCTAssertFalse(alive(pid)) }
+    }
+
+    /// While a long stop is in flight, status answers at once and unrelated requests go through.
+    func testOtherRequestsProceedWhileAStopIsInFlight() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"slow": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 8}}}"#)
+        try home.makeSite("blog", tasks: #"{"tasks": {"later": {"run": "exec sleep 600", "autostart": false}}}"#)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        try await approve(engine, "blog")
+        let slow = try XCTUnwrap(waitForRunning(engine, "shop", "slow"))
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let stop = Task { await engine.handle(.taskStop(site: "shop", task: "slow")) }
+        XCTAssertTrue(waitFor(5) { self.state(engine, "shop", "slow") == .stopping })
+
+        var started = Date()
+        _ = engine.status()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+        started = Date()
+        guard case .ok = await engine.handle(.taskStart(site: "blog", task: "later")) else { return XCTFail("start") }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 4, "another site's task starts meanwhile")
+        XCTAssertNotNil(waitForRunning(engine, "blog", "later"))
+        let more = try home.makeDirectory("more")
+        started = Date()
+        guard case .ok = await engine.handle(.park(path: more.path)) else { return XCTFail("park") }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 4, "a site change goes through meanwhile")
+        XCTAssertTrue(alive(slow), "still being given its grace")
+
+        guard case .ok(let done) = await stop.value else { return XCTFail("stop") }
+        XCTAssertFalse(alive(slow))
+        XCTAssertEqual(done.sites.first { $0.name == "shop" }?.tasks?.tasks.first?.state, .stopped(reason: .byYou))
+    }
+
+    /// Shutting down while a stop with 300 seconds' grace is in flight cuts it short at the cap.
+    func testShutdownDuringALongStopFinishesWithinTheCap() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"slow": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 300}}}"#)
+        let engine = try await makeEngine(shutdownGrace: 2)
+        try await approve(engine, "shop")
+        let slow = try XCTUnwrap(waitForRunning(engine, "shop", "slow"))
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let stop = Task { await engine.handle(.taskStop(site: "shop", task: "slow")) }
+        XCTAssertTrue(waitFor(5) { self.state(engine, "shop", "slow") == .stopping })
+        let started = Date()
+        await engine.shutDownAfterPendingWork()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8, "within the cap, not 300 seconds")
+        XCTAssertFalse(alive(slow))
+        _ = await stop.value
+        XCTAssertTrue(log("shop", "slow").contains("shutting down"), log("shop", "slow"))
+    }
+
+    /// The delayed record updates after a spawn never write a record for a task that was stopped meanwhile.
+    func testAStoppedTaskLeavesNoRecordBehind() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"))
+        guard case .ok = await engine.handle(.taskStop(site: "shop", task: "queue")) else { return XCTFail() }
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.paths.taskRun(site: "shop", task: "queue")
+            .appendingPathComponent("pid").path))
+    }
+
+    /// Processes left in a task's group by an earlier run whose leader is gone are not reclaimed: the task says
+    /// so and doesn't start a second copy, until `restart --force` stops exactly those processes.
+    func testLeftoverProcessesAreReportedAndOnlyForceStopsThem() async throws {
+        try FakeService.requireBuilt()
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        // An orphaned group whose leader (sh) exits at once, leaving `sleep` behind, working in the site folder.
+        let spawn = Process()
+        spawn.executableURL = FakeService.binary
+        spawn.arguments = ["spawn-orphan", "/bin/sh", "-c", "sleep 600 & exit 0"]
+        spawn.currentDirectoryURL = folder
+        let out = Pipe()
+        spawn.standardOutput = out
+        try spawn.run()
+        spawn.waitUntilExit()
+        let leader = try XCTUnwrap(Int32(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertTrue(waitFor(5) { (ServiceProcessRecord.members(ofGroup: leader) ?? []).count == 1 && !self.alive(leader) })
+        let left = try XCTUnwrap(ServiceProcessRecord.members(ofGroup: leader)?.first)
+        strays.append(left)
+        let record = ServiceProcessRecord(pid: leader, pgid: leader, startSeconds: Int64(Date().timeIntervalSince1970) - 60,
+                                          startMicroseconds: 0, executable: "/bin/sh",
+                                          bootSeconds: ServiceProcessRecord.currentBoot())
+        let file = home.paths.taskRun(site: "shop", task: "queue").appendingPathComponent("pid")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try record.write(to: file)
+
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        XCTAssertEqual(state(engine, "shop", "queue"), .leftFromEarlierRun)
+        XCTAssertEqual(Messages.taskState(.leftFromEarlierRun),
+                       "already running (processes left from an earlier run), not started by this Paddock")
+        XCTAssertTrue(alive(left), "never signalled without --force")
+        XCTAssertTrue(engine.tasks.supervisor.names.isEmpty)
+
+        guard case .ok(let forced) = await engine.handle(.taskForceRestart(site: "shop", task: "queue")) else {
+            return XCTFail("force")
+        }
+        XCTAssertTrue(waitFor(5) { !self.alive(left) })
+        let warning = forced.sites.first { $0.name == "shop" }?.tasks?.tasks.first?.warning ?? ""
+        XCTAssertTrue(warning.contains("\(left)"), "says what it stopped: \(warning)")
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"))
+    }
+
+    /// No process outlives a reboot: a record from another boot is stale and removed, and the task starts.
+    func testARecordFromAnotherBootIsStale() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let other = Process()
+        other.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        other.arguments = ["600"]
+        other.currentDirectoryURL = folder
+        try other.run()
+        strays.append(other.processIdentifier)
+        defer { other.terminate() }
+        let live = try XCTUnwrap(ServiceProcessRecord.live(pid: other.processIdentifier))
+        let old = ServiceProcessRecord(pid: live.pid, pgid: live.pgid, startSeconds: live.startSeconds,
+                                       startMicroseconds: live.startMicroseconds, executable: live.executable,
+                                       bootSeconds: (ServiceProcessRecord.currentBoot() ?? 0) - 1000)
+        let file = home.paths.taskRun(site: "shop", task: "queue").appendingPathComponent("pid")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try old.write(to: file)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"), "the stale record holds nothing back")
+        XCTAssertTrue(alive(other.processIdentifier), "and nothing it named was signalled")
+    }
+
+    /// `tasksStatus` reads the site's file again before answering, and changes nothing else.
+    func testTasksStatusReadsTheFileAgain() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        try home.writeTasks("shop", #"{"tasks": {"queue": {"run": "exec sleep 601"}}}"#)
+        XCTAssertTrue(Request.tasksStatus(site: "shop").isReadOnly)
+        guard case .ok(let status) = await engine.handle(.tasksStatus(site: "shop")) else { return XCTFail() }
+        XCTAssertEqual(status.sites.first { $0.name == "shop" }?.tasks?.approval, .changed)
+        XCTAssertEqual(pid(engine, "shop", "queue"), first, "nothing restarted")
+    }
+
+    /// The file changing between showing it and approving it approves nothing.
+    func testAFileChangedAfterItWasShownIsNotApproved() async throws {
+        let marker = home.root.appendingPathComponent("ran").path
+        try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let engine = try await makeEngine()
+        engine.tasks.refresh()
+        let shown = try XCTUnwrap(tasks(engine, "shop")?.pendingHash)
+        try home.writeTasks("shop", #"{"tasks": {"queue": {"run": "touch '\#(marker)'; exec sleep 600"}}}"#)
+        guard case .error(let code, let message) = await engine.handle(.tasksApprove(site: "shop", hash: shown)) else {
+            return XCTFail("approved a version that wasn't shown")
+        }
+        XCTAssertEqual(code, ErrorCode.tasksChanged)
+        XCTAssertEqual(message, Messages.taskError(.changedSinceShown(site: "shop")))
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker), "nothing ran")
+        XCTAssertNil(StateStore(paths: home.paths).load().taskApprovals["shop"])
+    }
+
+    // MARK: - Fix round 2
+
+    /// A restart waiting on a slow stop while the daemon shuts down never starts the task again.
+    func testARestartWaitingOnAStopDuringShutdownStartsNothing() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"slow": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 4}}}"#)
+        let engine = try await makeEngine(shutdownGrace: 2)
+        try await approve(engine, "shop")
+        _ = try XCTUnwrap(waitForRunning(engine, "shop", "slow"))
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let restart = Task { await engine.handle(.taskRestart(site: "shop", task: "slow")) }
+        XCTAssertTrue(waitFor(5) { self.state(engine, "shop", "slow") == .stopping })
+        await engine.shutDownAfterPendingWork()
+        _ = await restart.value
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        XCTAssertEqual(home.leftoverProcesses(), [], "nothing of the site runs after shutdown")
+    }
+
+    /// A site's new definition starts only once its old tasks have stopped: a renamed task on the same port
+    /// doesn't crash against the old one still giving up its port.
+    func testANewDefinitionWaitsForTheOldTasksToStop() async throws {
+        try FakeService.requireBuilt()
+        let port = TestSupport.freeTCPPort()
+        let data = try home.makeDirectory("data")
+        for name in ["old", "new"] {
+            try FileManager.default.createDirectory(at: data.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        let fake = FakeService.binary.path
+        try home.makeSite("shop", tasks: """
+        {"tasks": {"old": {"run": "exec '\(fake)' serve '\(data.path)/old' --port \(port) --ignore-term", "stopSeconds": 2}}}
+        """)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let old = try XCTUnwrap(waitForRunning(engine, "shop", "old"))
+        XCTAssertTrue(waitFor(10) { PortCheck.acceptsIPv4(port: port) })
+        try home.writeTasks("shop", """
+        {"tasks": {"new": {"run": "exec '\(fake)' serve '\(data.path)/new' --port \(port)"}}}
+        """)
+        try await approve(engine, "shop")
+        _ = try XCTUnwrap(waitForRunning(engine, "shop", "new", timeout: 20))
+        XCTAssertFalse(alive(old))
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        XCTAssertFalse(log("shop", "new").contains("Exited with status"), log("shop", "new"))
+        XCTAssertTrue(log("shop", "old").contains("Stopped") || !alive(old))
+    }
+
+    /// `restart --force` stops only the leftovers that are provably this task's, says which were left and why,
+    /// and keeps the task held back while any remain.
+    func testForceLeavesWhatIsNotProvablyTheTasks() async throws {
+        try FakeService.requireBuilt()
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let elsewhere = try home.makeDirectory("elsewhere")
+        let spawn = Process()
+        spawn.executableURL = FakeService.binary
+        spawn.arguments = ["spawn-orphan", "/bin/sh", "-c", "sleep 600 & (cd '\(elsewhere.path)' && exec sleep 601) & exit 0"]
+        spawn.currentDirectoryURL = folder
+        let out = Pipe()
+        spawn.standardOutput = out
+        try spawn.run()
+        spawn.waitUntilExit()
+        let leader = try XCTUnwrap(Int32(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)))
+        XCTAssertTrue(waitFor(5) { (ServiceProcessRecord.members(ofGroup: leader) ?? []).count == 2 && !self.alive(leader) })
+        let members = try XCTUnwrap(ServiceProcessRecord.members(ofGroup: leader))
+        strays += members
+        let inFolder = try XCTUnwrap(members.first {
+            ServiceProcessInspector.live.workingDirectory($0).flatMap(SiteTasksFile.realPath) == SiteTasksFile.realPath(folder.path)
+        })
+        let outside = try XCTUnwrap(members.first { $0 != inFolder })
+        let record = ServiceProcessRecord(pid: leader, pgid: leader, startSeconds: Int64(Date().timeIntervalSince1970) - 60,
+                                          startMicroseconds: 0, executable: "/bin/sh",
+                                          bootSeconds: ServiceProcessRecord.currentBoot())
+        let file = home.paths.taskRun(site: "shop", task: "queue").appendingPathComponent("pid")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try record.write(to: file)
+
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        XCTAssertEqual(state(engine, "shop", "queue"), .leftFromEarlierRun)
+        guard case .ok(let forced) = await engine.handle(.taskForceRestart(site: "shop", task: "queue")) else {
+            return XCTFail("force")
+        }
+        XCTAssertTrue(waitFor(5) { !self.alive(inFolder) }, "the one in the site's folder was stopped")
+        XCTAssertTrue(alive(outside), "the one elsewhere was left alone")
+        let shop = forced.sites.first { $0.name == "shop" }?.tasks?.tasks.first
+        XCTAssertEqual(shop?.state, .leftFromEarlierRun, "still held back")
+        XCTAssertEqual(shop?.warning, Messages.leftoversStopped(task: "queue", stopped: [inFolder],
+                                                                left: [(outside, .notInSiteFolder)]))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the record stays while any remain")
+        XCTAssertTrue(engine.tasks.supervisor.names.isEmpty, "no second copy")
+    }
+
+    /// A refresh between the end of a forced restart's stop and its pass over leftovers can't relaunch the task
+    /// in between, so the pass never mistakes a live launch (or its children) for leftovers.
+    func testAForcedRestartNeverTouchesALiveLaunch() async throws {
+        try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "sleep 600 & wait"}}}"#)
+        let engine = try await makeEngine()
+        try await approve(engine, "shop")
+        let first = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        XCTAssertTrue(waitFor(5) { (ServiceProcessRecord.members(ofGroup: first) ?? []).count == 2 }, "the shell and its child")
+        engine.tasks.beforeForcePassForTesting = { [weak engine] in
+            engine?.tasks.refresh()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        guard case .ok = await engine.handle(.taskForceRestart(site: "shop", task: "queue")) else { return XCTFail("force") }
+        engine.tasks.beforeForcePassForTesting = nil
+        let second = try XCTUnwrap(waitForRunning(engine, "shop", "queue"))
+        XCTAssertNotEqual(second, first)
+        XCTAssertTrue(waitFor(5) { (ServiceProcessRecord.members(ofGroup: second) ?? []).count == 2 })
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(pid(engine, "shop", "queue"), second, "the new launch was never signalled")
+        XCTAssertEqual(ServiceProcessRecord.members(ofGroup: second)?.count, 2, "nor its child")
+        XCTAssertEqual(log("shop", "queue").components(separatedBy: "] Starting.").count - 1, 2, "relaunched once")
+        XCTAssertEqual(ServiceProcessRecord.read(from: home.paths.taskRun(site: "shop", task: "queue")
+            .appendingPathComponent("pid"))?.pid, second, "the new launch's record is kept")
+    }
+
+    /// An approval stored before today's path rule (a trailing slash) keeps its tasks running; the site says
+    /// that forwarding path is no longer accepted.
+    func testAnOlderApprovalKeepsItsTasksWhenAPathIsNoLongerAccepted() async throws {
+        let text = #"{"tasks": {"queue": {"run": "exec sleep 600"}}, "proxy": {"/app/": 8080}}"#
+        let folder = try home.makeSite("shop", tasks: text)
+        let stored = SiteTasksFile(tasks: ["queue": TaskDefinition(run: "exec sleep 600", restartOnChange: nil, autostart: nil,
+                                                                   stopSeconds: nil)], proxy: ["/app/": 8080])
+        let sitePath = try XCTUnwrap(SiteTasksFile.realPath(folder.path))
+        try StateStore(paths: home.paths).update {
+            $0.taskApprovals["shop"] = ApprovedTasks(hash: stored.hash, file: stored, sitePath: sitePath, stopped: [])
+        }
+        let engine = try await makeEngine()
+        XCTAssertNotNil(waitForRunning(engine, "shop", "queue"), "its tasks keep running")
+        let tasks = try XCTUnwrap(self.tasks(engine, "shop"))
+        XCTAssertEqual(tasks.approval, .changed)
+        XCTAssertTrue(tasks.notice?.contains(Messages.forwardingPathNoLongerAccepted("/app/")) ?? false,
+                      tasks.notice ?? "no notice")
+        XCTAssertEqual(tasks.routes, [:])
+    }
+
+    /// Another user's process left in the task's group (a sudo child, say) can't be inspected by this user:
+    /// Paddock still sees it through `kinfo_proc`, it holds the task, `restart --force` reports it, and it is never
+    /// signalled. (The group and the process are presented through the manager's process source.)
+    func testAnotherUsersLeftoverHoldsTheTaskAndIsNeverSignalled() async throws {
+        let folder = try home.makeSite("shop", tasks: #"{"tasks": {"queue": {"run": "exec sleep 600"}}}"#)
+        let boot = try XCTUnwrap(ServiceProcessRecord.currentBoot())
+        let leader: Int32 = 0x7FFF_FF00, child: Int32 = 0x7FFF_FF01
+        let record = ServiceProcessRecord(pid: leader, pgid: leader, startSeconds: Int64(Date().timeIntervalSince1970) - 60,
+                                          startMicroseconds: 0, executable: "/bin/sh", bootSeconds: boot)
+        let file = home.paths.taskRun(site: "shop", task: "queue").appendingPathComponent("pid")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try record.write(to: file)
+        let signalled = LockedBox<[Int32]>([])
+        let engine = try await makeEngine()
+        engine.tasks.processes = ProcessSource(
+            members: { pgid in pgid == leader ? [child] : ServiceProcessRecord.members(ofGroup: pgid) },
+            facts: { pid in
+                pid == child ? ProcessFacts(pid: child, uid: 0, pgid: leader,
+                                            startSeconds: Int64(Date().timeIntervalSince1970) - 30, startMicroseconds: 0)
+                    : ProcessFacts.of(pid: pid)
+            },
+            directory: { pid in pid == child ? nil : ServiceProcessInspector.live.workingDirectory(pid) },
+            signal: { pid, signal in
+                if pid == child || pid == leader { signalled.value = signalled.value + [pid]; return 0 }
+                return kill(pid, signal)
+            })
+        _ = folder
+        try await approve(engine, "shop")
+        XCTAssertEqual(state(engine, "shop", "queue"), .leftFromEarlierRun, "it holds the task")
+        guard case .ok(let forced) = await engine.handle(.taskForceRestart(site: "shop", task: "queue")) else {
+            return XCTFail("force")
+        }
+        let shop = forced.sites.first { $0.name == "shop" }?.tasks?.tasks.first
+        XCTAssertEqual(shop?.state, .leftFromEarlierRun, "still held")
+        XCTAssertTrue(shop?.warning?.contains("\(child) (another user's process; Paddock can't inspect or stop it)") ?? false,
+                      shop?.warning ?? "no warning")
+        XCTAssertEqual(signalled.value, [], "never signalled")
+        XCTAssertTrue(engine.tasks.supervisor.names.isEmpty, "no second copy")
     }
 
     // MARK: - The daemon
@@ -510,7 +1001,7 @@ final class SiteTasksTests: XCTestCase {
         guard case .ok = try client.send(.taskStop(site: "shop", task: "queue"), timeout: 60) else { return XCTFail() }
         try stopDaemon()
         try launchDaemon()
-        Thread.sleep(forTimeInterval: 1)
+        XCTAssertTrue(waitFor(40) { self.daemonState("shop", "queue") != nil }, "the daemon read the site again")
         XCTAssertEqual(daemonState("shop", "queue"), .stopped(reason: .byYou), "remembered across restarts")
         guard case .ok = try client.send(.taskStart(site: "shop", task: "queue"), timeout: 60) else { return XCTFail() }
         XCTAssertNotNil(waitForDaemonTask("shop", "queue"))
@@ -650,7 +1141,7 @@ final class TaskHome {
         settings.dnsPort = TestSupport.freeUDPPort(preferred: 53595)
         environment = ShellEnvironment(variables: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": root.path,
                                                    "LANG": "en_US.UTF-8"],
-                                       usedFallback: false, shell: "/bin/zsh")
+                                       shell: "/bin/zsh")
     }
 
     @discardableResult
@@ -666,6 +1157,17 @@ final class TaskHome {
                                   options: .atomic)
     }
 
+    private let logged = LockedBox<[String]>([])
+    /// The engine's log lines, when a test hands it `record`.
+    var logLines: [String] { logged.value }
+    func record(_ line: String) { logged.value = logged.value + [line] }
+
+    func makeDirectory(_ name: String) throws -> URL {
+        let folder = root.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
     /// The environment as a file a test daemon reads instead of asking the shell.
     func environmentFile() throws -> URL {
         let file = root.appendingPathComponent("task-environment.json")
@@ -675,5 +1177,40 @@ final class TaskHome {
 
     func cleanUp() {
         try? FileManager.default.removeItem(at: root)
+    }
+
+    /// Whether a process provably belongs to this test: it works in, runs from, or names (in its command line)
+    /// this home's scratch folder. Only such processes are ever signalled by a test's cleanup.
+    func owns(_ pid: Int32) -> Bool {
+        guard pid > 1, kill(pid, 0) == 0 else { return false }
+        let scratch = SiteTasksFile.realPath(root.path) ?? root.path
+        func inside(_ path: String?) -> Bool {
+            guard let path, let real = SiteTasksFile.realPath(path) ?? Optional(path) else { return false }
+            return real == scratch || real.hasPrefix(scratch + "/") || path.hasPrefix(root.path + "/")
+        }
+        if inside(ServiceProcessInspector.live.workingDirectory(pid)) || inside(ServiceProcessInspector.live.executable(pid)) {
+            return true
+        }
+        return commandLine(pid).map { $0.contains(root.path + "/") || $0.contains(scratch + "/") } ?? false
+    }
+
+    /// Every process of this user that `owns` (a task, or the web stack of a daemon a test killed).
+    func leftoverProcesses() -> [Int32] {
+        var pids = [pid_t](repeating: 0, count: 8192)
+        let bytes = pids.withUnsafeMutableBytes {
+            proc_listpids(UInt32(PROC_UID_ONLY), UInt32(getuid()), $0.baseAddress, Int32($0.count))
+        }
+        guard bytes > 0 else { return [] }
+        return pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size).filter { $0 > 1 && $0 != getpid() && owns($0) }
+    }
+
+    /// A process's program path and arguments (`KERN_PROCARGS2`), without starting another process.
+    private func commandLine(_ pid: Int32) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+        return String(decoding: buffer.prefix(size).map { $0 == 0 ? 32 : $0 }, as: UTF8.self)
     }
 }

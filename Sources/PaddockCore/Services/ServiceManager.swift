@@ -115,10 +115,16 @@ public final class ServiceManager: @unchecked Sendable {
     private var runtime: [String: ServiceState] = [:]
     /// A sentence about an instance's last add or update, until it is stopped.
     private var notices: [String: String] = [:]
+    /// Instances that got a new key while their data stayed (cleared when their .env lines are next read), and
+    /// their very large logs (`checkLogSizes`). Both under `runtimeLock`.
+    private var keyNotices: [String: String] = [:]
+    private var logNotices: [String: String] = [:]
     /// Set while shutting down: readiness waits and initialise steps give up at once.
     private var cancelled = false
     /// Problems already logged (one line each): invalid saved instances, invalid stored recipes.
     private var reported: Set<String> = []
+    /// Called (tests) right after a service's process was started, before its readiness is checked.
+    var processStartedForTesting: (@Sendable (String) -> Void)?
     /// Actions running now, by instance id (`runtimeLock`).
     private var inFlight: [String: [ActionFlight]] = [:]
 
@@ -1002,8 +1008,10 @@ public final class ServiceManager: @unchecked Sendable {
                     if spawns.next() > 1 { self?.checkAfterRestart(instance, recipe, probe, processGroup: pid) }
                 })
             spec.workingDirectory = paths.serviceHome(id)
-            try supervisor.start(spec)
+            // Starting from before the process exists, so status never says running before readiness was checked.
             setRuntime(.starting, for: id)
+            try supervisor.start(spec)
+            processStartedForTesting?(id)
             guard waitUntilReady(Self.processName(id), probe, timeout: readyTimeout ?? recipe.readyTimeout,
                                  isCancelled: { [weak self] in self?.isCancelled ?? true }) else {
                 stopProcess(id)
@@ -1314,23 +1322,45 @@ public final class ServiceManager: @unchecked Sendable {
         instances().map(status(of:))
     }
 
-    /// The catalog as clients see it, saying which series would download when added.
+    /// The catalog as clients see it, saying which series would download when added and which this Mac can't
+    /// run (in the words `add` would refuse with).
     public func catalogEntries() -> [CatalogEntry] {
         catalog.kinds(needsDownload: { [installer] recipe in
             !recipe.assets.isEmpty && !installer.isInstalled(recipe) && !installer.canInstallLocally(recipe)
         }, downloadBytes: { [installer] recipe in
             // Only what would be fetched: not an asset that is a file on this Mac (Paddock's own builds).
             ServiceCatalog.downloadBytes(recipe.assets.filter { !installer.isLocal($0) })
+        }, unavailableReason: { recipe in
+            guard let minimum = recipe.minimumMacOS, !self.runsOn(minimum: minimum) else { return nil }
+            let name = ServiceInstance.newIdentity(kind: recipe.kind, series: recipe.series, displayName: recipe.displayName,
+                                                   seriesInID: recipe.seriesInID, existing: []).name
+            return Messages.serviceError(.needsNewerMacOS(name: name, minimum: minimum))
         })
     }
 
-    /// The `.env` lines of an added service.
+    /// The `.env` lines of an added service (reading them clears the notice of a new key).
     public func env(_ name: String) throws -> [String] {
         let instance = try find(name)
         guard let recipe = describingRecipe(instance) else {
             throw ServiceError.unavailable(name: instance.name, reason: "Paddock no longer knows how to run it")
         }
-        return envLines(recipe, context: try context(instance, recipe: recipe))
+        let lines = envLines(recipe, context: try context(instance, recipe: recipe), includingSecrets: true)
+        runtimeLock.lock()
+        keyNotices[instance.id] = nil
+        runtimeLock.unlock()
+        return lines
+    }
+
+    /// Notes each running service whose log has grown very large, and forgets the notes of the others.
+    public func checkLogSizes() {
+        var found: [String: String] = [:]
+        for instance in instances() {
+            guard case .running = supervisor.status(Self.processName(instance.id)) else { continue }
+            if let notice = LogFiles.veryLargeNotice(paths.serviceLog(instance.id)) { found[instance.id] = notice }
+        }
+        runtimeLock.lock()
+        logNotices = found
+        runtimeLock.unlock()
     }
 
     /// Each service process the supervisor runs -> its status, as in `EngineStatus.processes`.
@@ -1344,11 +1374,15 @@ public final class ServiceManager: @unchecked Sendable {
         let recipe = describingRecipe(instance)
         let latest = latest(instance)
         let context = recipe.flatMap { try? self.context(instance, recipe: $0) }
-        let env = recipe.flatMap { recipe in context.map { envLines(recipe, context: $0) } } ?? []
+        // Every client gets the status on every poll: a secret's line is left out (`secretEnvNames` names it);
+        // `serviceEnv` answers it to a client that asks.
+        let env = recipe.flatMap { recipe in context.map { envLines(recipe, context: $0, includingSecrets: false) } } ?? []
         let openURL = recipe?.openURL.flatMap { template in context.flatMap { try? ServiceTemplate.render(template, context: $0) } }
         runtimeLock.lock()
         let known = runtime[instance.id]
         let notice = notices[instance.id]
+        let keyNotice = keyNotices[instance.id]
+        let logNotice = logNotices[instance.id]
         runtimeLock.unlock()
         let state: ServiceState
         if known == .starting {
@@ -1374,7 +1408,7 @@ public final class ServiceManager: @unchecked Sendable {
             id: instance.id, name: instance.name, kind: instance.kind, version: instance.version,
             displayName: recipe?.displayName ?? instance.kind, state: state, ports: instance.ports, env: env,
             openURL: openURL, dataPath: paths.serviceData(instance.id).path, autostart: instance.autostart,
-            mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: notice ?? skipped,
+            mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: [notice ?? skipped, keyNotice, logNotice].compactMap { $0 }.joined(separator: " ").nonEmpty,
             updateAvailable: update, series: instance.series, notes: recipe?.notes,
             secretEnvNames: recipe.map(Self.secretEnvNames).flatMap { $0.isEmpty ? nil : $0 })
     }
@@ -1413,8 +1447,22 @@ public final class ServiceManager: @unchecked Sendable {
     /// protected by the values in it.
     private func ensureSecrets(_ instance: ServiceInstance, _ recipe: ServiceRecipe) throws {
         guard !recipe.secrets.isEmpty else { return }
+        let config = paths.serviceConfig(instance.id)
+        let missing = !FileManager.default.fileExists(atPath: ServiceSecrets.file(in: config).path)
+        let data = paths.serviceData(instance.id)
+        let hasData = !((try? FileManager.default.contentsOfDirectory(atPath: data.path)) ?? []).isEmpty
+        defer {
+            // A key made now for data that was already there: what the project's .env holds no longer works.
+            if missing, hasData, FileManager.default.fileExists(atPath: ServiceSecrets.file(in: config).path) {
+                let notice = Messages.serviceNewKey(name: instance.name, id: instance.id)
+                log("\(instance.name): its saved key was missing, so Paddock made a new one; the project's .env needs it")
+                runtimeLock.lock()
+                keyNotices[instance.id] = notice
+                runtimeLock.unlock()
+            }
+        }
         do {
-            _ = try ServiceSecrets.ensure(recipe.secrets, in: paths.serviceConfig(instance.id))
+            _ = try ServiceSecrets.ensure(recipe.secrets, in: config)
         } catch ServiceSecretsError.damaged(let path) {
             throw ServiceError.unavailable(name: instance.name, reason: "its secrets file \(path) isn't one Paddock "
                                            + "can use; Paddock left it alone")
@@ -1438,11 +1486,15 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// The `.env` variables whose values are secrets (`MEILISEARCH_KEY`): `paddock service add` doesn't print
-    /// them; `paddock service env` does.
+    /// The `.env` variables whose values are secrets (`MEILISEARCH_KEY`): the status leaves their lines out;
+    /// `paddock service env` prints them.
     static func secretEnvNames(_ recipe: ServiceRecipe) -> [String] {
-        recipe.env.filter { line in ServiceTemplate.placeholders(in: line).contains { $0.hasPrefix("secret.") } }
-            .compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) }
+        recipe.env.filter(isSecretLine).compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) }
+    }
+
+    /// An `.env` line template that names a secret.
+    private static func isSecretLine(_ template: String) -> Bool {
+        ServiceTemplate.placeholders(in: template).contains { $0.hasPrefix("secret.") }
     }
 
     /// No `"`, `'`, `\\` or control character (a path config files can quote as it is).
@@ -1452,10 +1504,12 @@ public final class ServiceManager: @unchecked Sendable {
         }
     }
 
-    /// The recipe's `.env` lines; without a usable socket, those naming it give way to one comment line.
-    private func envLines(_ recipe: ServiceRecipe, context: ServiceTemplateContext) -> [String] {
+    /// The recipe's `.env` lines (those naming a secret only `includingSecrets`); without a usable socket, those
+    /// naming it give way to one comment line.
+    private func envLines(_ recipe: ServiceRecipe, context: ServiceTemplateContext, includingSecrets: Bool) -> [String] {
         let socketDisabled = recipe.socket != nil && context.socket == nil
         var lines = recipe.env.filter { !(socketDisabled && ServiceTemplate.mentionsSocket($0)) }
+            .filter { includingSecrets || !Self.isSecretLine($0) }
             .compactMap { try? ServiceTemplate.render($0, context: context) }
         if socketDisabled { lines.append(Messages.unixSocketDisabled) }
         return lines
@@ -1503,7 +1557,7 @@ public final class ServiceManager: @unchecked Sendable {
         try ensureRunFolder(id)
     }
 
-    private func setRuntime(_ state: ServiceState, for id: String) {
+    private func setRuntime(_ state: ServiceState?, for id: String) {
         runtimeLock.lock()
         runtime[id] = state
         runtimeLock.unlock()

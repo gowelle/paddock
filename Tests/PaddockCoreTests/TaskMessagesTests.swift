@@ -3,8 +3,8 @@ import XCTest
 
 /// The sentences Paddock prints about site tasks.
 final class TaskMessagesTests: XCTestCase {
-    private func site(_ name: String, _ tasks: SiteTasksStatus?) -> Site {
-        Site(name: name, path: "/p/\(name)", kind: .parked, secured: false, php: PHPVersion("8.4")!, pinned: false,
+    private func site(_ name: String, _ tasks: SiteTasksStatus?, secured: Bool = false) -> Site {
+        Site(name: name, path: "/p/\(name)", kind: .parked, secured: secured, php: PHPVersion("8.4")!, pinned: false,
              tasks: tasks)
     }
 
@@ -30,6 +30,10 @@ final class TaskMessagesTests: XCTestCase {
                        "crashed: exited with status 3 5 times within a minute, so Paddock stopped restarting it. "
                        + "See: paddock tasks logs queue")
         XCTAssertEqual(Messages.taskState(.waitingForApproval), "waiting for your approval")
+        // Left from an earlier run: the remedy, when the task is named.
+        XCTAssertEqual(Messages.taskState(.leftFromEarlierRun, task: "queue"),
+                       "already running (processes left from an earlier run), not started by this Paddock; "
+                           + "run: paddock tasks restart queue --force")
         XCTAssertEqual(Messages.taskState(.alreadyRunning(pid: 9)), "already running (pid 9), not started by this Paddock")
     }
 
@@ -59,21 +63,55 @@ final class TaskMessagesTests: XCTestCase {
             approval: .changed,
             tasks: [task("queue", .running(pid: 4)),
                     TaskStatus(name: "once", run: "php artisan migrate", state: .stopped(reason: .exited), restartOnChange: false,
-                               logPath: "/l", warning: Messages.taskKeepsExiting)],
+                               logPath: "/l", warning: Messages.taskKeepsFinishing(task: "once"))],
             pending: [], pendingHash: nil, notice: Messages.tasksChanged(site: "shop"))
         XCTAssertEqual(Messages.taskTable(status), """
         TASK   STATE                                  COMMAND
         queue  running (pid 4)                        x
         once   stopped: it keeps finishing by itself  php artisan migrate
-        once: \(Messages.taskKeepsExiting)
+        once: \(Messages.taskKeepsFinishing(task: "once"))
         \(Messages.tasksChanged(site: "shop"))
         """)
     }
 
+    func testTheTableSaysWhichTasksRestartWhenCodeChanges() {
+        let status = SiteTasksStatus(
+            approval: .approved,
+            tasks: [TaskStatus(name: "queue", run: "x", state: .running(pid: 4), restartOnChange: true, logPath: "/l", warning: nil),
+                    task("web", .running(pid: 5))],
+            pending: [], pendingHash: nil, notice: nil)
+        XCTAssertEqual(Messages.taskTable(status), """
+        TASK   STATE            COMMAND
+        queue  running (pid 4)  x
+        web    running (pid 5)  x
+        queue: restarts when code changes
+        """)
+    }
+
     func testWhatApprovingShows() {
-        XCTAssertEqual(Messages.approvalLines([PendingTask(name: "queue", run: "php artisan queue:work", port: nil),
-                                               PendingTask(name: "/app", run: nil, port: 8080)]),
-                       ["queue: php artisan queue:work", "proxy /app → 127.0.0.1:8080"])
+        let pending = [PendingTask(name: "queue", run: "php artisan queue:work", port: nil),
+                       PendingTask(name: "/app", run: nil, port: 8080)]
+        XCTAssertEqual(Messages.approvalLines(pending, site: site("shop", nil, secured: true)),
+                       ["queue: php artisan queue:work", "forward https://shop.test/app → 127.0.0.1:8080"])
+        XCTAssertEqual(Messages.approvalLines(pending, site: site("blog", nil)),
+                       ["queue: php artisan queue:work", "forward http://blog.test/app → 127.0.0.1:8080"])
+    }
+
+    /// A site's routes in effect show in `paddock tasks` and `paddock status`; one to Paddock's own port says so.
+    func testRoutesInTheTableAndTheStatus() {
+        let status = SiteTasksStatus(approval: .approved, tasks: [task("queue", .running(pid: 4))], pending: [],
+                                     pendingHash: nil, notice: nil, routes: ["/app": 8080, "/ws": 6001])
+        XCTAssertEqual(Messages.routeLines(status, site: site("shop", status, secured: true)),
+                       ["forward https://shop.test/app → 127.0.0.1:8080", "forward https://shop.test/ws → 127.0.0.1:6001"])
+        XCTAssertEqual(Messages.siteTasksLines([site("shop", status, secured: true)]), [
+            "shop/queue: running (pid 4)",
+            "shop: forward https://shop.test/app → 127.0.0.1:8080",
+            "shop: forward https://shop.test/ws → 127.0.0.1:6001",
+        ])
+        XCTAssertEqual(Messages.routeOnPaddocksPort(prefix: "/app", port: 443),
+                       "The route /app isn't used: port 443 is Paddock's own.")
+        XCTAssertEqual(Messages.proxyRoutesNotApplied("bad\u{1B}[2J config"),
+                       "Paddock couldn't apply this site's forwarding: bad config")
     }
 
     func testErrors() {
@@ -87,9 +125,25 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.taskError(.changedSinceShown(site: "shop")),
                        "shop's paddock.json changed after it was shown, so Paddock approved nothing. "
                        + "Review it again with: paddock tasks on --show")
-        XCTAssertEqual(Messages.taskError(.notShowable(site: "shop", task: "queue")),
-                       #"The command of task "queue" contains characters that cannot be shown, so Paddock won't approve it. "#
-                       + "Make it plain text in paddock.json.")
+        XCTAssertEqual(Messages.taskError(.notShowable(site: "shop", task: "queue",
+                                                       problem: .character(position: 7, codePoint: 0x9))),
+                       #"The command of task "queue" has a character that cannot be shown, at position 7 (U+0009), "#
+                       + "so Paddock won't approve it. Make it plain text in paddock.json.")
+        XCTAssertEqual(Messages.taskError(.stillStopping(task: "queue")), "queue is still stopping.")
+        XCTAssertEqual(Messages.waitingForTask("queue"), "Waiting for queue to finish…")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [12, 34], left: []),
+                       "Stopped 2 processes left from an earlier run of queue: 12, 34.")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [], left: []),
+                       "Found no processes left from an earlier run of queue.")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [12],
+                                                 left: [(56, .notInSiteFolder), (78, .startedEarlier), (90, .runByPaddock)]),
+                       "Stopped 1 process left from an earlier run of queue: 12. Left 3 that aren't provably that "
+                       + "task's: 56 (not in the site's folder), 78 (started before the task's record), "
+                       + "90 (run by Paddock).")
+        XCTAssertEqual(Messages.leftoversStopped(task: "queue", stopped: [], left: [(5, .anotherUser), (6, .anotherBoot)]),
+                       "Found no processes left from an earlier run of queue that are provably that task's. "
+                       + "Left 2: 5 (another user's process; Paddock can't inspect or stop it), "
+                       + "6 (the record is from another boot).")
         XCTAssertEqual(Messages.taskError(.alreadyRunning(site: "shop", task: "queue", pid: 7)),
                        "queue is already running (pid 7), not started by this Paddock. Stop that process first.")
         XCTAssertEqual(Messages.taskError(.notLaravel(site: "shop")),
@@ -114,9 +168,20 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(Messages.taskCutShort(after: 60, allowed: 300),
                        "Paddock was shutting down, so it stopped this task after 60 seconds instead of waiting the 300 "
                        + "its stopSeconds allow.")
-        XCTAssertEqual(Messages.taskKeepsExiting,
-                       "It finished by itself 3 times within 10 seconds, so Paddock stopped restarting it. "
-                       + "A task should be a command that keeps running.")
-        XCTAssertTrue(Messages.tasksUseBasicEnvironment.hasSuffix("paddock tasks on"))
+        XCTAssertEqual(Messages.taskKeepsFinishing(task: "queue"),
+                       "queue keeps finishing by itself, so Paddock stopped restarting it. Tasks are for commands that keep running.")
+        XCTAssertEqual(Messages.taskState(.stopping), "stopping")
+        XCTAssertTrue(Messages.tasksUseBasicEnvironment(.timedOut).hasSuffix("paddock tasks on"))
+    }
+
+    /// A site whose approved folder was replaced says so under `paddock status` and `paddock tasks`, after the
+    /// line asking for approval.
+    func testAReplacedFolderIsSaidWithTheApprovalLine() {
+        let tasks = SiteTasksStatus(approval: .needsApproval, tasks: [], pending: [], pendingHash: "v1:x",
+                                    notice: Messages.tasksFolderReplaced)
+        let site = Site(name: "blog", path: "/p/blog", kind: .parked, secured: false, php: PHPVersion("8.4")!,
+                        pinned: false, tasks: tasks)
+        XCTAssertEqual(Messages.siteTasksLines([site]),
+                       [Messages.tasksWaitingForApproval(site: "blog"), "blog: \(Messages.tasksFolderReplaced)"])
     }
 }

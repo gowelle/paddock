@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 11
+    public static let number = 17
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
@@ -42,11 +42,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var hasReplacedRootsToClean: Bool
     /// Added services and what each is doing.
     public var services: [ServiceStatus]
+    /// Sentences about Paddock itself (a web-stack log grown very large); empty from an older daemon.
+    public var notices: [String]
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
                 needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false, services: [ServiceStatus] = [],
+                notices: [String] = [],
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -61,6 +64,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.needsTrust = needsTrust
         self.hasReplacedRootsToClean = hasReplacedRootsToClean
         self.services = services
+        self.notices = notices
         self.version = version
         self.executablePath = executablePath
     }
@@ -68,7 +72,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
         case dnsRunning, portHelperInstalled, needsTrust, hasReplacedRootsToClean, version, executablePath
-        case services
+        case services, notices
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -90,6 +94,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         // One service this build can't read never costs the whole status.
         services = (try? c.decodeIfPresent([Lenient<ServiceStatus>].self, forKey: .services))?
             .compactMap(\.value) ?? []
+        notices = (try? c.decodeIfPresent([String].self, forKey: .notices)) ?? []
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -154,6 +159,73 @@ public final class Engine: @unchecked Sendable {
     private var shuttingDown = false
     /// The PHP install or service add in progress, if any; shutting down cancels it. Guarded by `flagsLock`.
     private var installInProgress: Task<Void, Error>?
+    /// Why the sites' proxy routes couldn't be applied, and which sites have routes (guarded by `flagsLock`).
+    /// Sites' routes as Caddy serves them now, and as they should be (`flagsLock`).
+    private var appliedRoutes: [String: [String: Int]] = [:]
+    private var wantedRoutes: [String: [String: Int]] = [:]
+    /// The last apply that failed (or a config refused), until one succeeds (`flagsLock`).
+    private var routeFailure: RouteFailure?
+    private var lastLoggedRouteFailure: String?
+    /// What the last written Caddyfile has (`flagsLock`).
+    private var rendered: (routes: [String: [String: Int]], refusal: String?) = ([:], nil)
+    /// Whether a routes apply is queued (`flagsLock`).
+    private var routesApplyQueued = false
+    /// The web stack's very large logs, as the last `checkLogSizes` found them (`flagsLock`).
+    private var logNotices: [String] = []
+    private var logCheckTimer: DispatchSourceTimer?
+    /// Applies sites' routes one at a time, off every lock but the engine's own.
+    let routesQueue = DispatchQueue(label: "app.paddock.routes")
+    /// Multiplies the backoff between retries of a failing apply (tests shorten it).
+    private let routeRetryScale: TimeInterval
+    private var testing = RouteTesting()
+
+    private struct RouteFailure {
+        var reason: String
+        /// The routes it tried to apply.
+        var wanted: [String: [String: Int]]
+        var attempts: Int
+        var at: Date
+        var retryAt: Date
+    }
+
+    /// Test-only knobs, behind `flagsLock` like everything the routes queue reads.
+    private struct RouteTesting {
+        var reloads = 0
+        var failReloads: String?
+        var validationOverride: (@Sendable (String) -> String?)?
+        var validationRunner: (@Sendable (String) throws -> ServiceStepRunner.Outcome)?
+        var webServerDown = false
+        var beforeReload: (@Sendable () -> Void)?
+    }
+
+    /// How many times the web side was reloaded for sites' routes (tests).
+    var routeReloads: Int { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.reloads }
+    /// Tests: make a routes reload fail with this message.
+    var failRouteReloadsForTesting: String? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.failReloads }
+        set { flagsLock.lock(); testing.failReloads = newValue; flagsLock.unlock() }
+    }
+    /// Tests: what `caddy validate` says (nil: valid) instead of running it.
+    var validationOverrideForTesting: (@Sendable (String) -> String?)? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.validationOverride }
+        set { flagsLock.lock(); testing.validationOverride = newValue; flagsLock.unlock() }
+    }
+    /// Tests: runs `caddy validate` (given the config file's path) instead of the bundled caddy.
+    var validationRunnerForTesting: (@Sendable (String) throws -> ServiceStepRunner.Outcome)? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.validationRunner }
+        set { flagsLock.lock(); testing.validationRunner = newValue; flagsLock.unlock() }
+    }
+    /// Tests: the web server counts as down for an apply.
+    var webServerDownForTesting: Bool {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.webServerDown }
+        set { flagsLock.lock(); testing.webServerDown = newValue; flagsLock.unlock() }
+    }
+    /// Tests: called in an apply right before it reloads.
+    var beforeRoutesReloadForTesting: (@Sendable () -> Void)? {
+        get { flagsLock.lock(); defer { flagsLock.unlock() }; return testing.beforeReload }
+        set { flagsLock.lock(); testing.beforeReload = newValue; flagsLock.unlock() }
+    }
+    static let validationTimeout: TimeInterval = 15
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
     /// Versions whose build update failed in this daemon: not tried (or logged) again. `operationLock`.
@@ -194,6 +266,7 @@ public final class Engine: @unchecked Sendable {
          taskShutdownGrace: TimeInterval = SiteTaskManager.shutdownGraceCap,
          log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) }) {
         self.installAction = installAction
+        routeRetryScale = backoffScale
         self.managesPortHelper = managesPortHelper
         self.portHelper = portHelper
         self.portHelperInstalled = portHelperInstalled
@@ -225,7 +298,11 @@ public final class Engine: @unchecked Sendable {
                 let php = state.defaultPHP ?? installer.installed().max() ?? PHPVersion(major: 8, minor: 1)
                 return SiteRegistry(state: state, defaultPHP: php, settings: settings).sites()
             },
-            shutdownGrace: taskShutdownGrace, log: log)
+            shutdownGrace: taskShutdownGrace, timeScale: backoffScale,
+            supervisedPids: { [supervisor, services] in supervisor.runningPids.union(services.supervisor.runningPids) },
+            reservedPorts: { [settings] in [settings.httpPort, settings.httpsPort, settings.dnsPort] },
+            log: log)
+        tasks.routesMayHaveChanged = { [weak self] wanted in self?.routesMayHaveChanged(wanted) }
     }
 
     deinit { shutdown() }
@@ -279,6 +356,7 @@ public final class Engine: @unchecked Sendable {
                 guard try waitForPortHelper() else { return }
             }
             setFlags(running: true)
+            commitRoutes()
         } catch {
             stopLocked()
             throw error
@@ -377,6 +455,25 @@ public final class Engine: @unchecked Sendable {
     public func reload() throws {
         operationLock.lock()
         defer { operationLock.unlock() }
+        try reloadLocked()
+    }
+
+    /// For sites' routes: reloads unless the daemon is shutting down or the web server isn't serving, both checked
+    /// under the engine's lock (so it never runs after `shutdown` took over). False when it didn't reload.
+    private func reloadForRoutes() throws -> Bool {
+        operationLock.lock()
+        defer { operationLock.unlock() }
+        guard !isShuttingDown, flags.running, !caddyCrashed, !webServerDownForTesting else { return false }
+        flagsLock.lock()
+        testing.reloads += 1
+        let failure = testing.failReloads
+        flagsLock.unlock()
+        if let failure { throw EngineError.caddyReloadFailed(output: failure) }
+        try reloadLocked()
+        return true
+    }
+
+    private func reloadLocked() throws {
         try paths.ensureDirectories()
         let state = try prepareState(updatingBuilds: false)
         try writeConfigs(state)
@@ -393,6 +490,7 @@ public final class Engine: @unchecked Sendable {
         guard !caddyCrashed else { return }
         try waitUntilReady()
         try reloadCaddy()
+        commitRoutes()
     }
 
     /// Answers promptly even while `start`, `reload` or a PHP install is in progress: it takes only
@@ -406,7 +504,15 @@ public final class Engine: @unchecked Sendable {
             SiteRegistry(state: state, defaultPHP: $0, settings: settings).sites()
         } ?? []).map { site in
             var site = site
-            site.tasks = taskStatuses[site.name]
+            // Routes show only as Caddy serves them; ones that couldn't be applied are noted instead.
+            let (routes, problem) = routesStatus(site: site.name)
+            site.tasks = taskStatuses[site.name].map { tasks in
+                SiteTasksStatus(approval: tasks.approval, tasks: tasks.tasks, pending: tasks.pending,
+                                pendingHash: tasks.pendingHash,
+                                notice: [tasks.notice, problem].compactMap { $0 }.joined(separator: " ").nonEmpty,
+                                routes: routes, folder: tasks.folder)
+            }
+            if site.tasks == nil { site.notice = problem }
             return site
         }
         var processes = services.processes
@@ -422,7 +528,13 @@ public final class Engine: @unchecked Sendable {
                             portHelperInstalled: managesPortHelper || portHelperInstalled(),
                             needsTrust: needsTrust(sites: sites),
                             hasReplacedRootsToClean: hasReplacedRootsToClean,
-                            services: services.statuses())
+                            services: services.statuses(), notices: currentLogNotices)
+    }
+
+    private var currentLogNotices: [String] {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        return logNotices
     }
 
     /// A replaced root on disk that macOS (as last checked) still trusts. Never waits.
@@ -474,14 +586,112 @@ public final class Engine: @unchecked Sendable {
         for v in versionsInUse(state) { try FPMConfig.write(version: v, paths: paths) }
         guard let defaultPHP = state.defaultPHP else { return }
         let sites = SiteRegistry(state: state, defaultPHP: defaultPHP, settings: settings).sites()
-        let text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
+        let proxies = TaskApproval.routes(state: state, sites: sites, reservedPorts: reservedPorts)
+        var text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
+                                    namesAuthority: namesCertificateAuthority, proxies: proxies)
+        // Sites' proxy routes are checked before they are used: a config Caddy would refuse (or that can't be
+        // checked) never replaces the one it serves; the sites are served without any routes, and say why.
+        var refusal: String?
+        if !proxies.isEmpty, let problem = validationProblem(text) {
+            refusal = problem
+            text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
                                     namesAuthority: namesCertificateAuthority)
+        }
+        flagsLock.lock()
+        rendered = (refusal == nil ? proxies : [:], refusal)
+        wantedRoutes = proxies
+        flagsLock.unlock()
         try Data(text.utf8).write(to: paths.caddyfile, options: .atomic)
+    }
+
+    /// The config just written is now what Caddy serves: its routes are in effect. A config written without its
+    /// routes (refused by caddy validate) counts as a failed apply.
+    private func commitRoutes() {
+        flagsLock.lock()
+        appliedRoutes = rendered.routes
+        let refusal = rendered.refusal
+        let wanted = wantedRoutes
+        flagsLock.unlock()
+        if let refusal { recordRouteFailure(refusal, wanted: wanted) } else { routesApplied() }
+    }
+
+    /// Ports of Paddock's own (its web ports and the DNS responder's): never a proxy route's target.
+    var reservedPorts: Set<Int> { [settings.httpPort, settings.httpsPort, settings.dnsPort] }
+
+    /// What `caddy validate` says about a config it refuses (nil when it accepts it, or can't be run).
+    private func validationProblem(_ text: String) -> String? {
+        if let override = validationOverrideForTesting { return override(text) }
+        let file = paths.config.appendingPathComponent("Caddyfile.check")
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard (try? Data(text.utf8).write(to: file, options: .atomic)) != nil else {
+            return "Paddock couldn't write the configuration to check it"
+        }
+        let outcome: ServiceStepRunner.Outcome
+        do {
+            if let runner = validationRunnerForTesting { outcome = try runner(file.path) } else {
+                outcome = try ServiceStepRunner.run(
+                    executable: caddyBinary.path, arguments: ["validate", "--config", file.path, "--adapter", "caddyfile"],
+                    environment: ProcessInfo.processInfo.environment.merging(caddyEnvironment) { $1 }, directory: paths.home,
+                    stdin: nil, timeout: Self.validationTimeout, isCancelled: { false })
+            }
+        } catch {
+            return "Paddock couldn't run caddy validate"
+        }
+        switch outcome.end {
+        case .exited(0): return nil
+        case .timedOut: return "caddy validate took longer than \(Int(Self.validationTimeout)) seconds"
+        case .cancelled: return "caddy validate was cancelled"
+        case .exited: break
+        }
+        let lines = outcome.output.split(separator: "\n").map(String.init)
+        return Messages.printable(lines.last { $0.contains("Error") } ?? lines.last ?? "", limit: 200) ?? "Caddy refused it"
     }
 
     // MARK: - Processes
 
     private static func fpmName(_ v: PHPVersion) -> String { "php-fpm-\(v)" }
+
+    /// The logs PHP-FPM writes itself (`FPMConfig`): its error log and the pool's PHP errors.
+    private func fpmOwnLogs(_ v: PHPVersion) -> [URL] {
+        [paths.log.appendingPathComponent("php-fpm-\(v).log"), paths.log.appendingPathComponent("php-\(v).log")]
+    }
+
+    /// Every web-stack process's logs: its output and the files it writes itself.
+    private func webStackLogs() -> [(process: String, log: URL)] {
+        var logs = [(Self.caddyName, caddyLog), (Self.portHelperName, portHelperLog)]
+        for v in fpmVersions.sorted() {
+            logs.append((Self.fpmName(v), paths.log.appendingPathComponent("\(Self.fpmName(v)).out.log")))
+            logs += fpmOwnLogs(v).map { (Self.fpmName(v), $0) }
+        }
+        return logs
+    }
+
+    /// How often `checkLogSizes` runs in the daemon.
+    public static let logCheckInterval: TimeInterval = 3600
+
+    /// Notes every log a running process holds that has grown very large (services on the service; the web stack
+    /// in the status), and forgets the notes of those that no longer are. Never cuts or renames a held file.
+    public func checkLogSizes() {
+        services.checkLogSizes()
+        let notices = webStackLogs().compactMap { process, log -> String? in
+            guard case .running = supervisor.status(process) else { return nil }
+            return LogFiles.veryLargeNotice(log)
+        }
+        flagsLock.lock()
+        logNotices = notices
+        flagsLock.unlock()
+    }
+
+    /// Runs `checkLogSizes` every `logCheckInterval` for as long as the daemon runs.
+    public func startLogSizeChecks() {
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + Self.logCheckInterval, repeating: Self.logCheckInterval, leeway: .seconds(60))
+        timer.setEventHandler { [weak self] in self?.checkLogSizes() }
+        timer.resume()
+        flagsLock.lock()
+        logCheckTimer = timer
+        flagsLock.unlock()
+    }
 
     private func isFPMRunning(_ v: PHPVersion) -> Bool {
         if case .running = supervisor.status(Self.fpmName(v)) { return true }
@@ -490,6 +700,8 @@ public final class Engine: @unchecked Sendable {
 
     private func startFPM(_ v: PHPVersion) throws {
         let conf = try FPMConfig.write(version: v, paths: paths)
+        // PHP-FPM's own logs, opened by it: set aside before it starts when large.
+        for log in fpmOwnLogs(v) { LogFiles.setAsideIfLarge(log) }
         try? FileManager.default.removeItem(at: paths.fpmSocket(v))
         try supervisor.start(ProcessSpec(
             name: Self.fpmName(v), executable: installer.fpmBinary(v),
@@ -611,6 +823,12 @@ public final class Engine: @unchecked Sendable {
     }
 
     private func stopLocked() {
+        // Nothing is served, so nothing is in effect, and no failure to apply is owed a notice.
+        flagsLock.lock()
+        appliedRoutes = [:]
+        routeFailure = nil
+        lastLoggedRouteFailure = nil
+        flagsLock.unlock()
         supervisor.stopAll()
         fpmVersions = []
         setFlags(running: false)
@@ -641,6 +859,102 @@ public final class Engine: @unchecked Sendable {
         if let dnsRunning { dnsUp = dnsRunning }
     }
 
+    /// The routes that should be in effect now: served sites' intact approvals for their very folders.
+    func desiredRoutes() -> [String: [String: Int]] {
+        let state = store.load()
+        guard let defaultPHP = state.defaultPHP else { return [:] }
+        let sites = SiteRegistry(state: state, defaultPHP: defaultPHP, settings: settings).sites()
+        return TaskApproval.routes(state: state, sites: sites, reservedPorts: reservedPorts)
+    }
+
+    /// Told after every refresh of the sites' tasks (never from a read-only request), with the routes the manager
+    /// worked out: if they differ from those Caddy serves, an apply is queued, once for a burst, on `routesQueue`.
+    /// After a failed apply, only when the routes wanted change or its backoff has passed. Only compares here:
+    /// it is called under the manager's lock.
+    func routesMayHaveChanged(_ wanted: [String: [String: Int]]) {
+        flagsLock.lock()
+        wantedRoutes = wanted
+        let backingOff = routeFailure.map { $0.wanted == wanted && Date() < $0.retryAt } ?? false
+        let needed = wanted != appliedRoutes && !backingOff && !routesApplyQueued && !shuttingDown && isRunning
+        if needed { routesApplyQueued = true }
+        flagsLock.unlock()
+        guard needed else { return }
+        routesQueue.async { [weak self] in
+            guard let self else { return }
+            self.flagsLock.lock()
+            self.routesApplyQueued = false
+            self.flagsLock.unlock()
+            self.applyRoutesIfChanged(forced: false)
+        }
+    }
+
+    /// Applies the routes that should be in effect (read afresh) if they differ from those served: regenerate and
+    /// reload. On `routesQueue`. Unless `forced` (approving or withdrawing: retry now, but not twice for one
+    /// request, `since`), a failed apply waits for its backoff or for the routes wanted to change. With the web
+    /// server down it doesn't count as a failure: `start` writes and serves the routes when it is back.
+    func applyRoutesIfChanged(forced: Bool, since: Date = .distantPast) {
+        guard !isShuttingDown else { return }
+        let desired = desiredRoutes()
+        flagsLock.lock()
+        wantedRoutes = desired
+        let failure = routeFailure
+        let upToDate = desired == appliedRoutes && failure == nil
+        let down = !isRunning || testing.webServerDown
+        let hook = testing.beforeReload
+        flagsLock.unlock()
+        if upToDate || down || caddyCrashed { return }
+        if let failure, failure.wanted == desired {
+            if forced ? failure.at >= since : Date() < failure.retryAt { return }
+        }
+        hook?()
+        do {
+            _ = try reloadForRoutes()
+        } catch {
+            let reason: String
+            if case EngineError.caddyReloadFailed(let output) = error { reason = output } else { reason = "\(error)" }
+            recordRouteFailure(Messages.printable(reason, limit: 200) ?? "the web server refused it", wanted: desired)
+        }
+    }
+
+    /// A failed apply: retried when the routes wanted change, or after 30 s, 1 min, 2 min… up to 10 min. Logged
+    /// once per reason.
+    private func recordRouteFailure(_ reason: String, wanted: [String: [String: Int]]) {
+        let now = Date()
+        flagsLock.lock()
+        let attempts = routeFailure.map { $0.wanted == wanted ? $0.attempts + 1 : 1 } ?? 1
+        let delay = min(30 * pow(2, Double(attempts - 1)), 600) * routeRetryScale
+        routeFailure = RouteFailure(reason: reason, wanted: wanted, attempts: attempts, at: now,
+                                    retryAt: now.addingTimeInterval(delay))
+        let logIt = lastLoggedRouteFailure != reason
+        lastLoggedRouteFailure = reason
+        flagsLock.unlock()
+        if logIt { log("could not apply sites' forwarding: \(reason)") }
+    }
+
+    /// The routes wanted are served: any failure is over (logged once, when it clears).
+    private func routesApplied() {
+        flagsLock.lock()
+        let cleared = routeFailure != nil
+        routeFailure = nil
+        lastLoggedRouteFailure = nil
+        flagsLock.unlock()
+        if cleared { log("sites' forwarding applied again") }
+    }
+
+    /// A site's routes and notice as clients see them: served routes that are what the site should have are in
+    /// effect; a site whose routes differ while an apply has failed is noted (forwarding still active for a site
+    /// that should have none, or not applied).
+    func routesStatus(site: String) -> (routes: [String: Int], notice: String?) {
+        flagsLock.lock()
+        defer { flagsLock.unlock() }
+        let applied = appliedRoutes[site] ?? [:]
+        let wanted = wantedRoutes[site] ?? [:]
+        if applied == wanted { return (applied, nil) }
+        guard let routeFailure else { return (wanted.isEmpty ? applied : [:], nil) }
+        if wanted.isEmpty { return (applied, Messages.forwardingStillActive(routeFailure.reason)) }
+        return ([:], Messages.proxyRoutesNotApplied(routeFailure.reason))
+    }
+
     /// Set once the daemon begins to exit; from then on every request that changes anything is refused.
     var isShuttingDown: Bool {
         flagsLock.lock()
@@ -669,4 +983,9 @@ public final class Engine: @unchecked Sendable {
         flagsLock.unlock()
         if cancel { task?.cancel() }
     }
+}
+
+extension String {
+    /// Nil for an empty string.
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

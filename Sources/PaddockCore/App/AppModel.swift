@@ -49,8 +49,14 @@ public final class AppModel: ObservableObject {
     @Published public var status: EngineStatus?
     /// One quiet line under the menu and settings; cleared by the next successful action.
     @Published public var lastError: String? {
-        didSet { errorCameFromRefresh = false }
+        didSet {
+            errorCameFromRefresh = false
+            lastErrorSource = nil
+        }
     }
+    /// The `busyKey` of the services or tasks action whose error `lastError` is: only that action succeeding on the
+    /// same item clears it (`finish`). Nil for any other error.
+    var lastErrorSource: String?
     /// True while `lastError` was set by a background refresh; the next successful refresh clears it.
     /// An action's error stays until the next successful action.
     private var errorCameFromRefresh = false
@@ -66,6 +72,25 @@ public final class AppModel: ObservableObject {
     /// On the real system: who held ports 80/443 when the last start checked them before the setup prompt
     /// (no prompt was shown). Cleared by the next start that gets past the check.
     @Published public private(set) var setupBlockedBy: [PortHolder] = []
+    /// The services Paddock can add, as the daemon last listed them (`loadCatalog`).
+    @Published public internal(set) var catalogEntries: [CatalogEntry] = []
+    /// What the last service action reported (where a removed service's data is, a database created); shown
+    /// under the services list until another replaces it or `noticeLifetime` passes.
+    @Published public internal(set) var serviceNotice: String?
+    /// The same for the tasks list (a task with no log yet).
+    @Published public internal(set) var taskNotice: String?
+    /// The `Remove and Delete Data…` question being shown; nil once hidden (which alone confirms or cancels
+    /// nothing).
+    @Published public internal(set) var dataDeletionRequest: DataDeletionRequest?
+    /// The one question whose confirmation may delete data: issued by `askToRemoveAndDeleteData`, ended by its use
+    /// or by cancelling.
+    var dataDeletionGrant: DataDeletionRequest?
+    /// The site whose approval sheet is open.
+    @Published public internal(set) var approvalSite: String?
+    /// What the open approval sheet shows, set from every outcome of loading it (polling never changes it).
+    @Published public internal(set) var approvalState: ApprovalSheetState = .loading
+    /// The sheet's own error line: why approving failed. Starts empty each time the sheet opens.
+    @Published public internal(set) var approvalError: String?
 
     /// Every PHP version Paddock can install.
     public let availablePHP: [PHPVersion]
@@ -80,7 +105,11 @@ public final class AppModel: ObservableObject {
     /// The action offered while secured sites need trusting; it sends the `trust` request.
     public static let trustCertificateTitle = "Trust Certificate\u{2026}"
 
-    private let client: ClientProtocol
+    let client: ClientProtocol
+    /// Puts text on the pasteboard, marked concealed (kept out of clipboard histories) when it holds a secret.
+    let copyText: (@MainActor (_ text: String, _ concealed: Bool) -> Void)?
+    /// Opens a URL or file with the system's default handler.
+    let openItem: (@MainActor (URL) -> Void)?
     private let services: AppServices?
     private let quitter: ApplicationQuitter?
     private let paths: Paths?
@@ -88,14 +117,31 @@ public final class AppModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     /// Pause between start attempts while a quit application lets go of its port.
     var quitRetryDelay: UInt64 = 500_000_000
+    /// How long a services or tasks notice shows.
+    static let noticeLifetime: TimeInterval = 4
+    /// Runs `expire` after `seconds` (tests run it when they choose).
+    var scheduleNoticeExpiry: @MainActor (_ seconds: TimeInterval, _ expire: @escaping @MainActor () -> Void) -> Void = {
+        seconds, expire in
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            expire()
+        }
+    }
+    /// Counts the notices shown on each line (services: false, tasks: true), so an expiry clears only the notice
+    /// it was scheduled for.
+    var noticeGeneration: [Bool: Int] = [:]
 
     /// This app's own program, to tell its daemon from another copy's.
     private let ownExecutable: String?
 
     public init(client: ClientProtocol, services: AppServices? = nil, quitter: ApplicationQuitter? = nil,
                 availablePHP: [PHPVersion] = [], paths: Paths? = nil,
-                ownExecutable: String? = PaddockBuild.runningExecutable) {
+                ownExecutable: String? = PaddockBuild.runningExecutable,
+                copyText: (@MainActor (_ text: String, _ concealed: Bool) -> Void)? = nil,
+                open: (@MainActor (URL) -> Void)? = nil) {
         self.client = client
+        self.copyText = copyText
+        self.openItem = open
         self.ownExecutable = ownExecutable
         self.paths = paths
         self.services = services
@@ -230,7 +276,7 @@ public final class AppModel: ObservableObject {
             if errorCameFromRefresh { lastError = nil }
         case .success(.error(_, let message)):
             showRefreshError(message)
-        case .success(.catalog):
+        case .success(.catalog), .success(.envLines):
             break
         case .failure(ClientError.daemonNotRunning):
             status = nil
@@ -255,46 +301,132 @@ public final class AppModel: ObservableObject {
 
     /// Whether this program may change the system; if not, says why in `lastError`. Every action that
     /// starts, stops or restarts Paddock, changes setup, trust or the shell file asks this first.
-    private func mayChangeSystem() -> Bool {
+    func mayChangeSystem() -> Bool {
+        guard let refusal = systemChangeRefusal() else { return true }
+        lastError = refusal
+        return false
+    }
+
+    /// Why this program may not change the system, or nil when it may.
+    private func systemChangeRefusal() -> String? {
         do {
             try services?.checkMayChangeSystem()
-            return true
+            return nil
         } catch {
-            lastError = Self.describe(error)
-            return false
+            return Self.describe(error)
         }
     }
 
-    /// Sends one request, marking it busy while it is in flight, then refreshes.
+    /// Sends one request, marking it busy while it is in flight, then refreshes. Its error goes to the error line
+    /// as this action's; its success clears only an earlier error of this same action on this same item.
     public func perform(_ r: Request) async {
-        // From a development build on the real system only reads leave (the client refuses the rest too).
-        guard r.isReadOnly || mayChangeSystem() else { return }
         let key = Self.busyKey(r)
-        busy.insert(key)
-        defer { busy.remove(key) }
-        let client = client
-        let result = await Task.detached { Result { try client.send(r) } }.value
-        switch result {
-        case .success(.ok(let fresh)), .success(.removed(_, let fresh)), .success(.databaseCreated(_, _, let fresh)):
-            status = fresh
-            lastError = nil
+        switch await exchange(r) {
+        case .refused(let refusal):
+            showError(refusal, from: key)
+            return
+        case .failed(let message):
+            showError(message, from: key)
+        case .answer(.ok), .answer(.removed), .answer(.databaseCreated), .answer(.catalog), .answer(.envLines):
+            if lastErrorSource == key { lastError = nil }
             if Self.isTrustRequest(r) { trustNotice = nil }
-        case .success(.catalog):
-            lastError = nil
-        case .success(.error(let code, let message)):
+        case .answer(.error(let code, let message)):
             if code == ErrorCode.needsTrust || code == ErrorCode.trustDisabled {
                 trustNotice = message
             } else if code != ErrorCode.portsBlocked {
                 // (The status line already says that.)
-                lastError = message
+                showError(message, from: key)
             }
-        case .failure(ClientError.daemonNotRunning):
-            status = nil
-            lastError = Messages.notRunning
-        case .failure(let error):
-            lastError = Self.describe(error)
         }
         await refresh()
+    }
+
+    /// How one request went: the daemon's answer (its status already published), refused before sending (a
+    /// development build changing the real system), or no answer (the daemon not running, a timeout).
+    enum Exchange {
+        case answer(Response)
+        case refused(String)
+        case failed(String)
+    }
+
+    /// Sends one request: refused first from a development build unless it only reads, marked busy while in
+    /// flight, off the main thread. Touches neither the error line nor any notice.
+    func exchange(_ r: Request, timeout: TimeInterval = 600) async -> Exchange {
+        // From a development build on the real system only reads leave (the client refuses the rest too).
+        if !r.isReadOnly, let refusal = systemChangeRefusal() { return .refused(refusal) }
+        let key = Self.busyKey(r)
+        busy.insert(key)
+        defer { busy.remove(key) }
+        let client = client
+        let result = await Task.detached { Result { try client.send(r, timeout: timeout) } }.value
+        switch result {
+        case .success(let response):
+            switch response {
+            case .ok(let fresh), .removed(_, let fresh), .databaseCreated(_, _, let fresh): status = fresh
+            case .error, .catalog, .envLines: break
+            }
+            return .answer(response)
+        case .failure(ClientError.daemonNotRunning):
+            status = nil
+            return .failed(Messages.notRunning)
+        case .failure(let error):
+            return .failed(Self.describe(error))
+        }
+    }
+
+    /// `exchange`, with a refusal or a failure to reach the daemon on the error line. Returns the answer, or nil.
+    func send(_ r: Request, timeout: TimeInterval = 600) async -> Response? {
+        switch await exchange(r, timeout: timeout) {
+        case .answer(let response): return response
+        case .refused(let message), .failed(let message):
+            lastError = message
+            return nil
+        }
+    }
+
+    /// A services or tasks action: sends it, and puts its error on the error line, marked as this action's, or,
+    /// when it worked, clears an earlier error of this same action on this same item (and no other). Returns the
+    /// answer, or nil.
+    /// `errorKey` names the action and item when the request alone names them too narrowly.
+    func act(_ r: Request, timeout: TimeInterval = 600, errorKey: String? = nil) async -> Response? {
+        let key = errorKey ?? Self.busyKey(r)
+        switch await exchange(r, timeout: timeout) {
+        case .answer(let response):
+            finish(response, for: key)
+            return response
+        case .refused(let message), .failed(let message):
+            showError(message, from: key)
+            return nil
+        }
+    }
+
+    func finish(_ response: Response, for key: String) {
+        if case .error(_, let message) = response {
+            showError(message, from: key)
+        } else if lastErrorSource == key {
+            lastError = nil
+        }
+    }
+
+    func showError(_ message: String, from key: String) {
+        lastError = message
+        lastErrorSource = key
+    }
+
+    /// The user dismissed the error line.
+    public func dismissError() {
+        lastError = nil
+    }
+
+    /// Shows a services or tasks notice, replacing the one there, for `noticeLifetime`.
+    func showNotice(_ text: String, tasks: Bool = false) {
+        if tasks { taskNotice = text } else { serviceNotice = text }
+        let generation = (noticeGeneration[tasks] ?? 0) + 1
+        noticeGeneration[tasks] = generation
+        scheduleNoticeExpiry(Self.noticeLifetime) { [weak self] in
+            guard let self, self.noticeGeneration[tasks] == generation else { return }
+            if tasks { self.taskNotice = nil } else { self.serviceNotice = nil }
+        }
     }
 
     private static func isTrustRequest(_ r: Request) -> Bool {
@@ -304,7 +436,7 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private static func describe(_ error: Error) -> String {
+    static func describe(_ error: Error) -> String {
         switch error {
         case ClientError.daemonNotRunning: return Messages.notRunning
         case ClientError.timedOut: return Messages.didNotAnswer
@@ -345,11 +477,11 @@ public final class AppModel: ObservableObject {
                 await refresh()
                 return
             case .failure(let error as DaemonLaunchError):
-                lastError = error.message()
+                showError(error.message(), from: key)
                 await refresh()
                 return
             case .failure(let error):
-                lastError = "Couldn't start Paddock: \(Self.describe(error))"
+                showError("Couldn't start Paddock: \(Self.describe(error))", from: key)
                 await refresh()
                 return
             }

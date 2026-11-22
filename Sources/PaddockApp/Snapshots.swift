@@ -24,6 +24,17 @@ enum Snapshots {
             ("settings-general", AnyView(GeneralTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-php", AnyView(PHPTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-sites", AnyView(SitesTab().settingsTheme().environmentObject(running)), SettingsView.size),
+            ("settings-services-none", AnyView(ServicesTab().settingsTheme().environmentObject(running)), SettingsView.size),
+            ("settings-services", AnyView(ServicesTab().settingsTheme().environmentObject(servicesModel(adding: false))),
+             SettingsView.size),
+            ("settings-services-adding", AnyView(ServicesTab().settingsTheme().environmentObject(servicesModel(adding: true))),
+             SettingsView.size),
+            ("settings-tasks-running", AnyView(TasksTab().settingsTheme().environmentObject(tasksModel(.running))),
+             SettingsView.size),
+            ("settings-tasks-needs-approval", AnyView(TasksTab().settingsTheme().environmentObject(tasksModel(.needsApproval))),
+             SettingsView.size),
+            ("approval-sheet", AnyView(ApprovalSheet().environmentObject(approvalModel())), nil),
+            ("approval-sheet-nothing", AnyView(ApprovalSheet().environmentObject(approvalModel(nothing: true))), nil),
         ]
         var ok = true
         for (name, view, size) in shots {
@@ -109,10 +120,129 @@ enum Snapshots {
         return model
     }
 
+    // MARK: Services and site tasks
+
+    private static func runningStatus(sites: [Site], services: [ServiceStatus] = []) -> EngineStatus {
+        EngineStatus(running: true, blockedBy: [], sites: sites, installedPHP: [v84, v85], defaultPHP: v85, processes: [:],
+                     resolverInstalled: true, trustEnabled: true, dnsRunning: true, portHelperInstalled: true,
+                     services: services)
+    }
+
+    private static func model(_ status: EngineStatus, catalog: [CatalogEntry] = []) -> AppModel {
+        let model = AppModel(client: SampleClient(status: status, catalog: catalog),
+                             services: SampleServices(parked: ["/Users/you/Paddock"]), quitter: SampleQuitter())
+        model.status = status
+        return model
+    }
+
+    /// Runs `work` to the end (the sample client answers at once) before the view is rendered.
+    private static func settle(_ work: @escaping @MainActor () async -> Void) {
+        var done = false
+        Task { @MainActor in
+            await work()
+            done = true
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !done && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    }
+
+    private static func service(_ id: String, _ name: String, kind: String, state: ServiceState, ports: [String: Int],
+                                openURL: String? = nil, notes: [String]? = nil) -> ServiceStatus {
+        ServiceStatus(id: id, name: name, kind: kind, version: "1", displayName: name, state: state, ports: ports,
+                      env: [], openURL: openURL, dataPath: "/Users/you/Library/Application Support/Paddock/services/\(id)/data",
+                      autostart: true, mainPort: ports["main"] ?? ports["smtp"], notes: notes)
+    }
+
+    /// Three services in mixed states (running with a note, stopped, port in use); with `adding`, PostgreSQL 17 is
+    /// being added.
+    private static func servicesModel(adding: Bool) -> AppModel {
+        let services = [
+            service("meilisearch-1-57", "Meilisearch 1.57", kind: "meilisearch", state: .running, ports: ["main": 7701],
+                    openURL: "http://127.0.0.1:7701",
+                    notes: ["Search indexes are tied to Meilisearch 1.57; export a dump before changing version."]),
+            service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .stopped, ports: ["main": 5433]),
+            service("mail", "Mail", kind: "mail", state: .portInUse(holder: "Herd"), ports: ["smtp": 1025, "http": 8025],
+                    openURL: "http://127.0.0.1:8025"),
+        ]
+        let catalog = [
+            CatalogEntry(kind: "postgres", displayName: "PostgreSQL", licence: "PostgreSQL", versions: ["18.7.0", "17.12.0"],
+                         downloadBytes: nil,
+                         series: [CatalogSeries(series: "18", version: "18.7.0", downloadBytes: nil, needsDownload: false),
+                                  CatalogSeries(series: "17", version: "17.12.0", downloadBytes: nil, needsDownload: true)]),
+        ]
+        let model = model(runningStatus(sites: [], services: services), catalog: catalog)
+        settle { await model.loadCatalog() }
+        if adding { model.busy = [AppModel.busyKey(.serviceAdd(kind: "postgres", version: "17"))] }
+        return model
+    }
+
+    enum TasksSample { case running, needsApproval }
+
+    private static let shopPath = "/Users/you/Code/shop"
+
+    private static func task(_ name: String, _ run: String, _ state: TaskState, restartOnChange: Bool = true,
+                             warning: String? = nil) -> TaskStatus {
+        TaskStatus(name: name, run: run, state: state, restartOnChange: restartOnChange,
+                   logPath: "/Users/you/Library/Application Support/Paddock/log/tasks/shop/\(name).log", warning: warning)
+    }
+
+    /// Running tasks (one crashed, one with the listening warning) with forwarding; or a site waiting for approval.
+    private static func tasksModel(_ sample: TasksSample) -> AppModel {
+        let shop: SiteTasksStatus
+        switch sample {
+        case .running:
+            shop = SiteTasksStatus(
+                approval: .approved,
+                tasks: [task("queue", "php artisan queue:work --tries=3", .running(pid: 4182)),
+                        task("scheduler", "php artisan schedule:work",
+                             .crashed(reason: Messages.taskRestarting(status: 1))),
+                        task("reverb", "php artisan reverb:start --host=0.0.0.0 --port=8080", .running(pid: 4190),
+                             restartOnChange: false,
+                             warning: Messages.listening(ListeningAddress(host: "0.0.0.0", port: 8080)))],
+                pending: [], pendingHash: nil, notice: nil, routes: ["/app": 8080, "/apps": 8080])
+        case .needsApproval:
+            shop = approvalStatus()
+        }
+        let sites = [
+            Site(name: "shop", path: shopPath, kind: .parked, secured: true, php: v85, pinned: false, tasks: shop),
+            Site(name: "blog", path: "/Users/you/Code/blog", kind: .parked, secured: true, php: v85, pinned: false),
+        ]
+        return model(runningStatus(sites: sites))
+    }
+
+    /// Four commands (one 300 characters long) and two forwarding lines, waiting for approval.
+    private static func approvalStatus() -> SiteTasksStatus {
+        let long = "php artisan queue:work redis --queue=payments,notifications,emails,default --tries=5 --backoff=10 "
+            + "--timeout=120 --sleep=2 --max-jobs=1000 --max-time=3600 --memory=512 --rest=1 --name=shop-worker "
+            + "--env=local --force --verbose --no-interaction --quiet-on-empty --stop-when-empty-after=600 --extra=12345"
+        let commands = [("flutterwave", "php artisan flutterwave:forward --port=8081"),
+                        ("queue", long),
+                        ("reverb", "php artisan reverb:start --host=127.0.0.1 --port=8080"),
+                        ("scheduler", "php artisan schedule:work")]
+        let pending = commands.map { PendingTask(name: $0.0, run: $0.1, port: nil) }
+            + [PendingTask(name: "/app", run: nil, port: 8080), PendingTask(name: "/apps", run: nil, port: 8080)]
+        return SiteTasksStatus(approval: .needsApproval,
+                               tasks: commands.map { task($0.0, $0.1, .waitingForApproval) },
+                               pending: pending, pendingHash: "v1:sample", notice: nil)
+    }
+
+    /// The sheet for a site with something to approve; with `nothing`, for one whose file went away.
+    private static func approvalModel(nothing: Bool = false) -> AppModel {
+        let gone = SiteTasksStatus(approval: .changed, tasks: [task("queue", "php artisan queue:work", .running(pid: 4182))],
+                                   pending: [], pendingHash: nil, notice: Messages.tasksFileRemoved(site: "shop"))
+        let site = Site(name: "shop", path: shopPath, kind: .parked, secured: true, php: v85, pinned: false,
+                        tasks: nothing ? gone : approvalStatus())
+        let model = model(runningStatus(sites: [site]))
+        settle { await model.showApproval(site: "shop") }
+        return model
+    }
+
     private struct SampleClient: ClientProtocol {
         let status: EngineStatus?
+        var catalog: [CatalogEntry] = []
         func send(_ r: Request, timeout: TimeInterval) throws -> Response {
             guard let status else { throw ClientError.daemonNotRunning }
+            if r == .serviceCatalog { return .catalog(catalog) }
             return .ok(status)
         }
     }

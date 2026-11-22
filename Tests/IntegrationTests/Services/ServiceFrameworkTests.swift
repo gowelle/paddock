@@ -292,6 +292,23 @@ final class ServiceFrameworkTests: XCTestCase {
         manager.stopAll()
     }
 
+    /// Status never says running before the service passed its readiness check: from the moment its process
+    /// starts, it is starting.
+    func testStatusNeverSaysRunningBeforeReadiness() async throws {
+        let manager = makeManager([FakeService.recipe(extraArguments: ["--delay", "1500"])])
+        let seen = LockedBox<[ServiceState]>([])
+        manager.processStartedForTesting = { [weak manager] id in
+            let state = manager?.statuses().first { $0.id == id }?.state
+            seen.value = seen.value + [state ?? .stopped]
+        }
+        _ = try await manager.add(kind: "fake", version: nil)
+        XCTAssertEqual(seen.value, [.starting], "starting from the moment the process exists")
+        manager.stop("fake")
+        try manager.start("fake")
+        XCTAssertEqual(seen.value, [.starting, .starting], "a later start too")
+        XCTAssertEqual(status(manager, "fake")?.state, .running, "running once ready")
+    }
+
     // MARK: - Through the engine
 
     private func makeEngine(_ recipes: [ServiceRecipe] = [FakeService.recipe()],
@@ -321,6 +338,39 @@ final class ServiceFrameworkTests: XCTestCase {
         XCTAssertEqual(entries.map(\.kind), ["fake"], "the catalog answers while an add is in progress")
         guard case .ok(let done) = await add.value else { return XCTFail("add failed") }
         XCTAssertEqual(done.services.map(\.state), [.running])
+    }
+
+    /// `status` (sent to every client on every poll) never carries a secret: the secret's line is left out and
+    /// only its name is listed. `serviceEnv` answers the full lines, changes nothing, and answers while an add is
+    /// in progress.
+    func testStatusLeavesSecretsOutAndServiceEnvAnswersThem() async throws {
+        let engine = makeEngine([FakeService.keyedRecipe(),
+                                 FakeService.recipe(kind: "slow", displayName: "Slow", extraArguments: ["--delay", "2500"])])
+        guard case .ok(let added) = await engine.handle(.serviceAdd(kind: "fake", version: nil)) else {
+            return XCTFail("add")
+        }
+        let key = try XCTUnwrap(try ServiceSecrets.load(from: home.paths.serviceConfig("fake"))["master_key"])
+        let service = try XCTUnwrap(added.services.first)
+        XCTAssertEqual(service.env.map { String($0.prefix(while: { $0 != "=" })) }, ["FAKE_HOST", "FAKE_PORT", "FAKE_SOCKET"],
+                       "the secret's line is left out")
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(engine.status()), as: UTF8.self).contains(key),
+                       "nowhere in the status")
+        XCTAssertEqual(service.secretEnvNames, ["FAKE_SECRET"])
+
+        let before = engine.status()
+        guard case .envLines(let lines) = await engine.handle(.serviceEnv(id: "fake")) else { return XCTFail("env") }
+        XCTAssertEqual(lines, service.env + ["FAKE_SECRET=\(key)"])
+        XCTAssertEqual(engine.status(), before, "nothing changed")
+        guard case .error(let code, _) = await engine.handle(.serviceEnv(id: "nope")) else { return XCTFail("unknown") }
+        XCTAssertEqual(code, ErrorCode.unknownService)
+
+        // Not queued behind a long add.
+        let add = Task { await engine.handle(.serviceAdd(kind: "slow", version: nil)) }
+        XCTAssertTrue(waitFor(10) { engine.status().services.contains { $0.state == .starting } })
+        let started = Date()
+        guard case .envLines = await engine.handle(.serviceEnv(id: "fake")) else { return XCTFail("env during add") }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2, "answered while the add was still in progress")
+        guard case .ok = await add.value else { return XCTFail("slow add") }
     }
 
     func testEngineRequestsAndErrorCodes() async throws {
@@ -417,11 +467,12 @@ final class ServiceFrameworkTests: XCTestCase {
         XCTAssertFalse(PortCheck.acceptsIPv4(port: port))
 
         try launchDaemon(catalog: catalog)
+        // Status can say running a moment before the service accepts connections (the supervisor has started
+        // it and the manager hasn't yet marked it starting): wait for both, with a deadline.
         XCTAssertTrue(waitFor(30) {
             guard case .ok(let status)? = try? client.send(.status, timeout: 5) else { return false }
-            return status.services.first?.state == .running
-        }, "the autostart service came back")
-        XCTAssertTrue(PortCheck.acceptsIPv4(port: port))
+            return status.services.first?.state == .running && PortCheck.acceptsIPv4(port: port)
+        }, "the autostart service came back and accepts connections")
         guard case .ok(let status) = try client.send(.status, timeout: 5) else { return XCTFail("status") }
         let secondGroup = try XCTUnwrap(status.processes["service-fake"].flatMap(TestSupport.pid(from:)))
         try stopDaemon()

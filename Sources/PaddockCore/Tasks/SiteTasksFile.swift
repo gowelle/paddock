@@ -25,9 +25,22 @@ public struct TaskDefinition: Codable, Equatable, Sendable {
 
     public var startsWithPaddock: Bool { autostart ?? true }
     public var stopGrace: Int { stopSeconds ?? Self.defaultStopSeconds }
-    /// Whether the task restarts when the site's code changes. Off unless the file turns it on; the default
-    /// that depends on the command comes with watching the code.
-    public var restartsOnChange: Bool { restartOnChange ?? false }
+    /// Whether the task restarts when the site's code changes: what the file says, else
+    /// `restartsOnChangeByDefault`.
+    public var restartsOnChange: Bool { restartOnChange ?? Self.restartsOnChangeByDefault(run) }
+
+    /// Artisan commands that keep a worker (and so the code it loaded) running.
+    static let longRunningArtisanCommands: Set<String> = [
+        "queue:work", "queue:listen", "horizon", "reverb:start", "octane:start", "schedule:work", "pulse:check", "pulse:work",
+    ]
+
+    /// True when the command runs `artisan` (a word, or a path ending in `/artisan`) followed, anywhere later on
+    /// the line, by one of `longRunningArtisanCommands` as a whole word.
+    public static func restartsOnChangeByDefault(_ run: String) -> Bool {
+        let words = run.split(whereSeparator: \.isWhitespace).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ";&|()")) }
+        guard let artisan = words.firstIndex(where: { $0 == "artisan" || $0.hasSuffix("/artisan") }) else { return false }
+        return words[(artisan + 1)...].contains { longRunningArtisanCommands.contains($0) }
+    }
 }
 
 /// A site's `paddock.json`: the commands Paddock keeps running for it, and the paths of the site it forwards
@@ -56,6 +69,7 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
     public static let maximumTasks = 16
     public static let maximumProxyPaths = 16
     public static let maximumRunLength = 2000
+    public static let maximumRunBytes = 8000
     public static let proxyPorts = 1024...65535
 
     public var isEmpty: Bool { tasks.isEmpty && proxy.isEmpty }
@@ -196,6 +210,9 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
                 proxy[path] = port
             }
         }
+        if let (first, second) = caseTwins(Array(proxy.keys)) {
+            return .invalid(reason: TasksFileProblem.caseTwins(first, second))
+        }
         let file = SiteTasksFile(tasks: tasks, proxy: proxy)
         if let problem = file.problem() { return .invalid(reason: problem) }
         return .file(file, hash: file.hash)
@@ -239,7 +256,20 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
     }
 
     /// The rules for the values themselves; also applied to an approved definition read back from state.json.
-    public func problem() -> String? {
+    /// The first two paths that differ only in ASCII upper and lower case (forwarding matches either way).
+    static func caseTwins(_ paths: [String]) -> (String, String)? {
+        var seen: [String: String] = [:]
+        for path in paths.sorted() {
+            if let earlier = seen[path.lowercased()] { return (earlier, path) }
+            seen[path.lowercased()] = path
+        }
+        return nil
+    }
+
+    /// The rules for the values themselves; also applied to an approved definition read back from state.json, but
+    /// there without today's forwarding-path rules (`checkingPaths: false`): an approval made before those rules
+    /// keeps its tasks, and only the paths they refuse are left out.
+    public func problem(checkingPaths: Bool = true) -> String? {
         if tasks.count > Self.maximumTasks { return TasksFileProblem.tooManyTasks }
         for name in tasks.keys.sorted() {
             guard Self.isTaskName(name) else { return TasksFileProblem.badTaskName(name) }
@@ -251,8 +281,11 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
         }
         if proxy.count > Self.maximumProxyPaths { return TasksFileProblem.tooManyProxyPaths }
         for path in proxy.keys.sorted() {
-            guard Self.isProxyPath(path) else { return TasksFileProblem.badProxyPath(path) }
+            guard !checkingPaths || Self.isProxyPath(path) else { return TasksFileProblem.badProxyPath(path) }
             guard Self.proxyPorts.contains(proxy[path]!) else { return TasksFileProblem.badProxyPort(path) }
+        }
+        if checkingPaths, let (first, second) = Self.caseTwins(Array(proxy.keys)) {
+            return TasksFileProblem.caseTwins(first, second)
         }
         return nil
     }
@@ -265,20 +298,27 @@ public struct SiteTasksFile: Codable, Equatable, Sendable {
             || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) || $0 == UInt8(ascii: "-") }
     }
 
-    /// `^/[A-Za-z0-9._~/-]{1,100}$` without `..` or `//`.
-    static func isProxyPath(_ path: String) -> Bool {
+    /// A path prefix a proxy route may have: at most 64 characters, `/` and then parts of `[A-Za-z0-9._~-]`
+    /// separated by single slashes, none of them `.` or `..`, no slash at the end (so `/` alone isn't one). Nothing
+    /// else, so no route can carry Caddy syntax (braces, wildcards, quotes, spaces) or escape its site.
+    public static func isProxyPath(_ path: String) -> Bool {
         let bytes = Array(path.utf8)
-        guard (2...101).contains(bytes.count), bytes[0] == UInt8(ascii: "/"), !path.contains(".."), !path.contains("//")
-        else { return false }
-        return bytes.allSatisfy { byte in
-            (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte) || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
-                || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) || "._~/-".utf8.contains(byte)
+        guard (2...maximumProxyPathLength).contains(bytes.count), bytes[0] == UInt8(ascii: "/") else { return false }
+        let parts = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        return parts.allSatisfy { part in
+            !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
+                (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(byte) || (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(byte)
+                    || (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) || "._~-".utf8.contains(byte)
+            }
         }
     }
 
-    /// 1…2000 characters, with no NUL and no line break.
-    static func isRunLine(_ run: String) -> Bool {
-        (1...maximumRunLength).contains(run.count) && !run.unicodeScalars.contains { $0 == "\0" || $0 == "\n" || $0 == "\r" }
+    public static let maximumProxyPathLength = 64
+
+    /// 1…2000 Unicode scalars and at most 8000 bytes, with no NUL and no line break.
+    public static func isRunLine(_ run: String) -> Bool {
+        (1...maximumRunLength).contains(run.unicodeScalars.count) && run.utf8.count <= maximumRunBytes
+            && !run.unicodeScalars.contains { $0 == "\0" || $0 == "\n" || $0 == "\r" }
     }
 
     // MARK: - The canonical form
@@ -376,7 +416,11 @@ enum TasksFileProblem {
         "\"stopSeconds\" of task \"\(name)\" must be a whole number from 1 to 300"
     }
     static func badProxyPath(_ path: String) -> String {
-        "proxy path \"\(shown(path))\" must start with / and use only letters, digits and . _ ~ / -, without .. or //"
+        "proxy path \"\(shown(path))\" must start with / and be at most 64 characters: parts of letters, digits and "
+            + ". _ ~ - between single slashes, not . or .."
+    }
+    static func caseTwins(_ first: String, _ second: String) -> String {
+        "Two forwarding paths differ only in upper and lower case: \(shown(first)) and \(shown(second))"
     }
     static func badProxyPort(_ path: String) -> String {
         "the port for proxy path \"\(shown(path))\" must be a whole number from 1024 to 65535"

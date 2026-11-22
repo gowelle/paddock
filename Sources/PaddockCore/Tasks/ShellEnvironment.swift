@@ -7,28 +7,50 @@ import Foundation
 public struct ShellEnvironment: Sendable, CustomStringConvertible {
     public let variables: [String: String]
     /// True when the shell couldn't be read and `variables` is the basic fallback.
-    public let usedFallback: Bool
+    public var usedFallback: Bool { fallbackReason != nil }
+    /// Why the fallback is used; nil when the shell was read.
+    public let fallbackReason: FallbackReason?
     /// The shell tasks run under (`[shell, "-c", run]`).
     public let shell: String
 
-    public init(variables: [String: String], usedFallback: Bool, shell: String) {
+    public enum FallbackReason: String, Equatable, Sendable {
+        case timedOut, shellFailed, tooLarge, markerMissing
+    }
+
+    public init(variables: [String: String], fallbackReason: FallbackReason? = nil, shell: String) {
         self.variables = variables
-        self.usedFallback = usedFallback
+        self.fallbackReason = fallbackReason
         self.shell = shell
     }
 
-    /// For the daemon log: how many variables, and whether the fallback was used. Never a value.
+    /// For the daemon log: how many variables, and whether (and why) the fallback was used. Never a value.
     public var description: String {
-        usedFallback ? "the shell's environment couldn't be read; tasks use the basic fallback (\(variables.count) variables)"
-                     : "captured \(variables.count) variables from \(shell)"
+        guard let fallbackReason else { return "captured \(variables.count) variables from \(shell)" }
+        return "the shell's environment couldn't be read (\(fallbackReason.rawValue)); tasks use the basic fallback "
+            + "(\(variables.count) variables)"
+    }
+
+    /// What running the shell gave.
+    public enum RunOutcome: Equatable, Sendable {
+        /// It exited with status 0; this is the end of what it printed.
+        case output(String)
+        case timedOut
+        /// It couldn't be run, or exited with an error.
+        case failed
     }
 
     /// Runs `shell` with `arguments` and `environment` in `directory`, stdin from /dev/null, its whole process
-    /// group killed at `timeout`; returns what it printed, or nil if it didn't run or was cut off.
+    /// group killed at `timeout`.
     public typealias Runner = @Sendable (_ shell: String, _ arguments: [String], _ environment: [String: String],
-                                         _ directory: URL, _ timeout: TimeInterval) -> String?
+                                         _ directory: URL, _ timeout: TimeInterval) -> RunOutcome
 
     public static let timeout: TimeInterval = 5
+    /// The most the environment itself (what follows the marker) may take; startup-file noise before the marker
+    /// doesn't count.
+    public static let maximumEnvironmentBytes = 256 * 1024
+    /// How much of the shell's output is kept: the end of it, room for the environment and the marker however
+    /// much noise came first.
+    static let keptOutputBytes = 1024 * 1024
 
     /// A JSON file of `NAME: value` that a development home's daemon uses instead of asking the shell (tests
     /// never run the owner's startup files). A real home ignores it.
@@ -41,7 +63,7 @@ public struct ShellEnvironment: Sendable, CustomStringConvertible {
            !path.isEmpty {
             if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                let variables = try? JSONDecoder().decode([String: String].self, from: data) {
-                return ShellEnvironment(variables: variables.filter { !isDropped($0.key) }, usedFallback: false, shell: shell)
+                return ShellEnvironment(variables: variables.filter { !isDropped($0.key) }, shell: shell)
             }
             fputs("paddockd: ignoring \(path): not a JSON object of strings\n", stderr)
         }
@@ -64,11 +86,21 @@ public struct ShellEnvironment: Sendable, CustomStringConvertible {
         let base = environment.filter { !$0.key.hasPrefix("PADDOCK_") }
         let home = URL(fileURLWithPath: base["HOME"].flatMap { $0.hasPrefix("/") ? $0 : nil } ?? NSHomeDirectory(),
                        isDirectory: true)
-        if let output = runner(shell, ["-l", "-i", "-c", command], base, home, timeout),
-           let parsed = parse(output, marker: marker) {
-            return ShellEnvironment(variables: parsed.filter { !isDropped($0.key) }, usedFallback: false, shell: shell)
+        let reason: FallbackReason
+        switch runner(shell, ["-l", "-i", "-c", command], base, home, timeout) {
+        case .timedOut: reason = .timedOut
+        case .failed: reason = .shellFailed
+        case .output(let output):
+            if let start = output.range(of: "\n" + marker + "\n"),
+               output[start.upperBound...].utf8.count > maximumEnvironmentBytes {
+                reason = .tooLarge
+            } else if let parsed = parse(output, marker: marker) {
+                return ShellEnvironment(variables: parsed.filter { !isDropped($0.key) }, shell: shell)
+            } else {
+                reason = .markerMissing
+            }
         }
-        return ShellEnvironment(variables: fallback(environment: environment), usedFallback: true, shell: shell)
+        return ShellEnvironment(variables: fallback(environment: environment), fallbackReason: reason, shell: shell)
     }
 
     /// The entries after the marker line: NUL-separated `NAME=value` pairs (values may hold newlines and `=`).
@@ -123,8 +155,13 @@ public struct ShellEnvironment: Sendable, CustomStringConvertible {
     public static let live: Runner = { shell, arguments, environment, directory, timeout in
         guard let outcome = try? ServiceStepRunner.run(executable: shell, arguments: arguments, environment: environment,
                                                        directory: directory, stdin: nil, timeout: timeout, killGrace: 0.5,
-                                                       isCancelled: { false }),
-              outcome.end == .exited(0) else { return nil }
-        return outcome.output
+                                                       keepingLast: keptOutputBytes, isCancelled: { false }) else {
+            return .failed
+        }
+        switch outcome.end {
+        case .exited(0): return .output(outcome.output)
+        case .timedOut: return .timedOut
+        default: return .failed
+        }
     }
 }

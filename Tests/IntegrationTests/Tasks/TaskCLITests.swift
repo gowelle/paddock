@@ -33,6 +33,8 @@ final class TaskCLITests: XCTestCase {
         let client = PaddockClient(paths: home.paths)
         if client.daemonIsRunning { _ = try? client.send(.shutdown, timeout: 60) }
         if let daemon, !waitFor(60, { !daemon.isRunning }) { kill(daemon.processIdentifier, SIGKILL) }
+        // A daemon that had to be killed leaves its tasks and web stack: only this home's are signalled.
+        for pid in home.leftoverProcesses() where home.owns(pid) { kill(pid, SIGKILL) }
         home?.cleanUp()
     }
 
@@ -67,11 +69,14 @@ final class TaskCLITests: XCTestCase {
         XCTAssertEqual(example.status, 0, example.err)
         let plainFile = SiteTasksFile.realPath(plain.path)! + "/paddock.json"
         XCTAssertEqual(example.out, "plain isn't a Laravel project, so here is an example to start from. Save it as "
-                       + "\(plainFile):\n\n" + SiteTasksFile.example)
+                       + "\(plainFile):\n\n" + SiteTasksFile.example + Messages.forwardingIgnoresCase + "\n")
         XCTAssertFalse(FileManager.default.fileExists(atPath: plainFile))
 
         // Harmless commands instead of the starter's.
-        try home.writeTasks("shop", #"{"tasks": {"worker": {"run": "echo working; exec sleep 600"}}, "proxy": {"/app": 8080}}"#)
+        // A route to a free high port nothing listens on (no request is ever sent through it here).
+        let routePort = TestSupport.freeTCPPort()
+        let forward = "forward http://shop.test/app → 127.0.0.1:\(routePort)"
+        try home.writeTasks("shop", #"{"tasks": {"worker": {"run": "echo working; exec sleep 600"}}, "proxy": {"/app": \#(routePort)}}"#)
         let waiting = "shop: paddock.json has tasks waiting for your approval. Review them with: paddock tasks on --show\n"
         XCTAssertEqual(try run(["tasks"], in: shop).out, waiting)
         XCTAssertTrue(try run(["status"]).out.hasSuffix("\n" + waiting), "paddock status says so too")
@@ -79,24 +84,25 @@ final class TaskCLITests: XCTestCase {
         let shown = try run(["tasks", "on", "--show"], in: shop)
         XCTAssertEqual(shown.status, 0, shown.err)
         XCTAssertEqual(shown.out, "\(shopFile) would run:\n  worker: echo working; exec sleep 600\n"
-                       + "  proxy /app → 127.0.0.1:8080\nApprove it with: paddock tasks on\n")
+                       + "  \(forward)\nApprove it with: paddock tasks on\n")
         XCTAssertEqual(try run(["tasks"], in: shop).out, waiting, "showing approves nothing")
 
         let approved = try run(["tasks", "on"], in: shop)
         XCTAssertEqual(approved.status, 0, approved.err)
         let lines = approved.out.components(separatedBy: "\n")
         XCTAssertEqual(Array(lines.prefix(4)), ["Approving what \(shopFile) runs:", "  worker: echo working; exec sleep 600",
-                                                "  proxy /app → 127.0.0.1:8080", "Approved."])
+                                                "  \(forward)", "Approved."])
         XCTAssertTrue(lines[4].hasPrefix("  worker: running (pid "), approved.out)
         let worker = try XCTUnwrap(pid(in: lines[4]))
 
         let list = try run(["tasks"], in: shop)
         let running = "running (pid \(worker))"
         XCTAssertEqual(list.out, "TASK    " + "STATE".padding(toLength: running.count + 2, withPad: " ", startingAt: 0)
-                       + "COMMAND\nworker  \(running)  echo working; exec sleep 600\n")
+                       + "COMMAND\nworker  \(running)  echo working; exec sleep 600\n\(forward)\n")
         XCTAssertEqual(try run(["tasks", "--site", "shop.test"]).out, list.out, "--site from anywhere")
-        XCTAssertEqual(try run(["tasks"]).out, "shop/worker: running (pid \(worker))\n", "outside a site: every site")
-        XCTAssertTrue(try run(["status"]).out.hasSuffix("\nshop/worker: running (pid \(worker))\n"))
+        XCTAssertEqual(try run(["tasks"]).out, "shop/worker: running (pid \(worker))\nshop: \(forward)\n",
+                       "outside a site: every site")
+        XCTAssertTrue(try run(["status"]).out.hasSuffix("\nshop/worker: running (pid \(worker))\nshop: \(forward)\n"))
 
         XCTAssertTrue(waitFor(10) { ((try? self.run(["tasks", "logs", "worker"], in: self.shop).out) ?? "").contains("working") })
         let logPath = home.paths.taskLog(site: "shop", task: "worker").path
@@ -137,6 +143,28 @@ final class TaskCLITests: XCTestCase {
         let last2 = try XCTUnwrap(pid(in: try run(["tasks"], in: shop).out))
         guard case .ok = try PaddockClient(paths: home.paths).send(.shutdown, timeout: 60) else { return XCTFail() }
         XCTAssertTrue(waitFor(30) { kill(last2, 0) != 0 }, "nothing is left running")
+    }
+
+    /// A stop that takes a while says what it is waiting for, and returns once the task has stopped.
+    func testAStopThatTakesAWhileSaysSo() throws {
+        try home.writeTasks("shop", #"{"tasks": {"slow": {"run": "trap '' TERM; while :; do sleep 0.1; done", "stopSeconds": 5}}}"#)
+        try launchDaemon()
+        XCTAssertEqual(try run(["tasks", "on"], in: shop).status, 0)
+        Thread.sleep(forTimeInterval: 0.5)
+        let stopped = try run(["tasks", "stop", "slow"], in: shop)
+        XCTAssertEqual(stopped.status, 0, stopped.err)
+        XCTAssertEqual(stopped.out, "Waiting for slow to finish…\nslow stopped.\n")
+    }
+
+    /// Commands are printed whole, however long (up to the 2000 characters a command may have).
+    func testALongCommandIsShownWhole() throws {
+        let command = "echo " + String(repeating: "x", count: 1979) + "; exec sleep 600"
+        XCTAssertEqual(command.unicodeScalars.count, 2000)
+        try home.writeTasks("shop", #"{"tasks": {"long": {"run": "\#(command)"}}}"#)
+        try launchDaemon()
+        let shown = try run(["tasks", "on", "--show"], in: shop)
+        XCTAssertEqual(shown.status, 0, shown.err)
+        XCTAssertTrue(shown.out.contains("  long: \(command)\n"), "not cut short")
     }
 
     func testFollowingALog() throws {
