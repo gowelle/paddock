@@ -1,0 +1,25 @@
+name: An idea
+description: Something Paddock could do, or do better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task or the annoyance, in your own words. This matters more than the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+  - type: markdown
+    attributes:
+      value: |
+        For what Paddock deliberately leaves out (Apple Silicon, Windows and Linux builds, PHP older than 8.1, Node version management, sharing tunnels), see the roadmap in `docs/superpowers/plans/`.

@@ -9,6 +9,15 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/gowelle/paddock/releases/latest"><img src="https://img.shields.io/github/v/release/gowelle/paddock?label=release&color=d49a1e" alt="Latest release"></a>
+  <a href="https://github.com/gowelle/paddock/actions/workflows/tests.yml"><img src="https://github.com/gowelle/paddock/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B%20%C2%B7%20Intel-2f6659" alt="macOS 13 or later, Intel">
+  <img src="https://img.shields.io/badge/PHP-8.4%20%C2%B7%208.5-777bb4" alt="PHP 8.4 and 8.5">
+  <img src="https://img.shields.io/badge/Swift-6-f05138" alt="Swift 6">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-proprietary-5c5041" alt="Licence: proprietary"></a>
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#the-paddock-cli">CLI</a> ·
@@ -614,7 +623,10 @@ Scripts/release.sh 0.2.0 --publish   # also commit, tag, push, create the GitHub
 `Scripts/release.sh` writes the version, raises the build number, runs
 `Scripts/bundle.sh`, signs the zip with the update key in the login Keychain
 and writes `appcast.xml`, the feed installed copies read, and `SHA256SUMS`,
-which `Scripts/install.sh` checks the download against. `--publish` runs
+which `Scripts/install.sh` checks the download against. It also fetches the last
+two releases and makes a delta from each, so a copy that is one or two
+versions behind downloads only what changed (a few kilobytes when little
+did) instead of the whole app. `--publish` runs
 from `main` only. Release notes in
 `docs/releases/<version>.md` appear in the update window and on GitHub.
 
@@ -633,6 +645,9 @@ and `Scripts/build-valkey.sh`. The locked versions and checksums live in
 ```sh
 swift test
 ```
+
+The unit tests run on every push and pull request, on an Intel Mac
+([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
 
 - [`Tests/PaddockCoreTests`](Tests/PaddockCoreTests): unit tests for the core
   library (Caddyfile generation, DNS messages, IPC, PHP resolution, path and
@@ -690,3 +705,7 @@ a contribution you grant the owner the rights described in
 [CONTRIBUTING.md](CONTRIBUTING.md). Please read it before opening a pull
 request, and do not submit confidential, third-party, patented, or GPL/LGPL
 code without prior written approval.
+
+Found a problem or have an idea? [Open an issue](https://github.com/gowelle/paddock/issues/new/choose).
+Please report security problems
+[privately](https://github.com/gowelle/paddock/security/advisories/new).

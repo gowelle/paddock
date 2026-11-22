@@ -11,6 +11,10 @@
 # The update is signed with the EdDSA key in the login Keychain (made once with Sparkle's generate_keys; its
 # public half is SUPublicEDKey in Resources/Info.plist). Without that key there is no release.
 #
+# Smaller updates: the zips of the last releases are fetched from GitHub (and kept in dist/release-cache/), so
+# the feed can offer each of them a delta, the difference only, beside the whole app. A copy too old for a
+# delta, or one whose delta does not apply, takes the whole zip.
+#
 # Release notes: docs/releases/<version>.md, if it is there, is shown in the update window and on GitHub.
 #
 # The app is signed ad hoc, not with an Apple Developer ID. Scripts/install.sh is how it reaches another Mac
@@ -22,6 +26,9 @@ REPO="gowelle/paddock"
 ENGINE="$ROOT/Sources/PaddockCore/Engine.swift"
 TOOLS="$ROOT/.build/artifacts/sparkle/Sparkle/bin"
 OUT="$ROOT/dist/release"
+CACHE="$ROOT/dist/release-cache"
+# How many earlier releases get a delta to this one.
+DELTAS=2
 
 fail() { echo "release.sh: $*" >&2; exit 1; }
 
@@ -46,8 +53,8 @@ PUBLIC="$("$TOOLS/generate_keys" -p)"
 grep -q "<string>$PUBLIC</string>" "$ROOT/Resources/Info.plist" \
   || fail "the Keychain's update key is not the one in Resources/Info.plist (SUPublicEDKey). Installed copies would refuse this update."
 
+command -v gh >/dev/null || fail "the gh command is needed, to read the earlier releases."
 if [ "$PUBLISH" = 1 ]; then
-  command -v gh >/dev/null || fail "--publish needs the gh command."
   [ "$(git -C "$ROOT" branch --show-current)" = "main" ] || fail "--publish releases from main; this is $(git -C "$ROOT" branch --show-current)."
   git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "the tag $TAG already exists."
 fi
@@ -74,10 +81,33 @@ cp "$ROOT/dist/$ZIP" "$OUT/$ZIP"
 NOTES="$ROOT/docs/releases/$VERSION.md"
 if [ -f "$NOTES" ]; then cp "$NOTES" "$OUT/Paddock-$VERSION.md"; fi
 
+# The earlier releases a delta is made from.
+EARLIER="$(gh release list -R "$REPO" --exclude-drafts --exclude-pre-releases --limit 20 --json tagName -q '.[].tagName' \
+  | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx "$TAG" | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n "$DELTAS" || true)"
+mkdir -p "$CACHE"
+for tag in $EARLIER; do
+  old="Paddock-${tag#v}.zip"
+  if [ ! -f "$CACHE/$old" ]; then
+    echo "Fetching $old, to make a delta from…"
+    gh release download "$tag" -R "$REPO" -p "$old" -p SHA256SUMS -D "$CACHE/$tag.part" --clobber \
+      || fail "$old could not be downloaded from the release $tag."
+    (cd "$CACHE/$tag.part" && shasum -a 256 -c SHA256SUMS >/dev/null) || fail "$old does not match its release's checksum."
+    mv "$CACHE/$tag.part/$old" "$CACHE/$old"
+    rm -rf "$CACHE/$tag.part"
+  fi
+  cp "$CACHE/$old" "$OUT/$old"
+done
+
 echo "Writing the update feed…"
-# Signs the zip with the Keychain's key and writes one entry for it. No deltas: every update is the whole app.
+# Signs the zip (and each delta) with the Keychain's key and adds one entry for this version.
 "$TOOLS/generate_appcast" --download-url-prefix "$PREFIX" --link "https://github.com/$REPO" \
-  --embed-release-notes --maximum-deltas 0 -o "$OUT/appcast.xml" "$OUT" >/dev/null
+  --embed-release-notes --maximum-deltas "$DELTAS" -o "$OUT/appcast.xml" "$OUT" >/dev/null
+for tag in $EARLIER; do rm -f "$OUT/Paddock-${tag#v}.zip"; done
+# The tool also lists the earlier zips, at this release's address, where they are not. The feed names this
+# version only: it is the one every copy updates to.
+[ -f "$OUT/appcast.xml" ] || fail "no update feed was written."
+VERSION="$VERSION" perl -0pi -e 's{[ \t]*<item>.*?</item>\n?}{ index($&, "<sparkle:shortVersionString>$ENV{VERSION}</sparkle:shortVersionString>") >= 0 ? $& : "" }gse' "$OUT/appcast.xml"
+[ "$(grep -c '<item>' "$OUT/appcast.xml")" = 1 ] || fail "the update feed should name exactly one version."
 [ -f "$OUT/appcast.xml" ] || fail "no update feed was written."
 grep -q "sparkle:edSignature=" "$OUT/appcast.xml" || fail "the update feed has no signature for $ZIP."
 grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" "$OUT/appcast.xml" \
@@ -88,7 +118,12 @@ rm -f "$OUT/Paddock-$VERSION.md"
 # What Scripts/install.sh checks the download against.
 (cd "$OUT" && shasum -a 256 "$ZIP" > SHA256SUMS)
 
-echo "dist/release/ holds $ZIP, SHA256SUMS and appcast.xml for $TAG."
+ASSETS=("$OUT/$ZIP" "$OUT/SHA256SUMS" "$OUT/appcast.xml")
+for delta in "$OUT"/*.delta; do
+  [ -f "$delta" ] && ASSETS+=("$delta")
+done
+echo "dist/release/ holds for $TAG:"
+(cd "$OUT" && ls -lh | awk 'NR > 1 { print "  " $9 "  " $5 }')
 if [ "$PUBLISH" = 0 ]; then
   echo "Nothing was published. To publish: Scripts/release.sh $VERSION --publish"
   exit 0
@@ -100,8 +135,8 @@ git -C "$ROOT" diff --cached --quiet || git -C "$ROOT" commit -q -m "Release $VE
 git -C "$ROOT" tag "$TAG"
 git -C "$ROOT" push -q origin main "$TAG"
 if [ -f "$NOTES" ]; then
-  gh release create "$TAG" "$OUT/$ZIP" "$OUT/SHA256SUMS" "$OUT/appcast.xml" -R "$REPO" --title "Paddock $VERSION" --notes-file "$NOTES"
+  gh release create "$TAG" "${ASSETS[@]}" -R "$REPO" --title "Paddock $VERSION" --notes-file "$NOTES"
 else
-  gh release create "$TAG" "$OUT/$ZIP" "$OUT/SHA256SUMS" "$OUT/appcast.xml" -R "$REPO" --title "Paddock $VERSION" --generate-notes
+  gh release create "$TAG" "${ASSETS[@]}" -R "$REPO" --title "Paddock $VERSION" --generate-notes
 fi
 echo "Paddock $VERSION is published. Installed copies find it within a day, or from Check for Updates…"

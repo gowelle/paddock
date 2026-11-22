@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, msadini]
+  pull_request:
+
+# A newer push to the same branch replaces the run in progress.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests (Intel)
+    # Paddock is built for Intel Macs only, so it is tested on one.
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          swift --version
+          uname -m
+      - name: Build
+        run: swift build --arch x86_64
+      # The unit tests need nothing that is not in the repository. The integration tests start the real
+      # daemon with Paddock's own PHP builds, which are made on the owner's Mac and are not downloaded here.
+      # One test reads the PHP manifest from where Scripts/fetch-vendor.sh puts it; this is that one step.
+      - name: PHP manifest
+        run: mkdir -p Vendor && cp Resources/php-manifest.json Vendor/php-manifest.json
+      - name: Unit tests
+        run: swift test --arch x86_64 --filter '^PaddockCoreTests\.'
