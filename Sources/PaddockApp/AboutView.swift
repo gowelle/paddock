@@ -10,7 +10,7 @@ struct AboutView: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 64, height: 64)
-            Text("Paddock").font(.title2.weight(.heavy))
+            Text("Paddock").font(Theme.heading(26))
             Text("Version \(Self.version)").foregroundStyle(Theme.inkMuted)
             TabView {
                 textPanel("Paddock License", text: Self.license)
@@ -23,6 +23,7 @@ struct AboutView: View {
         .padding(20)
         .frame(width: 560, height: 500)
         .foregroundStyle(Theme.ink)
+        .tint(Theme.honeyText)
         .background(Theme.ground)
     }
 

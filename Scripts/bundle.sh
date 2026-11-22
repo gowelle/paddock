@@ -41,6 +41,7 @@ done
 [ -f "$ROOT/VERSION" ] || fail "VERSION is missing at the repository root."
 [ -f "$ROOT/Resources/services-catalog.json" ] || fail "Resources/services-catalog.json is missing."
 [ -f "$ROOT/Resources/AppIcon.icns" ] || fail "Resources/AppIcon.icns is missing. Run: swift Scripts/make-icon.swift"
+[ -f "$ROOT/Resources/fonts/BricolageGrotesque.ttf" ] || fail "Resources/fonts/BricolageGrotesque.ttf is missing."
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 
 echo "Building release binaries for x86_64…"
@@ -69,6 +70,10 @@ install -m 644 "$ROOT/LICENSE" "$RES/LICENSE"
 install -m 644 "$ROOT/THIRD-PARTY-NOTICES" "$RES/THIRD-PARTY-NOTICES"
 # Built from Resources/AppIcon.svg by Scripts/make-icon.swift.
 install -m 644 "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
+# The headline face (SIL Open Font License; its licence travels with it), registered by the app for itself.
+mkdir -p "$RES/fonts"
+install -m 644 "$ROOT/Resources/fonts/BricolageGrotesque.ttf" "$RES/fonts/BricolageGrotesque.ttf"
+install -m 644 "$ROOT/Resources/fonts/BricolageGrotesque-OFL.txt" "$RES/fonts/BricolageGrotesque-OFL.txt"
 # Vendor/router is a symlink into Resources/; copy real files.
 cp -RL "$VENDOR/router" "$RES/router"
 # Only the bundled series: Vendor/php may hold other versions cached for tests.

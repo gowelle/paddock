@@ -48,6 +48,8 @@ enum Snapshots {
             ("mail-no-match", AnyView(MailView().environmentObject(running).environmentObject(mailModel(searching: "invoice"))),
              MailView.size),
             ("dumps", AnyView(DumpList(model: dumpsModel())), DumpsView.size),
+            ("about", AnyView(AboutView()), nil),
+            ("licence", AnyView(LicenseAcceptanceView(onAccept: {}, onDecline: {})), nil),
             ("logs", AnyView(LogsView().environmentObject(running).environmentObject(logsModel(filter: ""))), LogsView.size),
             ("logs-filtered", AnyView(LogsView().environmentObject(running).environmentObject(logsModel(filter: "payment"))),
              LogsView.size),

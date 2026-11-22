@@ -184,6 +184,7 @@ struct ApprovalSheet: View {
         .padding(20)
         .frame(width: 560)
         .foregroundStyle(Theme.ink)
+        .tint(Theme.honeyText)
         .background(Theme.ground)
     }
 

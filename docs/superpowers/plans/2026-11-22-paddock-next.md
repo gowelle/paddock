@@ -340,16 +340,21 @@ and that Mac later updates itself.
 
 ## Stage 7: finish the look
 
-- [ ] Bundle Bricolage Grotesque and Figtree (both under the SIL Open Font
-      License; add them to `THIRD-PARTY-NOTICES`) and use them in the About
-      window, the licence window and window titles. System controls keep the
-      system font.
-- [ ] Add the Mail window, Services, Tasks and the approval sheet to the
-      Paddock Design System, which predates all four.
-- [ ] One pass over those screens against the design system: spacing, the
-      table stripes that still draw white in light appearance, focus rings.
-- [ ] "Start Paddock at login" says what it does now: it starts Paddock's
-      services, not the menu-bar app.
+Built. What it came to:
+
+- [x] Bricolage Grotesque ships in the app (`Resources/fonts/`, SIL Open Font
+      License, in `THIRD-PARTY-NOTICES`), registered for the app alone and used
+      for headings only: the About window's name, the licence window's title
+      and a mail's subject. Everything else keeps the system font. Figtree is
+      not bundled: with headings only, nothing in the app would use it; it
+      stays the face for the website and docs.
+- [x] The Mail, Logs and Dumps windows, service rows, task rows and the
+      approval sheet are in the Paddock Design System, with a section on
+      windows in its brand book.
+- [x] Tables draw no alternating stripes (macOS 14 and later; 13 keeps the
+      system's), and every window tints its focus and selection with
+      `honeyText`, as Settings did.
+- [x] "Start Paddock at login" has a caption that says what starts.
 
 Done when: every screen is in the design system and no screen uses a colour
 or size outside it.
