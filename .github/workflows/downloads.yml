@@ -1,0 +1,57 @@
+name: Downloads badge
+
+# Counts how many times the app itself was downloaded (the Paddock-<version>.zip of every release) and writes
+# the number where the README's badge reads it: downloads.json on the "badges" branch. GitHub's own total
+# also counts the update feed, which every installed copy fetches daily, and the checksum files.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+# Never run for a pull request, and nothing here takes input from outside.
+permissions: {}
+
+concurrency:
+  group: downloads-badge
+  cancel-in-progress: false
+
+jobs:
+  count:
+    name: Count and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write   # to write the one file on the badges branch; this job touches no other branch
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Count the app's downloads
+        id: count
+        run: |
+          set -euo pipefail
+          total="$(gh api --paginate "repos/$REPO/releases?per_page=100" \
+            --jq '.[].assets[] | select(.name | test("^Paddock-[0-9]+\\.[0-9]+\\.[0-9]+\\.zip$")) | .download_count' \
+            | awk '{ sum += $1 } END { print sum + 0 }')"
+          [[ "$total" =~ ^[0-9]+$ ]] || { echo "The count is not a number: $total" >&2; exit 1; }
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          echo "The app has been downloaded $total times." >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the number
+        env:
+          TOTAL: ${{ steps.count.outputs.total }}
+        run: |
+          set -euo pipefail
+          json="{\"schemaVersion\":1,\"label\":\"downloads\",\"message\":\"$TOTAL\",\"color\":\"d49a1e\"}"
+          current="$(curl -fsSL "https://raw.githubusercontent.com/$REPO/badges/downloads.json" 2>/dev/null || true)"
+          if [ "$current" = "$json" ]; then
+            echo "Unchanged; nothing to publish."
+            exit 0
+          fi
+          # The branch holds this one file and one commit: it is replaced, not added to.
+          mkdir badge && cd badge
+          git init -q -b badges
+          printf '%s\n' "$json" > downloads.json
+          git add downloads.json
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Downloads: $TOTAL"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" badges
