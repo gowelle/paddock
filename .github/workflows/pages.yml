@@ -19,18 +19,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build and publish
+  # Two jobs, not one: the deploy step looks the uploaded artifact up by listing the run's artifacts, and in the
+  # same job it asked a fraction of a second after the upload, before the list had it ("Found 0 artifact(s)").
+  build:
+    name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-      actions: read     # the deploy step looks up the artifact the step before it uploaded
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - name: Assemble the page
@@ -38,5 +34,19 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read     # the deploy step looks up the artifact the build job uploaded
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - id: deploy
         uses: actions/deploy-pages@v5
