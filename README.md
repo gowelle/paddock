@@ -71,7 +71,7 @@ you a question Paddock could answer itself.
 | **PHP versions side by side** | Paddock ships with the newest stable PHP. Other versions are the only downloads, and only when you ask (`paddock use 8.4`). Each site can pin its own. |
 | **`php` and `composer` that follow you** | The `php` and `composer` commands in your terminal use the PHP version of the site whose folder you are in. |
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
-| **One-action services** | Add PostgreSQL, Redis (Valkey), Meilisearch or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
+| **One-action services** | Add PostgreSQL, MySQL, Redis (Valkey), Meilisearch or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
@@ -241,7 +241,7 @@ Paddock supports PHP 8.1 and later.
 | `paddock service restart <name>` | Restart a service. |
 | `paddock service remove <name> [--delete-data]` | Stop and remove a service. Data is kept unless `--delete-data`, which asks first. |
 | `paddock service update <name>` | Download the newest version of a service's series and switch to it. |
-| `paddock service create-db <name> <database>` | Create a database in a running service such as PostgreSQL. |
+| `paddock service create-db <name> <database>` | Create a database in a running PostgreSQL or MySQL service. |
 | `paddock service env <name>` | Print a service's `.env` lines for a Laravel app. |
 | `paddock service logs <name>` | Show the end of a service's log. |
 | `paddock service open <name>` | Open a service's page in the browser. |
@@ -270,6 +270,7 @@ initializes and starts a service with working defaults. There are no forms.
 | Kind | Service | Series | Notes |
 |---|---|---|---|
 | `postgres` | PostgreSQL | 18, 17, 16 | Includes PostGIS 3.6.4 (no raster or topology). |
+| `mysql` | MySQL | 9.7, 8.4 | Oracle's Community Server, `root` with no password. 8.4.11 is the last 8.4 release Oracle built for Intel Macs. |
 | `redis` | Redis (Valkey) | 9 | Valkey, a Redis-compatible server. Laravel's Redis client works unchanged. Bundled, so adding it needs no download. |
 | `meilisearch` | Meilisearch | 1.57 | A random master key is generated per instance and shown in its `.env`. Search indexes are tied to the series. |
 | `mail` | Mail (Mailpit) | 1 | An SMTP catcher on port 1025 with a web page and API on port 8025. Paddock's [Mail window](#the-mail-window) reads from it. |

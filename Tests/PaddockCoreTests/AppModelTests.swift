@@ -797,6 +797,15 @@ extension AppModelTests {
         return (model, client, outside)
     }
 
+    func testARunningDatabaseServerOffersCreateDatabase() async {
+        let mysql = service("mysql-8-4", name: "MySQL 8.4", kind: "mysql", state: .running, ports: ["main": 3306])
+        let stopped = service("mysql-9-7", name: "MySQL 9.7", kind: "mysql", state: .stopped, ports: ["main": 3307])
+        let running = service("postgres-18", name: "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5432])
+        let (model, _, _) = servicesModel { _ in .ok(statusWith(services: [mysql, stopped, running, mail])) }
+        await model.refresh()
+        XCTAssertEqual(model.serviceRows.map(\.canCreateDatabase), [true, false, true, false])
+    }
+
     func testServiceRowsSayWhatEachServiceIsDoingInTheCLIsWords() async {
         let (model, _, _) = servicesModel { _ in .ok(statusWith(services: [mail, postgres, meili])) }
         XCTAssertEqual(model.serviceRows, [], "nothing before the first status")

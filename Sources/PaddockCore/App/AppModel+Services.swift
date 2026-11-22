@@ -16,7 +16,7 @@ public struct ServiceRow: Identifiable, Equatable, Sendable {
     public let canOpen: Bool
     /// Its page is Paddock's own Mail window, not one for the browser.
     public let opensMailWindow: Bool
-    /// PostgreSQL, while it runs.
+    /// A database server (PostgreSQL, MySQL), while it runs.
     public let canCreateDatabase: Bool
 }
 
@@ -59,6 +59,9 @@ public struct CatalogRow: Identifiable, Equatable, Sendable {
 extension AppModel {
     // MARK: - Derived
 
+    /// The kinds whose recipes can create a database.
+    static let databaseKinds: Set<String> = ["postgres", "mysql"]
+
     public var serviceRows: [ServiceRow] {
         (status?.services ?? []).map { service in
             let running = service.state == .running
@@ -78,7 +81,7 @@ extension AppModel {
                               portText: Messages.servicePorts(service), notes: notes,
                               canStart: startable, canStop: stoppable, canOpen: running && service.openURL != nil,
                               opensMailWindow: running && service.kind == "mail",
-                              canCreateDatabase: running && service.kind == "postgres")
+                              canCreateDatabase: running && Self.databaseKinds.contains(service.kind))
         }
     }
 

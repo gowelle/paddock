@@ -105,17 +105,27 @@ To confirm first:
 
 ### MySQL (services plan, Task 7)
 
-- [ ] Catalog entries `mysql` 8.4 and 9.7 from Oracle's `macos15-x86_64`
-      tarballs, checksums verified.
-- [ ] `initialise` with `mysqld --initialize-insecure`; start bound to
-      127.0.0.1 with a Unix socket and the X plugin off; verify every flag by
-      running it, from a path with a space in it.
-- [ ] `.env` lines: `DB_CONNECTION=mysql`, host, port, `root`, no password.
-- [ ] `paddock service create-db` and the app's Create Database sheet work
+Built on 2026-11-22.
+
+- [x] Catalog entries `mysql` 8.4 (8.4.11) and 9.7 (9.7.2) from Oracle's
+      `macos15-x86_64` tarballs in Oracle's archive, each checked against
+      Oracle's published MD5. 9.7.4 exists but only under Oracle's current
+      downloads path, which moves when a release is superseded; the archive
+      address is stable, so 9.7.2 is used.
+- [x] `initialise` with `mysqld --initialize-insecure`; start bound to
+      127.0.0.1 with the X plugin off and `--no-defaults`, so no `my.cnf` on
+      the Mac is read. Run from a path with a space.
+- [x] The socket is in the instance's run folder. MySQL always makes a
+      socket, so it is first given one relative to its data folder and then,
+      when the run folder's path is short enough, that one instead: it never
+      falls back to `/tmp/mysql.sock`.
+- [x] `.env` lines: `DB_CONNECTION=mysql`, host, port, `root`, no password.
+- [x] `paddock service create-db` and the app's Create Database sheet work
       for MySQL as they do for PostgreSQL.
-- [ ] Integration test: add 8.4; PDO over TCP and over the socket; a table
-      and a row; stop and start keeps the data; loopback only.
-- [ ] Add MySQL to `THIRD-PARTY-NOTICES` and the README's services table.
+- [x] Integration test: 8.4 end to end (PDO over TCP and the socket, a table
+      and rows, stop and start, remove and re-add keep the data, a stale
+      socket lock, loopback only), 9.7 beside it, and a long folder path.
+- [x] MySQL is in `THIRD-PARTY-NOTICES` and the README's services table.
 
 ### Object storage (services plan, Task 8)
 
