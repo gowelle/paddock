@@ -316,18 +316,19 @@ see in t-market.)
 
 ## Stage 6: shareable release
 
-`Scripts/bundle.sh` signs ad hoc. On another Mac, Gatekeeper refuses the app.
+Decided 2026-11-22: no Apple Developer account, so no Developer ID signature
+and no notarization. Paddock stays signed ad hoc and reaches other Macs
+another way:
 
-Needs: an Apple Developer account (a yearly fee) and a Developer ID
-Application certificate. That purchase and enrolment are the owner's.
-
-- [ ] Sign every executable in the bundle with the Developer ID and the
-      hardened runtime, with only the entitlements each needs (PHP and Caddy
-      included).
-- [ ] Notarize and staple in `bundle.sh`; fail the build if either fails.
-- [ ] Decide what happens to PHP versions and services downloaded later:
-      they are not in the notarized bundle, so they must be signed too or
-      verified by checksum before they run (they are already checksummed).
+- [x] `Scripts/install.sh`, run with `curl … | bash`: downloads the latest
+      release's zip, checks it against the release's `SHA256SUMS`, unpacks it
+      into `/Applications` and opens it. A file fetched by `curl` is not
+      marked as downloaded, so Gatekeeper does not question it.
+- [x] The README says how to install by hand as well (Open Anyway in System
+      Settings, or clearing the download mark).
+- [x] PHP versions and services downloaded later are verified by checksum
+      before they run, as they already were; nothing more is needed without
+      notarization.
 - [x] Auto-update: Sparkle 2.10.1 in the app (its Intel half), a check once
       a day and from "Check for Updates…", asking before it installs. The
       feed is `appcast.xml` on the latest GitHub Release of `gowelle/paddock`,
@@ -339,15 +340,14 @@ Application certificate. That purchase and enrolment are the owner's.
       and moves to the new build when the app comes back.
 - [x] A release script, `Scripts/release.sh`: version, build number, bundle,
       signed feed; `--publish` commits, tags, pushes and creates the GitHub
-      Release. Signing with a Developer ID and notarizing are still to slot
-      into `bundle.sh`; until then publishing asks for `--unsigned`.
+      Release with the zip, `SHA256SUMS` and the feed.
 - [x] README: a download link in the Quick start, and how updates work.
 - [ ] Not yet tried: an installed copy updating itself from a published
       release. The feed and its signature are checked by the script; the
       install step needs a first release to update from.
 
-Done when: the zip downloaded on a second Intel Mac opens with no warning,
-and that Mac later updates itself.
+Done when: the install command works on a second Intel Mac, and that Mac
+later updates itself.
 
 ## Stage 7: finish the look
 
