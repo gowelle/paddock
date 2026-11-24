@@ -6,6 +6,7 @@ import SwiftUI
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var mail: MailModel
+    @EnvironmentObject private var databases: DatabasesModel
     @ObservedObject private var updates = AppDelegate.updates
     @Environment(\.openWindow) private var openWindow
 
@@ -20,6 +21,12 @@ struct MenuContentView: View {
                 MenuRow(mail.menuTitle) {
                     activateApp()
                     openWindow(id: MailView.windowID)
+                }
+            }
+            if databases.isAdded {
+                MenuRow("Databases") {
+                    activateApp()
+                    openWindow(id: DatabasesView.windowID)
                 }
             }
             MenuDivider()
@@ -74,9 +81,11 @@ struct MenuContentView: View {
             if visible {
                 model.beginWatching()
                 mail.beginWatching()
+                databases.beginWatching()
             } else {
                 model.endWatching()
                 mail.endWatching()
+                databases.endWatching()
             }
         })
     }

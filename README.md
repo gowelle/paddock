@@ -65,8 +65,9 @@ you a question Paddock could answer itself.
   - [Installing by hand](#installing-by-hand)
 - [The menu-bar app](#the-menu-bar-app)
   - [The Mail window](#the-mail-window)
-  - [The Logs window](#the-logs-window)
+  - [The Databases window](#the-databases-window)
   - [The Dumps window](#the-dumps-window)
+  - [The Logs window](#the-logs-window)
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
@@ -96,6 +97,7 @@ you a question Paddock could answer itself.
 | **A Dumps window** | While it is open, `dump()` and `dd()` from every site and from `php` in the terminal show in Paddock instead of in the page. Close it and they show where they always did. |
 | **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
+| **A Databases window** | Browse the PostgreSQL and MySQL services you added: their databases, tables and columns, the first rows, and one read-only SQL statement. Nothing in it can write. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
 
 ## Requirements
@@ -252,6 +254,34 @@ The window needs the mail service running; when it isn't added or isn't
 running, the window says so and how to fix it. The mail service's Open button
 in Settings… → Services opens this window too. Mailpit's own web page is still
 there: `paddock service open mail`.
+
+### The Databases window
+
+Once a PostgreSQL or MySQL service is added, the menu gains a **Databases** row.
+It opens a window on the databases that service holds:
+
+<p align="center">
+  <img src="docs/images/databases-light.png" width="760" alt="The Databases window: a table filter and the services, databases and tables on the left; the users table's columns and rows on the right, with a row search, above a read-only SQL console">
+</p>
+
+- **Services and databases** on the left: click one to see its tables and
+  views. PostgreSQL tables show their schema (`public.users`); MySQL tables
+  belong to the database.
+- **The first 50 rows** of a chosen table, with each column's type and a key
+  for the primary key. Values are one line; hover one to see it whole.
+- **Search** finds rows holding a text in any column. The database does the
+  looking, so it sees the whole table, not just the rows on show; the first 50
+  matches appear. **Filter tables** narrows the table list as you type.
+- **Reload** reads the databases, tables and rows again.
+- **SQL** runs one read-only statement (`SELECT`, `WITH`, `SHOW`, `DESCRIBE`,
+  `EXPLAIN`, `TABLE` or `VALUES`) with ⌘↩, and shows its result. A statement
+  that could write is refused before PHP starts, and the statement runs inside
+  a read-only transaction with a five-second limit.
+- Nothing here changes a database. Creating one is
+  `paddock service create-db`; the window only reads.
+
+The window needs the service running; when it isn't added or isn't running, the
+window says so. The same reads are in the CLI: `paddock db`.
 
 ### The Dumps window
 
@@ -448,6 +478,22 @@ the entry for you to add instead. If your `php.ini` sets
 
 A service's name is like `mail` or `postgres-18`. A version is a series such as
 `18`, or an exact version.
+
+### Databases
+
+The same read-only browser as the Databases window, for the terminal.
+
+| Command | What it does |
+|---|---|
+| `paddock db list` | List the database services and their databases. |
+| `paddock db tables <database>` | List a database's tables and views. |
+| `paddock db columns <database> <table>` | List a table's columns, with types, nullability and primary keys. |
+| `paddock db rows <database> <table> [--search <text>] [--limit <n>]` | Show rows from a table (20 by default, at most 1000), or only those holding `text` in any column. |
+| `paddock db query <database> <sql> [--limit <n>]` | Run one read-only statement (`SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `EXPLAIN`, `TABLE`, `VALUES`). |
+
+Add `--service <id>` to any but `list` when more than one database service is
+running. A PostgreSQL table is `users` or `public.users`. Nothing here changes a
+database.
 
 ### Site tasks
 

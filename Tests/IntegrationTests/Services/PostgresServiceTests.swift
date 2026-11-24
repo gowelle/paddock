@@ -314,6 +314,61 @@ final class PostgresServiceTests: XCTestCase {
         manager.stopAll()
     }
 
+    // MARK: - Browsing
+
+    /// The read-only browser over a real PostgreSQL: the databases, a table's columns and rows, a query, and
+    /// a write refused before PHP runs.
+    func testDatabaseBrowserReadsPostgreSQL() async throws {
+        try requirePHP()
+        let manager = makeManager([try await postgres("18")])
+        let added = try await manager.add(kind: "postgres", version: "18")
+        _ = try postmaster(manager, added.id)
+        let port = try XCTUnwrap(added.ports["main"])
+        XCTAssertEqual(try manager.createDatabase(added.id, database: "laravel"), .done)
+        try pdo(tcp(port), "setup")
+        try pdo(tcp(port), "insert", "read only, please")
+
+        let service = try XCTUnwrap(status(manager, added.id).flatMap(DatabaseService.init))
+        let browser = DatabaseBrowser(php: php)
+        XCTAssertEqual(try browser.databases(for: service), ["laravel", "postgres"])
+
+        let tables = try browser.tables(for: service, database: "laravel")
+        let notes = try XCTUnwrap(tables.first { $0.name == "notes" })
+        XCTAssertEqual(notes.schema, "public")
+        XCTAssertFalse(notes.isView)
+
+        let columns = try browser.columns(for: service, database: "laravel", table: notes)
+        XCTAssertEqual(columns.map(\.name), ["id", "body"])
+        XCTAssertEqual(columns.first { $0.name == "id" }?.primary, true)
+        XCTAssertEqual(columns.first { $0.name == "body" }?.nullable, false)
+
+        let rows = try browser.rows(for: service, database: "laravel", table: notes, limit: 20)
+        XCTAssertEqual(rows.columns, ["id", "body"])
+        XCTAssertEqual(rows.rows.count, 1)
+        XCTAssertEqual(rows.value(row: 0, column: 1), "read only, please")
+
+        let count = try browser.query(for: service, database: "laravel", sql: "SELECT count(*) FROM notes", limit: 20)
+        XCTAssertEqual(count.value(row: 0, column: 0), "1")
+        XCTAssertThrowsError(try browser.query(for: service, database: "laravel", sql: "DELETE FROM notes", limit: 20)) {
+            XCTAssertEqual($0 as? DatabaseError, .notReadOnly)
+        }
+        XCTAssertEqual(try pdo(tcp(port), "read"), "read only, please", "the write never reached PostgreSQL")
+
+        // A search looks through the whole table, in the database, and LIKE's own marks stay literal.
+        try pdo(tcp(port), "insert", "second note")
+        let second = try browser.rows(for: service, database: "laravel", table: notes, search: "SECOND", limit: 20)
+        XCTAssertEqual(second.rows.count, 1, "case-insensitive, across the rows that aren't on show")
+        XCTAssertEqual(second.value(row: 0, column: 1), "second note")
+        try pdo(tcp(port), "insert", "100% sure")
+        let percent = try browser.rows(for: service, database: "laravel", table: notes, search: "%", limit: 20)
+        XCTAssertEqual(percent.rows.count, 1, "a % in the search is a %, not a wildcard")
+        XCTAssertEqual(percent.value(row: 0, column: 1), "100% sure")
+        let nobody = try browser.rows(for: service, database: "laravel", table: notes, search: "no such note", limit: 20)
+        XCTAssertTrue(nobody.rows.isEmpty)
+        XCTAssertFalse(nobody.truncated)
+        manager.stopAll()
+    }
+
     // MARK: - A long home
 
     /// Where the socket path would be longer than macOS allows, PostgreSQL is told to make no socket at all

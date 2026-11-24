@@ -18,10 +18,15 @@ enum Snapshots {
 
         let running = sampleModel(.running)
         let noMail = MailModel(client: SampleMail(), services: { [] })
+        let noDatabases = DatabasesModel(browser: nil, services: { [] })
+        let menuDatabases = databasesMenuModel()
         let shots: [(String, AnyView, CGSize?)] = [
-            ("menu-running", AnyView(MenuContentView().environmentObject(running).environmentObject(noMail)), nil),
-            ("menu-blocked", AnyView(MenuContentView().environmentObject(sampleModel(.blocked)).environmentObject(noMail)), nil),
-            ("menu-stopped", AnyView(MenuContentView().environmentObject(sampleModel(.stopped)).environmentObject(noMail)), nil),
+            ("menu-running", AnyView(MenuContentView().environmentObject(running).environmentObject(noMail)
+                .environmentObject(menuDatabases)), nil),
+            ("menu-blocked", AnyView(MenuContentView().environmentObject(sampleModel(.blocked))
+                .environmentObject(noMail).environmentObject(menuDatabases)), nil),
+            ("menu-stopped", AnyView(MenuContentView().environmentObject(sampleModel(.stopped))
+                .environmentObject(noMail).environmentObject(menuDatabases)), nil),
             ("settings-general", AnyView(GeneralTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-php", AnyView(PHPTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-sites", AnyView(SitesTab().settingsTheme().environmentObject(running)), SettingsView.size),
@@ -37,8 +42,8 @@ enum Snapshots {
              SettingsView.size),
             ("approval-sheet", AnyView(ApprovalSheet().environmentObject(approvalModel())), nil),
             ("approval-sheet-nothing", AnyView(ApprovalSheet().environmentObject(approvalModel(nothing: true))), nil),
-            ("menu-mail", AnyView(MenuContentView().environmentObject(running).environmentObject(mailModel(reading: nil))),
-             nil),
+            ("menu-mail", AnyView(MenuContentView().environmentObject(running).environmentObject(mailModel(reading: nil))
+                .environmentObject(menuDatabases)), nil),
             ("mail-list", AnyView(MailView().environmentObject(running).environmentObject(mailModel(reading: nil))),
              MailView.size),
             ("mail-text", AnyView(MailView().environmentObject(running).environmentObject(mailModel(reading: .text))),
@@ -55,6 +60,16 @@ enum Snapshots {
              LogsView.size),
             ("logs-none", AnyView(LogsView().environmentObject(running).environmentObject(LogsModel(find: { [] }))), LogsView.size),
             ("mail-none", AnyView(MailView().environmentObject(running).environmentObject(noMail)), MailView.size),
+            ("databases", AnyView(DatabasesView().environmentObject(running).environmentObject(databasesModel())),
+             DatabasesView.size),
+            ("databases-query", AnyView(DatabasesView().environmentObject(running)
+                .environmentObject(databasesModel(querying: true))), DatabasesView.size),
+            ("databases-search", AnyView(DatabasesView().environmentObject(running)
+                .environmentObject(databasesModel(searching: "ada"))), DatabasesView.size),
+            ("databases-no-match", AnyView(DatabasesView().environmentObject(running)
+                .environmentObject(databasesModel(searching: "zzz"))), DatabasesView.size),
+            ("databases-none", AnyView(DatabasesView().environmentObject(running).environmentObject(noDatabases)),
+             DatabasesView.size),
         ]
         var ok = true
         for (name, view, size) in shots {
@@ -344,6 +359,83 @@ enum Snapshots {
         func delete(at base: URL, ids: [String]) async throws {}
 
         func setRead(at base: URL, ids: [String], read: Bool) async throws {}
+    }
+
+    // MARK: - Databases
+
+    /// A running PostgreSQL with a shop database, its tables on the left and users' rows on show. With
+    /// `querying`, the SQL console has run a count as well; with `searching`, the rows are narrowed to it.
+    private static func databasesModel(searching: String? = nil, querying: Bool = false) -> DatabasesModel {
+        let postgres = service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5432])
+        let model = DatabasesModel(browser: SampleDatabase(), services: { [postgres] })
+        settle {
+            await model.refresh()
+            await model.select(table: DatabaseTable(schema: "public", name: "users", kind: "table"))
+            if let searching {
+                model.setRowSearch(searching)
+                // The model collects typing for a moment before reading; let that moment pass.
+                try? await Task.sleep(nanoseconds: 400_000_000)
+            }
+            if querying {
+                model.setQuery("SELECT count(*) FROM users")
+                await model.runQuery()
+            }
+        }
+        return model
+    }
+
+    /// Only enough for the menu to offer the Databases window.
+    private static func databasesMenuModel() -> DatabasesModel {
+        let postgres = service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5432])
+        let model = DatabasesModel(browser: nil, services: { [postgres] })
+        settle { await model.refresh() }
+        return model
+    }
+
+    private struct SampleDatabase: DatabaseBrowsing {
+        static let users = DatabaseTable(schema: "public", name: "users", kind: "table")
+        static let userColumns = ["id", "name", "email", "email_verified_at", "created_at"]
+        static let userRows: [[String?]] = [
+            ["1", "Ada Lovelace", "ada@example.test", "2026-11-20 09:14:02", "2026-11-18 12:01:44"],
+            ["2", "Grace Hopper", "grace@example.test", "2026-11-20 10:02:19", "2026-11-18 12:04:10"],
+            ["3", "Alan Turing", "alan@example.test", nil, "2026-11-19 08:31:55"],
+            ["4", "Katherine Johnson", "katherine@example.test", "2026-11-21 16:45:07", "2026-11-19 09:12:38"],
+            ["5", "Edsger Dijkstra", "edsger@example.test", nil, "2026-11-20 11:20:01"],
+        ]
+
+        func databases(for service: DatabaseService) throws -> [String] { ["postgres", "shop"] }
+
+        func tables(for service: DatabaseService, database: String) throws -> [DatabaseTable] {
+            [Self.users,
+             DatabaseTable(schema: "public", name: "orders", kind: "table"),
+             DatabaseTable(schema: "public", name: "order_items", kind: "table"),
+             DatabaseTable(schema: "public", name: "recent_orders", kind: "view"),
+             DatabaseTable(schema: "public", name: "sessions", kind: "table")]
+        }
+
+        func columns(for service: DatabaseService, database: String, table: DatabaseTable) throws -> [DatabaseColumn] {
+            [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil, primary: true),
+             DatabaseColumn(name: "name", type: "varchar(255)", nullable: false, defaultValue: nil, primary: false),
+             DatabaseColumn(name: "email", type: "varchar(255)", nullable: false, defaultValue: nil, primary: false),
+             DatabaseColumn(name: "email_verified_at", type: "timestamptz", nullable: true, defaultValue: nil,
+                            primary: false),
+             DatabaseColumn(name: "created_at", type: "timestamptz", nullable: true, defaultValue: nil, primary: false)]
+        }
+
+        func rows(for service: DatabaseService, database: String, table: DatabaseTable,
+                  search: String?, limit: Int) throws -> DatabaseRows {
+            guard let search, !search.isEmpty else {
+                return DatabaseRows(columns: Self.userColumns, rows: Self.userRows, truncated: true)
+            }
+            let matched = Self.userRows.filter { row in
+                row.contains { ($0 ?? "").localizedCaseInsensitiveContains(search) }
+            }
+            return DatabaseRows(columns: Self.userColumns, rows: matched, truncated: false)
+        }
+
+        func query(for service: DatabaseService, database: String, sql: String, limit: Int) throws -> DatabaseRows {
+            DatabaseRows(columns: ["count"], rows: [["1284"]], truncated: false)
+        }
     }
 
     /// Three services in mixed states (running with a note, stopped, port in use); with `adding`, PostgreSQL 17 is

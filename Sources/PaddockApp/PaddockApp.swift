@@ -21,6 +21,7 @@ struct PaddockApp: App {
     @ObservedObject private var mail = AppDelegate.mail
     @ObservedObject private var logs = AppDelegate.logs
     @ObservedObject private var dumps = AppDelegate.dumps
+    @ObservedObject private var databases = AppDelegate.databases
 
     var body: some Scene {
         // Window style, so the menu's content is one plain SwiftUI view the snapshot tool can render too.
@@ -28,6 +29,7 @@ struct PaddockApp: App {
             MenuContentView()
                 .environmentObject(model)
                 .environmentObject(mail)
+                .environmentObject(databases)
         }
         .menuBarExtraStyle(.window)
 
@@ -37,6 +39,13 @@ struct PaddockApp: App {
                 .environmentObject(mail)
         }
         .defaultSize(MailView.size)
+
+        Window("Databases", id: DatabasesView.windowID) {
+            DatabasesView()
+                .environmentObject(model)
+                .environmentObject(databases)
+        }
+        .defaultSize(DatabasesView.size)
 
         Window("Logs", id: LogsView.windowID) {
             LogsView()
@@ -140,6 +149,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Reads the mail service wherever the daemon's status says it answers.
     static let mail = MailModel(client: HTTPMailClient(), services: { model.status?.services ?? [] })
+
+    /// Browses the database services the daemon reports, read-only, through the newest installed PHP.
+    static let databases = DatabasesModel(browser: DatabaseBrowser(paths: .current),
+                                          services: { model.status?.services ?? [] })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = Self.updates
