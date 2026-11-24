@@ -402,7 +402,7 @@ enum Snapshots {
         return model
     }
 
-    private struct SampleDatabase: DatabaseBrowsing {
+    private struct SampleDatabase: DatabaseBrowsing, DatabaseWriting {
         static let users = DatabaseTable(schema: "public", name: "users", kind: "table")
         static let userColumns = ["id", "name", "meta", "email", "created_at"]
         static let userRows: [[String?]] = [
@@ -448,6 +448,23 @@ enum Snapshots {
         func query(for service: DatabaseService, database: String, sql: String, limit: Int) throws -> DatabaseRows {
             DatabaseRows(columns: ["count"], rows: [["1284"]], truncated: false)
         }
+
+        func row(for service: DatabaseService, database: String, table: DatabaseTable,
+                 key: [String: String?]) throws -> [String: String?] {
+            let id = key["id"] ?? nil
+            guard let row = Self.userRows.first(where: { ($0.first ?? nil) == id }) else { return key }
+            return ["id": row[0], "name": row[1], "meta": row[2], "email": row[3], "created_at": row[4]]
+        }
+
+        func insert(for service: DatabaseService, database: String, table: DatabaseTable,
+                    values: [String: String?]) throws {}
+
+        func update(for service: DatabaseService, database: String, table: DatabaseTable,
+                    key: [String: String?], changes: [String: String?],
+                    expected: [String: String?]) throws {}
+
+        func delete(for service: DatabaseService, database: String, table: DatabaseTable,
+                    key: [String: String?], expected: [String: String?]) throws {}
     }
 
     /// Three services in mixed states (running with a note, stopped, port in use); with `adding`, PostgreSQL 17 is
