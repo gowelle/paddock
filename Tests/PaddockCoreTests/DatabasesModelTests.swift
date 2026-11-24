@@ -59,6 +59,86 @@ final class DatabasesModelTests: XCTestCase {
         XCTAssertEqual(browser.lastSearch, nil)
     }
 
+    func testEditingARowLoadsItsWholeValues() async throws {
+        await model.beginEdit(row: 0)
+        XCTAssertEqual(model.editingRow, 0)
+        XCTAssertEqual(model.draft?.text(for: "name"), "Ada Lovelace")
+        XCTAssertEqual(browser.rowKeys, [["id": "1"]])
+        XCTAssertFalse(model.canSaveDraft, "nothing has changed yet")
+    }
+
+    func testSavingSendsOnlyWhatChangedAndKeepsTheNotice() async throws {
+        await model.beginEdit(row: 0)
+        model.setDraftText("Ada L.", column: "name")
+        XCTAssertTrue(model.canSaveDraft)
+        await model.saveDraft()
+
+        XCTAssertEqual(browser.updated?.key, ["id": "1"])
+        XCTAssertEqual(browser.updated?.changes, ["name": "Ada L."])
+        XCTAssertEqual(browser.updated?.expected["id"] ?? nil, "1")
+        XCTAssertNil(model.draft)
+        XCTAssertNil(model.editingRow)
+        XCTAssertEqual(model.notice, "Saved.")
+        XCTAssertEqual(model.rows?.rows.count, 5, "the table reloaded")
+    }
+
+    func testAConflictKeepsTheDraftAndItsText() async throws {
+        browser.conflict = .failed("This row changed since it was read. Reload and try again.")
+        await model.beginEdit(row: 0)
+        model.setDraftText("Ada L.", column: "name")
+        await model.saveDraft()
+
+        XCTAssertNotNil(model.draft)
+        XCTAssertEqual(model.draft?.text(for: "name"), "Ada L.")
+        XCTAssertEqual(model.lastError, "This row changed since it was read. Reload and try again.")
+        XCTAssertNil(model.notice)
+    }
+
+    func testInsertingSendsOnlyTheTouchedFields() async throws {
+        model.beginInsert()
+        XCTAssertNil(model.editingRow)
+        XCTAssertTrue(model.canSaveDraft, "a fully defaulted row can be added")
+        model.setDraftText("Grace", column: "name")
+        await model.saveDraft()
+
+        XCTAssertEqual(browser.inserted, ["name": "Grace"])
+        XCTAssertEqual(model.notice, "Added.")
+        XCTAssertNil(model.draft)
+    }
+
+    func testDeletingReadsTheRowFirstAndReloads() async throws {
+        model.requestDelete(row: 1)
+        XCTAssertEqual(model.pendingDeleteText, "id = 2")
+        await model.confirmDelete()
+
+        XCTAssertEqual(browser.deleted, ["id": "2"])
+        XCTAssertEqual(model.notice, "Deleted.")
+        XCTAssertNil(model.pendingDelete)
+        XCTAssertEqual(model.rows?.rows.count, 5)
+    }
+
+    func testATableWithoutAPrimaryKeyCannotBeEdited() async throws {
+        await model.select(table: FakeBrowser.keyless)
+        XCTAssertFalse(model.isEditableTable)
+        XCTAssertEqual(model.readOnlyNote, "Read-only: no primary key")
+        model.beginInsert()
+        XCTAssertNil(model.draft)
+    }
+
+    func testWhoeverHasAnUnsavedRowIsAskedBeforeLeaving() async throws {
+        await model.beginEdit(row: 0)
+        model.setDraftText("Ada L.", column: "name")
+        await model.go(to: .table(FakeBrowser.logs))
+
+        XCTAssertEqual(model.pendingDiscard, .table(FakeBrowser.logs))
+        XCTAssertEqual(model.table?.id, FakeBrowser.users.id, "still here until the answer")
+        await model.discardAndGo()
+
+        XCTAssertNil(model.pendingDiscard)
+        XCTAssertNil(model.draft)
+        XCTAssertEqual(model.table?.id, FakeBrowser.logs.id)
+    }
+
     /// Waits (briefly) for the model's own work, which runs a moment after the last keystroke.
     private func waitUntil(_ what: String, _ condition: @escaping @MainActor () -> Bool,
                            file: StaticString = #filePath, line: UInt = #line) async {
@@ -70,10 +150,11 @@ final class DatabasesModelTests: XCTestCase {
     }
 }
 
-/// Records the searches it is asked for and narrows its sample rows as the real browser does.
-private final class FakeBrowser: DatabaseBrowsing, @unchecked Sendable {
+/// Records the searches it is asked for, narrows its sample rows as the real browser does, and writes one row.
+private final class FakeBrowser: DatabaseBrowsing, DatabaseWriting, @unchecked Sendable {
     static let users = DatabaseTable(schema: "public", name: "users", kind: "table")
     static let logs = DatabaseTable(schema: "public", name: "logs", kind: "table")
+    static let keyless = DatabaseTable(schema: "public", name: "keyless", kind: "table")
 
     private static let userColumns = ["id", "name"]
     private static let userRows: [[String?]] = [
@@ -83,6 +164,14 @@ private final class FakeBrowser: DatabaseBrowsing, @unchecked Sendable {
 
     private let lock = NSLock()
     private var recorded: [String?] = []
+
+    /// When set, every write refuses with it, as a database that moved on does.
+    var conflict: DatabaseError?
+    private(set) var rowKeys: [[String: String?]] = []
+    private(set) var inserted: [String: String?]?
+    private(set) var updated: (key: [String: String?], changes: [String: String?],
+                               expected: [String: String?])?
+    private(set) var deleted: [String: String?]?
 
     var searches: [String?] {
         lock.lock()
@@ -99,19 +188,28 @@ private final class FakeBrowser: DatabaseBrowsing, @unchecked Sendable {
     func databases(for service: DatabaseService) throws -> [String] { ["postgres", "shop"] }
 
     func tables(for service: DatabaseService, database: String) throws -> [DatabaseTable] {
-        [Self.users, Self.logs]
+        [Self.users, Self.logs, Self.keyless]
     }
 
     func columns(for service: DatabaseService, database: String, table: DatabaseTable) throws -> [DatabaseColumn] {
-        table.id == Self.users.id
-            ? [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil, primary: true),
-               DatabaseColumn(name: "name", type: "text", nullable: false, defaultValue: nil, primary: false)]
-            : [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil, primary: true),
-               DatabaseColumn(name: "line", type: "text", nullable: false, defaultValue: nil, primary: false)]
+        switch table.id {
+        case Self.users.id:
+            return [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil,
+                                   primary: true, identity: true),
+                    DatabaseColumn(name: "name", type: "text", nullable: false, defaultValue: nil, primary: false)]
+        case Self.keyless.id:
+            return [DatabaseColumn(name: "body", type: "text", nullable: true, defaultValue: nil, primary: false)]
+        default:
+            return [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil, primary: true),
+                    DatabaseColumn(name: "line", type: "text", nullable: false, defaultValue: nil, primary: false)]
+        }
     }
 
     func rows(for service: DatabaseService, database: String, table: DatabaseTable,
               search: String?, limit: Int) throws -> DatabaseRows {
+        if table.id == Self.keyless.id {
+            return DatabaseRows(columns: ["body"], rows: [["hello"]], truncated: false)
+        }
         lock.lock()
         recorded.append(search)
         lock.unlock()
@@ -129,5 +227,30 @@ private final class FakeBrowser: DatabaseBrowsing, @unchecked Sendable {
 
     func query(for service: DatabaseService, database: String, sql: String, limit: Int) throws -> DatabaseRows {
         DatabaseRows(columns: [], rows: [], truncated: false)
+    }
+
+    func row(for service: DatabaseService, database: String, table: DatabaseTable,
+             key: [String: String?]) throws -> [String: String?] {
+        rowKeys.append(key)
+        return ["id": key["id"] ?? nil, "name": "Ada Lovelace"]
+    }
+
+    func insert(for service: DatabaseService, database: String, table: DatabaseTable,
+                values: [String: String?]) throws {
+        if let conflict { throw conflict }
+        inserted = values
+    }
+
+    func update(for service: DatabaseService, database: String, table: DatabaseTable,
+                key: [String: String?], changes: [String: String?],
+                expected: [String: String?]) throws {
+        if let conflict { throw conflict }
+        updated = (key, changes, expected)
+    }
+
+    func delete(for service: DatabaseService, database: String, table: DatabaseTable,
+                key: [String: String?], expected: [String: String?]) throws {
+        if let conflict { throw conflict }
+        deleted = key
     }
 }

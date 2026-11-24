@@ -1,9 +1,16 @@
 import Combine
 import Foundation
 
+/// Where the window may go; a row being edited asks first.
+public enum DatabaseDestination: Equatable, Sendable {
+    case service(String)
+    case database(String)
+    case table(DatabaseTable)
+}
+
 /// Everything the Databases window and the menu's Databases row show, and every action they take. The views
 /// hold no logic. It reads the daemon's service list only while something is watching, and a database only
-/// when something is chosen. Read-only: `DatabaseBrowser` refuses writes.
+/// when something is chosen. One row at a time may be open for writing; the SQL console stays read-only.
 @MainActor
 public final class DatabasesModel: ObservableObject {
     /// The PostgreSQL and MySQL services the daemon knows, running or not.
@@ -30,11 +37,22 @@ public final class DatabasesModel: ObservableObject {
     @Published public private(set) var isRunningQuery = false
     /// One quiet line; cleared by the next read that works.
     @Published public private(set) var lastError: String?
+    /// The row being edited, or the new row being filled in.
+    @Published public private(set) var draft: DatabaseEditDraft?
+    /// The row the draft belongs to; nil while the draft is a new row.
+    @Published public private(set) var editingRow: Int?
+    @Published public private(set) var isSaving = false
+    /// Saved / Added / Deleted, kept across the reload that follows a write.
+    @Published public private(set) var notice: String?
+    /// The row the delete dialog is about.
+    @Published public private(set) var pendingDelete: DatabaseRowKey?
+    /// Where a navigation wants to go while an unsaved draft asks first.
+    @Published public private(set) var pendingDiscard: DatabaseDestination?
 
     /// How many rows a table and a query show.
     public nonisolated static let rowLimit = DatabaseBrowser.defaultRowLimit
 
-    private let browser: DatabaseBrowsing?
+    private let browser: (any DatabaseBrowsing & DatabaseWriting)?
     private let availableServices: @MainActor () -> [ServiceStatus]
     private var watchers = 0
     private var refreshTask: Task<Void, Never>?
@@ -45,7 +63,8 @@ public final class DatabasesModel: ObservableObject {
 
     /// `browser` nil when no PHP build is installed; `availableServices` answers the daemon's service list
     /// (empty while it isn't running).
-    public init(browser: DatabaseBrowsing?, services: @escaping @MainActor () -> [ServiceStatus]) {
+    public init(browser: (any DatabaseBrowsing & DatabaseWriting)?,
+                services: @escaping @MainActor () -> [ServiceStatus]) {
         self.browser = browser
         availableServices = services
     }
@@ -59,12 +78,35 @@ public final class DatabasesModel: ObservableObject {
 
     public var isRunning: Bool { selectedService?.isRunning ?? false }
 
-    public var canReload: Bool { isRunning && !isBusy }
+    public var canReload: Bool { isRunning && !isBusy && draft == nil && !isSaving }
 
     /// One read-only statement, with a database to run it in.
     public var canRunQuery: Bool {
         isRunning && database != nil && !isRunningQuery && ReadOnlySQL.allows(query)
     }
+
+    /// Whether this table can be written at all: a real table with a primary key.
+    public var isEditableTable: Bool {
+        guard let table, !table.isView, !columns.isEmpty else { return false }
+        return columns.contains(where: \.primary)
+    }
+
+    public var readOnlyNote: String? {
+        guard table != nil, !columns.isEmpty, !isEditableTable else { return nil }
+        return "Read-only: no primary key"
+    }
+
+    public var hasUnsavedDraft: Bool {
+        guard let draft else { return false }
+        return draft.mode == .insert || draft.hasChanges
+    }
+
+    public var canSaveDraft: Bool {
+        guard let draft, !isSaving else { return false }
+        return draft.mode == .insert || draft.hasChanges
+    }
+
+    public var pendingDeleteText: String? { pendingDelete?.description }
 
     /// `shop.users`, or the database alone while no table is chosen.
     public var title: String {
@@ -148,6 +190,11 @@ public final class DatabasesModel: ObservableObject {
     /// Chooses a database service on the left and reads its databases.
     public func select(service id: DatabaseService.ID) async {
         guard id != selection, services.contains(where: { $0.id == id }) else { return }
+        if draft != nil { draft = nil }
+        if editingRow != nil { editingRow = nil }
+        if pendingDelete != nil { pendingDelete = nil }
+        if pendingDiscard != nil { pendingDiscard = nil }
+        if notice != nil { notice = nil }
         selection = id
         clearBelowService()
         loadedService = nil
@@ -165,12 +212,22 @@ public final class DatabasesModel: ObservableObject {
         queryRows = nil
         lastError = nil
         clearSearch()
+        draft = nil
+        editingRow = nil
+        pendingDelete = nil
+        pendingDiscard = nil
+        notice = nil
         await loadTables()
     }
 
     /// Chooses a table and reads its columns and first rows; nil shows the tables' names alone.
     public func select(table wanted: DatabaseTable?) async {
         guard wanted?.id != table?.id else { return }
+        if draft != nil { draft = nil }
+        if editingRow != nil { editingRow = nil }
+        if pendingDelete != nil { pendingDelete = nil }
+        if pendingDiscard != nil { pendingDiscard = nil }
+        if notice != nil { notice = nil }
         table = wanted
         columns = []
         rows = nil
@@ -240,6 +297,167 @@ public final class DatabasesModel: ObservableObject {
             guard selection == service.id, self.database == database else { return }
             show(error)
         }
+    }
+
+    // MARK: - Editing
+
+    /// Opens one row for editing, whole: the grid's clipped text never feeds a write.
+    public func beginEdit(row index: Int) async {
+        guard draft == nil, !isSaving, isEditableTable,
+              let table, let service = selectedService, let database, service.isRunning,
+              let browser, let rows, rows.rows.indices.contains(index),
+              let key = rowKey(at: index) else { return }
+        beginLoad()
+        defer { endLoad() }
+        do {
+            let full = try await Task.detached(priority: .userInitiated) {
+                try browser.row(for: service, database: database, table: table, key: key.values)
+            }.value
+            guard self.table?.id == table.id, self.rows?.rows.indices.contains(index) == true else { return }
+            var original = full
+            for (name, value) in zip(rows.columns, rows.rows[index]) where !original.keys.contains(name) {
+                original[name] = value
+            }
+            draft = .update(columns: columns, key: key, original: original)
+            editingRow = index
+            notice = nil
+            lastError = nil
+        } catch {
+            show(error)
+        }
+    }
+
+    public func beginInsert() {
+        guard draft == nil, !isSaving, isEditableTable else { return }
+        draft = .insert(columns: columns)
+        editingRow = nil
+        notice = nil
+        lastError = nil
+    }
+
+    public func setDraftText(_ text: String, column: String) {
+        guard var copy = draft else { return }
+        copy.type(text, into: column)
+        draft = copy
+    }
+
+    public func setDraftNull(_ isNull: Bool, column: String) {
+        guard var copy = draft else { return }
+        copy.setNull(isNull, column: column)
+        draft = copy
+    }
+
+    public func cancelDraft() {
+        draft = nil
+        editingRow = nil
+    }
+
+    /// Saves the open row. On a refusal the draft stays exactly as it was.
+    public func saveDraft() async {
+        guard let draft, !isSaving, let service = selectedService, let database, let table,
+              service.isRunning, let browser else { return }
+        if let bad = draft.invalidJSONColumns().first {
+            lastError = "The \(bad) value isn't valid JSON."
+            return
+        }
+        if draft.mode == .update, !draft.hasChanges { return }
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            switch draft.mode {
+            case .insert:
+                let values = draft.values
+                try await Task.detached(priority: .userInitiated) {
+                    try browser.insert(for: service, database: database, table: table, values: values)
+                }.value
+                notice = "Added."
+            case .update:
+                guard let key = draft.key else { return }
+                let keyValues = key.values
+                let changes = draft.changes
+                let expected = draft.expected
+                try await Task.detached(priority: .userInitiated) {
+                    try browser.update(for: service, database: database, table: table, key: keyValues,
+                                       changes: changes, expected: expected)
+                }.value
+                notice = "Saved."
+            }
+            self.draft = nil
+            editingRow = nil
+            lastError = nil
+            if let table = self.table, let database = self.database {
+                await loadRows(table, service: service, database: database)
+            }
+        } catch {
+            show(error)
+        }
+    }
+
+    public func requestDelete(row index: Int) {
+        guard draft == nil, !isSaving, isEditableTable else { return }
+        pendingDelete = rowKey(at: index)
+    }
+
+    public func cancelDelete() { pendingDelete = nil }
+
+    /// Deletes the confirmed row, after reading it whole so the check does not run on clipped text.
+    public func confirmDelete() async {
+        guard let key = pendingDelete, let service = selectedService, let database, let table,
+              service.isRunning, let browser, !isSaving else { return }
+        pendingDelete = nil
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            let keyValues = key.values
+            let fresh = try await Task.detached(priority: .userInitiated) {
+                try browser.row(for: service, database: database, table: table, key: keyValues)
+            }.value
+            let expected = fresh.filter { name, _ in
+                columns.contains { $0.name == name && !$0.binary }
+            }
+            try await Task.detached(priority: .userInitiated) {
+                try browser.delete(for: service, database: database, table: table,
+                                   key: keyValues, expected: expected)
+            }.value
+            notice = "Deleted."
+            lastError = nil
+            if let table = self.table, let database = self.database {
+                await loadRows(table, service: service, database: database)
+            }
+        } catch {
+            show(error)
+        }
+    }
+
+    /// A navigation that asks before discarding an unsaved row.
+    public func go(to destination: DatabaseDestination) async {
+        if hasUnsavedDraft {
+            pendingDiscard = destination
+            return
+        }
+        await perform(destination)
+    }
+
+    public func discardAndGo() async {
+        guard let destination = pendingDiscard else { return }
+        pendingDiscard = nil
+        cancelDraft()
+        await perform(destination)
+    }
+
+    public func cancelDiscard() { pendingDiscard = nil }
+
+    private func perform(_ destination: DatabaseDestination) async {
+        switch destination {
+        case .service(let id): await select(service: id)
+        case .database(let name): await select(database: name)
+        case .table(let table): await select(table: table)
+        }
+    }
+
+    private func rowKey(at index: Int) -> DatabaseRowKey? {
+        guard let rows, rows.rows.indices.contains(index) else { return nil }
+        return DatabaseRowKey(columns: columns, names: rows.columns, row: rows.rows[index])
     }
 
     // MARK: - Watching
@@ -410,6 +628,11 @@ public final class DatabasesModel: ObservableObject {
         if rows != nil { rows = nil }
         if queryRows != nil { queryRows = nil }
         if lastError != nil { lastError = nil }
+        if draft != nil { draft = nil }
+        if editingRow != nil { editingRow = nil }
+        if pendingDelete != nil { pendingDelete = nil }
+        if pendingDiscard != nil { pendingDiscard = nil }
+        if notice != nil { notice = nil }
         clearSearch()
     }
 
