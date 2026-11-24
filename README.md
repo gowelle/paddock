@@ -261,7 +261,7 @@ Once a PostgreSQL or MySQL service is added, the menu gains a **Databases** row.
 It opens a window on the databases that service holds:
 
 <p align="center">
-  <img src="docs/images/databases-light.png" width="760" alt="The Databases window: a table filter and the services, databases and tables on the left; the users table's columns (with a JSON meta column) and rows on the right, with a row search and row actions, above a read-only SQL console">
+  <img src="docs/images/databases-light.png" width="760" alt="The Databases window: a table filter and the services, databases and tables on the left; the users table's columns (with a JSON meta column) and rows on the right, with a row search, above a read-only SQL console">
 </p>
 
 - **Services and databases** on the left: click one to see its tables and

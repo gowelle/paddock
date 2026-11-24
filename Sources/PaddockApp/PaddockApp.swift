@@ -150,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reads the mail service wherever the daemon's status says it answers.
     static let mail = MailModel(client: HTTPMailClient(), services: { model.status?.services ?? [] })
 
-    /// Browses the database services the daemon reports, read-only, through the newest installed PHP.
+    /// Browses and edits the database services the daemon reports, through the newest installed PHP.
     static let databases = DatabasesModel(browser: DatabaseBrowser(paths: .current),
                                           services: { model.status?.services ?? [] })
 
