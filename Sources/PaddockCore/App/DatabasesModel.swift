@@ -80,9 +80,9 @@ public final class DatabasesModel: ObservableObject {
 
     public var canReload: Bool { isRunning && !isBusy && draft == nil && !isSaving }
 
-    /// One read-only statement, with a database to run it in.
+    /// One read-only statement, with a database to run it in; closed while a row is open, because ⌘⏎ saves the row.
     public var canRunQuery: Bool {
-        isRunning && database != nil && !isRunningQuery && ReadOnlySQL.allows(query)
+        isRunning && database != nil && !isRunningQuery && draft == nil && ReadOnlySQL.allows(query)
     }
 
     /// Whether this table can be written at all: a real table with a primary key.

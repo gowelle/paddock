@@ -125,6 +125,15 @@ final class DatabasesModelTests: XCTestCase {
         XCTAssertNil(model.draft)
     }
 
+    func testTheConsoleWaitsWhileARowIsOpen() async throws {
+        model.setQuery("SELECT 1")
+        XCTAssertTrue(model.canRunQuery)
+        await model.beginEdit(row: 0)
+        XCTAssertFalse(model.canRunQuery, "⌘⏎ saves the row")
+        model.cancelDraft()
+        XCTAssertTrue(model.canRunQuery)
+    }
+
     func testWhoeverHasAnUnsavedRowIsAskedBeforeLeaving() async throws {
         await model.beginEdit(row: 0)
         model.setDraftText("Ada L.", column: "name")
