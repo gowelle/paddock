@@ -114,20 +114,51 @@ public struct DatabaseColumn: Identifiable, Equatable, Sendable, Decodable {
     public let nullable: Bool
     public let defaultValue: String?
     public let primary: Bool
+    /// A value Paddock never reads as text or writes: bytea, binary, the BLOB family, geometry.
+    public let binary: Bool
+    /// Computed by the database (a generated or identity expression).
+    public let generated: Bool
+    /// Assigned by the database on insert; shown, but never typed.
+    public let identity: Bool
 
-    public init(name: String, type: String, nullable: Bool, defaultValue: String?, primary: Bool) {
+    public init(name: String, type: String, nullable: Bool, defaultValue: String?,
+                primary: Bool, binary: Bool = false, generated: Bool = false, identity: Bool = false) {
         self.name = name
         self.type = type
         self.nullable = nullable
         self.defaultValue = defaultValue
         self.primary = primary
+        self.binary = binary
+        self.generated = generated
+        self.identity = identity
     }
 
     public var id: String { name }
 
+    /// A field the owner may type into.
+    public var isEditable: Bool { !binary && !generated && !identity }
+
+    /// What an untouched field of a new row shows, and therefore leaves to the database.
+    public var insertPlaceholder: String {
+        if defaultValue != nil { return "default" }
+        return nullable ? "NULL" : "required"
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case name, type, nullable, primary
+        case name, type, nullable, primary, binary, generated, identity
         case defaultValue = "default"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        name = try values.decode(String.self, forKey: .name)
+        type = try values.decode(String.self, forKey: .type)
+        nullable = try values.decode(Bool.self, forKey: .nullable)
+        defaultValue = try values.decodeIfPresent(String.self, forKey: .defaultValue)
+        primary = try values.decode(Bool.self, forKey: .primary)
+        binary = try values.decodeIfPresent(Bool.self, forKey: .binary) ?? false
+        generated = try values.decodeIfPresent(Bool.self, forKey: .generated) ?? false
+        identity = try values.decodeIfPresent(Bool.self, forKey: .identity) ?? false
     }
 }
 

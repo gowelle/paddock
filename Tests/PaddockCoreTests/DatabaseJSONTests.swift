@@ -58,4 +58,16 @@ final class DatabaseJSONTests: XCTestCase {
             XCTAssertNil(DatabaseJSON.document(text), text)
         }
     }
+
+    func testEveryJSONValueIsValidIncludingScalars() {
+        for text in [#"{"a":1}"#, "[1,2]", "42", #""hello""#, "true", "null", "  { } "] {
+            XCTAssertTrue(DatabaseJSON.isValid(text), text)
+        }
+    }
+
+    func testBrokenJSONIsNotValid() {
+        for text in ["", "{", #"{"a":1}…"#, "[1, 2"] {
+            XCTAssertFalse(DatabaseJSON.isValid(text), text)
+        }
+    }
 }

@@ -8,6 +8,14 @@ public enum DatabaseJSON {
         public let pretty: String
     }
 
+    /// Whether `text` is any valid JSON value: an object, an array, a string, a number, true, false or null.
+    /// `document` is narrower — the grid only marks objects and arrays — but a JSON column accepts all of them.
+    public static func isValid(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil
+    }
+
     public static func document(_ text: String) -> Document? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
