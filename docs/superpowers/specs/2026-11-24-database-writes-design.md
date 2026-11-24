@@ -248,7 +248,8 @@ Afterwards the table reloads and the status line says `Deleted.`
 
 Starting another edit, another table, another service or another
 database with a row open asks “Discard the unsaved row?” and only
-discards on yes. Quitting the window with a row open asks the same.
+discards on yes. Closing the window keeps the open row: the model lives
+for the app's lifetime, and reopening the window shows the draft intact.
 
 ### Wording
 
