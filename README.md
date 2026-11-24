@@ -97,7 +97,7 @@ you a question Paddock could answer itself.
 | **A Dumps window** | While it is open, `dump()` and `dd()` from every site and from `php` in the terminal show in Paddock instead of in the page. Close it and they show where they always did. |
 | **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
-| **A Databases window** | Browse the PostgreSQL and MySQL services you added: their databases, tables and columns, the first rows, and one read-only SQL statement. Nothing in it can write. |
+| **A Databases window** | Browse and edit the PostgreSQL and MySQL services you added: their databases, tables, columns and rows, with one read-only SQL statement beside them. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
 
 ## Requirements
@@ -261,7 +261,7 @@ Once a PostgreSQL or MySQL service is added, the menu gains a **Databases** row.
 It opens a window on the databases that service holds:
 
 <p align="center">
-  <img src="docs/images/databases-light.png" width="760" alt="The Databases window: a table filter and the services, databases and tables on the left; the users table's columns and rows on the right, with a row search, above a read-only SQL console">
+  <img src="docs/images/databases-light.png" width="760" alt="The Databases window: a table filter and the services, databases and tables on the left; the users table's columns (with a JSON meta column) and rows on the right, with a row search and row actions, above a read-only SQL console">
 </p>
 
 - **Services and databases** on the left: click one to see its tables and
@@ -273,6 +273,12 @@ It opens a window on the databases that service holds:
   `{ }` mark: click it to read the whole document, indented.
 - **Column widths** are yours: drag the divider at the right edge of a column
   in the header.
+- **Editing** works on tables with a primary key: double-click a row (or use
+  its pencil), change its fields, and ⌘⏎ saves; Esc cancels. Only what you
+  changed is written, NULL and empty text stay distinct, and JSON opens in an
+  editable box. Views and tables without a primary key say they are read-only.
+- **+ New row** adds a blank row at the end; fields you leave alone keep the
+  database's default. The trash asks first, naming the row's key.
 - **Search** finds rows holding a text in any column. The database does the
   looking, so it sees the whole table, not just the rows on show; the first 50
   matches appear. **Filter tables** narrows the table list as you type.
@@ -281,8 +287,10 @@ It opens a window on the databases that service holds:
   `EXPLAIN`, `TABLE` or `VALUES`) with ⌘↩, and shows its result. A statement
   that could write is refused before PHP starts, and the statement runs inside
   a read-only transaction with a five-second limit.
-- Nothing here changes a database. Creating one is
-  `paddock service create-db`; the window only reads.
+- Reads still run in read-only transactions and the SQL console can't write.
+  Row edits are individual, confirmed writes: each save checks that the row
+  hasn't changed since it was read, and refuses rather than overwrite it.
+  Creating a database is still `paddock service create-db`.
 
 The window needs the service running; when it isn't added or isn't running, the
 window says so. The same reads are in the CLI: `paddock db`.
@@ -485,7 +493,7 @@ A service's name is like `mail` or `postgres-18`. A version is a series such as
 
 ### Databases
 
-The same read-only browser as the Databases window, for the terminal.
+A read-only browser of the same databases, for the terminal; edits are in the window.
 
 | Command | What it does |
 |---|---|
