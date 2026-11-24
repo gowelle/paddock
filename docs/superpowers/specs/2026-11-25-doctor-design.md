@@ -5,7 +5,7 @@
 ## Goal
 
 A single, read-only diagnosis of the chain a request takes: daemon → ports → port helper →
-resolver → DNS → Caddy → PHP → the site's link, folder, certificate → the actual HTTP
+resolver → DNS → Caddy → PHP → the site's folder, certificate → the actual HTTP
 response → the newest error in the site's log. Every failure says what was found and the
 one command that fixes it.
 
@@ -62,7 +62,10 @@ public struct DoctorCheck: Codable, Equatable, Sendable, Identifiable {
 
 public struct DoctorReport: Codable, Equatable, Sendable {
     public struct SiteReport: Codable, Equatable, Sendable {
-        public let site: String
+        public let site: String      // "mysite"
+        public let host: String      // "mysite.test"
+        public let php: PHPVersion
+        public let url: String       // "https://mysite.test"
         public let checks: [DoctorCheck]
     }
     public let global: [DoctorCheck]
@@ -94,7 +97,7 @@ Global, run once, in this order:
 
 | id            | title                                  | source                                        | fix |
 |---------------|----------------------------------------|-----------------------------------------------|-----|
-| `daemon`      | The daemon answers                     | status fetched; `version == PaddockBuild.number` | `paddock start` (or `paddock restart` on a build mismatch) |
+| `daemon`      | The daemon answers (build `<n>`)       | status fetched; running (or blocked ports, which `ports` reports); `version == PaddockBuild.number` | `paddock start` (or `paddock restart` on a build mismatch) |
 | `ports`       | Ports 80 and 443 are free              | `blockedBy.isEmpty`                           | the holder's stop command when there is one, else `paddock start` |
 | `port-helper` | The port helper manages 80 and 443     | `portHelperInstalled`                         | `paddock start` |
 | `resolver`    | The `.test` resolver entry is installed| `resolverInstalled`                           | `paddock start` |
@@ -107,7 +110,6 @@ Per site, in this order:
 |------------|----------------------------------------|---------------------------------------------------|-----|
 | `php`      | PHP `<version>` is installed           | `installedPHP.contains(site.php)`                 | `paddock use <version>` |
 | `php-fpm`  | PHP-FPM `<version>` is running         | `processes["php-fpm-<version>"]` is running       | `paddock restart` |
-| `linked`   | `<name>` is linked                     | `site.kind == .linked`                            | `cd <path> && paddock link <name>` |
 | `folder`   | The site folder is readable            | `readable(site.path)`                             | none; the detail names the path |
 | `trust`    | macOS trusts Paddock's certificate     | unsecured → skipped; else `trustEnabled && !needsTrust` | `paddock trust` |
 | `http`     | `<url>` answers                        | `probe(URL(site.url))`; status and latency        | depends on the failure (below) |
@@ -119,10 +121,12 @@ Each check declares its prerequisites. When one fails, the dependent becomes `sk
 with `Skipped: <prerequisite title> failed.` (the prerequisite's id in the detail):
 a stopped daemon does not paint eleven rows red.
 
-- `daemon` failing means no site names are known: the report is one failed global check.
-- `ports`, `port-helper`, `dns` or `caddy` failing skips `http`.
-- `php` or `php-fpm` failing skips `http`.
-- `linked` failing (parked) skips `http` and `log`.
+- `daemon` failing (unreachable, stopped, or another build) means no site names are known:
+  the report is one failed global check.
+- `ports` failing skips `caddy`, `php-fpm` and `http`: nothing downstream of a port it
+  cannot bind is meaningful.
+- `port-helper`, `dns` or `caddy` failing skips `http`.
+- `php` failing skips `php-fpm` and `http`; `php-fpm` failing skips `http`.
 - `folder` failing does not skip `http`: Caddy's answer is useful evidence, and the folder
   row already says what is wrong.
 - A skipped check never has a fix.
@@ -130,7 +134,9 @@ a stopped daemon does not paint eleven rows red.
 ### Details
 
 - **daemon.** Passed: `The daemon answers (build 24).` Failed to reach: the client's error
-  as the detail. Wrong build: `The daemon is build 23; this is build 24.`
+  as the detail. Stopped with nothing blocking its ports: `Paddock is stopped.` Wrong build:
+  `The daemon is build 23; this is build 24.` Stopped with ports in use is not the daemon's
+  failure: the daemon row passes and the ports row explains it.
 - **ports.** Passed: `Nothing was listening on 80 or 443 before Paddock.` Failed: the
   blocked holders in `Messages.cantStart`'s one-line form, and the holder's stop command as
   the fix when it has one.
@@ -138,7 +144,6 @@ a stopped daemon does not paint eleven rows red.
   `mysite.test does not resolve.` With no sites, the check is skipped: `No sites to resolve.`
 - **php.** Passed: `PHP 8.5 is installed.`
 - **php-fpm.** Failed: `PHP-FPM 8.5 isn't running.`
-- **linked.** Failed: `<name> is a parked folder, not served.`
 - **folder.** Failed: `<path> can't be read.`
 - **trust.** Unsecured: skipped, `<name> isn't secured; nothing to trust.` Failed when
   `needsTrust`: `macOS doesn't trust Paddock's certificate.` Failed when trust is off:
@@ -164,8 +169,10 @@ site folder as its root, parsed with `LogParser`; the newest entry with `isProbl
 ### The HTTP probe
 
 An ephemeral `URLSession` with a 5-second request timeout and no cache, the same shape as
-the Mailpit client. One GET of `site.url` (following redirects), latency measured with
-`ContinuousClock` around the request, and the final status code. The default TLS trust
+the Mailpit client. One GET of the site's address (following redirects), latency measured
+with `ContinuousClock` around the request, and the final status code. The address is the
+site's URL, with Paddock's configured HTTP/HTTPS port when it isn't 80/443 (a development
+home's high ports), so doctor checks what Paddock actually serves. The default TLS trust
 evaluation is the point: if macOS doesn't trust Paddock's root, the probe fails exactly as
 the browser would.
 
@@ -187,7 +194,6 @@ mysite.test — PHP 8.5, https://mysite.test
   ✓ Caddy is running.
   ✓ PHP 8.5 is installed.
   ✓ PHP-FPM 8.5 is running.
-  ✓ mysite is linked.
   ✓ The site folder is readable.
   ✓ macOS trusts Paddock's certificate.
   ✗ https://mysite.test answers.
@@ -263,9 +269,10 @@ to run, not for the agent to run.
   present under `readOnly: true`.
 - `Tests/PaddockCoreTests/DoctorModelTests.swift`: a fresh-status check publishes a report;
   a status failure publishes a daemon-failure report, not an error.
-- Integration: in `Tests/IntegrationTests/CLITests.swift`, with a real daemon and a linked
-  site, `paddock doctor <site>` prints the checklist and exits 0; with the daemon stopped,
-  it exits 1 and names `paddock start`.
+- Integration: in `Tests/IntegrationTests/CLITests.swift`, with a real daemon, `paddock
+  doctor <site>` prints the site's heading and the checklist, and its exit code agrees with
+  its last line (a throwaway home has no system `.test` resolver, so DNS may be the one
+  failed check); with the daemon stopped, it exits 1 and names `paddock start`.
 - `swift build`, `swift test --filter PaddockCoreTests`, the integration file, and the
   snapshot run for the Doctor shots.
 
