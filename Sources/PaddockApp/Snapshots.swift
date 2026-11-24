@@ -68,6 +68,12 @@ enum Snapshots {
                 .environmentObject(databasesModel(searching: "ada"))), DatabasesView.size),
             ("databases-no-match", AnyView(DatabasesView().environmentObject(running)
                 .environmentObject(databasesModel(searching: "zzz"))), DatabasesView.size),
+            ("databases-edit", AnyView(DatabasesView().environmentObject(running)
+                .environmentObject(databasesModel(editing: 1))), DatabasesView.size),
+            ("databases-new", AnyView(DatabasesView().environmentObject(running)
+                .environmentObject(databasesModel(inserting: true))), DatabasesView.size),
+            ("databases-readonly", AnyView(DatabasesView().environmentObject(running)
+                .environmentObject(databasesModel(readOnly: true))), DatabasesView.size),
             ("databases-json", AnyView(JSONInspector(text: """
             {
               "digest" : "weekly",
@@ -375,20 +381,34 @@ enum Snapshots {
 
     /// A running PostgreSQL with a shop database, its tables on the left and users' rows on show. With
     /// `querying`, the SQL console has run a count as well; with `searching`, the rows are narrowed to it.
-    private static func databasesModel(searching: String? = nil, querying: Bool = false) -> DatabasesModel {
+    /// With `editing`, that row is open for editing; with `inserting`, a new row is being added; with
+    /// `readOnly`, the view (no primary key) is on show instead.
+    private static func databasesModel(searching: String? = nil, querying: Bool = false,
+                                       editing: Int? = nil, inserting: Bool = false,
+                                       readOnly: Bool = false) -> DatabasesModel {
         let postgres = service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5432])
         let model = DatabasesModel(browser: SampleDatabase(), services: { [postgres] })
         settle {
             await model.refresh()
-            await model.select(table: DatabaseTable(schema: "public", name: "users", kind: "table"))
-            if let searching {
-                model.setRowSearch(searching)
-                // The model collects typing for a moment before reading; let that moment pass.
-                try? await Task.sleep(nanoseconds: 400_000_000)
-            }
-            if querying {
-                model.setQuery("SELECT count(*) FROM users")
-                await model.runQuery()
+            if readOnly {
+                await model.select(table: DatabaseTable(schema: "public", name: "recent_orders", kind: "view"))
+            } else {
+                await model.select(table: DatabaseTable(schema: "public", name: "users", kind: "table"))
+                if let searching {
+                    model.setRowSearch(searching)
+                    // The model collects typing for a moment before reading; let that moment pass.
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                }
+                if querying {
+                    model.setQuery("SELECT count(*) FROM users")
+                    await model.runQuery()
+                }
+                if let editing {
+                    await model.beginEdit(row: editing)
+                }
+                if inserting {
+                    model.beginInsert()
+                }
             }
         }
         return model
@@ -427,15 +447,29 @@ enum Snapshots {
         }
 
         func columns(for service: DatabaseService, database: String, table: DatabaseTable) throws -> [DatabaseColumn] {
-            [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil, primary: true),
-             DatabaseColumn(name: "name", type: "varchar(255)", nullable: false, defaultValue: nil, primary: false),
-             DatabaseColumn(name: "meta", type: "jsonb", nullable: true, defaultValue: nil, primary: false),
-             DatabaseColumn(name: "email", type: "varchar(255)", nullable: false, defaultValue: nil, primary: false),
-             DatabaseColumn(name: "created_at", type: "timestamptz", nullable: true, defaultValue: nil, primary: false)]
+            if table.name == "recent_orders" {
+                return [DatabaseColumn(name: "order_id", type: "bigint", nullable: false,
+                                       defaultValue: nil, primary: false),
+                        DatabaseColumn(name: "total", type: "numeric", nullable: true,
+                                       defaultValue: nil, primary: false)]
+            }
+            return [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil,
+                                   primary: true, identity: true),
+                    DatabaseColumn(name: "name", type: "varchar(255)", nullable: false,
+                                   defaultValue: nil, primary: false),
+                    DatabaseColumn(name: "meta", type: "jsonb", nullable: true, defaultValue: nil, primary: false),
+                    DatabaseColumn(name: "email", type: "varchar(255)", nullable: false,
+                                   defaultValue: nil, primary: false),
+                    DatabaseColumn(name: "created_at", type: "timestamptz", nullable: true,
+                                   defaultValue: nil, primary: false)]
         }
 
         func rows(for service: DatabaseService, database: String, table: DatabaseTable,
                   search: String?, limit: Int) throws -> DatabaseRows {
+            if table.name == "recent_orders" {
+                return DatabaseRows(columns: ["order_id", "total"],
+                                    rows: [["1042", "129.00"], ["1043", "54.50"]], truncated: false)
+            }
             guard let search, !search.isEmpty else {
                 return DatabaseRows(columns: Self.userColumns, rows: Self.userRows, truncated: true)
             }
