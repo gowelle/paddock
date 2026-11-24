@@ -128,6 +128,12 @@ final class MySQLServiceTests: XCTestCase {
                         $rows = $pdo->query("SELECT CONCAT(user, '@', host) FROM mysql.user WHERE user = 'root' ORDER BY host");
                         echo implode(',', $rows->fetchAll(PDO::FETCH_COLUMN)), "\n";
                         break;
+                    case 'json':
+                        $pdo->exec('CREATE TABLE IF NOT EXISTS documents (id INT AUTO_INCREMENT PRIMARY KEY,'
+                            . ' meta JSON NOT NULL)');
+                        $pdo->prepare('INSERT INTO documents (meta) VALUES (?)')->execute([$arg]);
+                        echo "ok\n";
+                        break;
                 }
             } catch (Throwable $e) {
                 fwrite(STDERR, $e->getMessage() . "\n");
@@ -318,6 +324,13 @@ final class MySQLServiceTests: XCTestCase {
         let nobody = try browser.rows(for: service, database: "laravel", table: notes, search: "no such note", limit: 20)
         XCTAssertTrue(nobody.rows.isEmpty)
         XCTAssertFalse(nobody.truncated)
+
+        // A JSON column comes back as its text, which the window reads as a document.
+        try pdo(tcp(port), "json", #"{"theme":"dark","fields":["orders","stock"]}"#)
+        let documents = try XCTUnwrap(browser.tables(for: service, database: "laravel").first { $0.name == "documents" })
+        let documentRows = try browser.rows(for: service, database: "laravel", table: documents, limit: 20)
+        let meta = try XCTUnwrap(documentRows.value(row: 0, column: 1))
+        XCTAssertEqual(DatabaseJSON.document(meta)?.preview, #"{"fields":["orders","stock"],"theme":"dark"}"#)
         manager.stopAll()
     }
 

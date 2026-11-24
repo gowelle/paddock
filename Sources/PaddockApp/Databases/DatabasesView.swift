@@ -289,14 +289,21 @@ private struct DatabaseGridColumn {
     let isKey: Bool
 }
 
-/// A result set as a grid: a row number gutter, then one fixed-width column per result column. Scrolls both
-/// ways; a value is one line, and its whole text is in its tooltip.
+/// A result set as a grid: a row number gutter, then one column per result column, each as wide as its header
+/// divider has been dragged. Scrolls both ways; a value is one line, and its whole text is in its tooltip.
+/// A JSON object or array shows as its one line and opens, whole and indented, when clicked.
 private struct DatabaseRowsGrid: View {
     let columns: [DatabaseGridColumn]
     let rows: [[String?]]
 
-    private static let width: CGFloat = 168
+    @SwiftUI.State private var widths = DatabaseGridWidths(columns: 0)
+    /// The column whose edge is being dragged, and the width it had when the drag began.
+    @SwiftUI.State private var resizing: Int?
+    @SwiftUI.State private var resizeFrom: CGFloat = 0
+
     private static let gutter: CGFloat = 42
+    /// How wide a column's edge is to the pointer, and how wide the line looks.
+    private static let handle: CGFloat = 9
 
     var body: some View {
         GeometryReader { proxy in
@@ -308,7 +315,7 @@ private struct DatabaseRowsGrid: View {
                         HStack(spacing: 0) {
                             cell(Text(verbatim: "\(index + 1)"), width: Self.gutter, muted: true)
                             ForEach(columns.indices, id: \.self) { column in
-                                valueCell(row[safe: column] ?? nil)
+                                valueCell(row: index, column: column, row[safe: column] ?? nil)
                             }
                         }
                         .padding(.vertical, 4)
@@ -320,6 +327,9 @@ private struct DatabaseRowsGrid: View {
             }
         }
         .background(Theme.surface)
+        .onChange(of: columns.count) { _ in
+            widths = DatabaseGridWidths(columns: columns.count)
+        }
     }
 
     private var header: some View {
@@ -345,17 +355,48 @@ private struct DatabaseRowsGrid: View {
                     }
                 }
                 .padding(.horizontal, 8)
-                .frame(width: Self.width, alignment: .leading)
+                .frame(width: widths[index], alignment: .leading)
+                .clipped()
+                .overlay(alignment: .trailing) { resizeHandle(index) }
             }
         }
         .padding(.vertical, 4)
         .background(Theme.ground)
     }
 
-    private func valueCell(_ value: String?) -> some View {
-        cell(value.map { Text(verbatim: Self.oneLine($0)) } ?? Text("NULL").italic(),
-             width: Self.width, muted: value == nil)
-            .help(value ?? "NULL")
+    /// The line between two columns, which the pointer drags to make this column wider or narrower.
+    private func resizeHandle(_ index: Int) -> some View {
+        Rectangle()
+            .fill(Theme.line)
+            .frame(width: 1)
+            .frame(width: Self.handle)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if resizing != index {
+                            resizing = index
+                            resizeFrom = widths[index]
+                        }
+                        widths.resize(index, to: resizeFrom + value.translation.width)
+                    }
+                    .onEnded { _ in resizing = nil }
+            )
+            .help("Drag to resize this column")
+    }
+
+    @ViewBuilder
+    private func valueCell(row: Int, column: Int, _ value: String?) -> some View {
+        if let value, let document = DatabaseJSON.document(value) {
+            JSONCell(preview: document.preview, pretty: document.pretty, width: widths[column])
+        } else {
+            cell(value.map { Text(verbatim: Self.oneLine($0)) } ?? Text("NULL").italic(),
+                 width: widths[column], muted: value == nil)
+                .help(value ?? "NULL")
+        }
     }
 
     private func cell(_ text: Text, width: CGFloat, muted: Bool = false) -> some View {
@@ -367,6 +408,10 @@ private struct DatabaseRowsGrid: View {
             .textSelection(.enabled)
             .padding(.horizontal, 8)
             .frame(width: width, alignment: .leading)
+            .clipped()
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Theme.line.opacity(0.5)).frame(width: 1)
+            }
     }
 
     /// Newlines and tabs would make one row taller than the rest; their marks keep it a row.
@@ -374,6 +419,65 @@ private struct DatabaseRowsGrid: View {
         text.replacingOccurrences(of: "\r\n", with: "\u{21B5}")
             .replacingOccurrences(of: "\n", with: "\u{21B5}")
             .replacingOccurrences(of: "\t", with: "\u{2192}")
+    }
+}
+
+/// A JSON value in the grid: its compact one line, with a mark that it opens. Clicking it shows the whole
+/// document, indented, in a panel of its own.
+private struct JSONCell: View {
+    let preview: String
+    let pretty: String
+    let width: CGFloat
+
+    @SwiftUI.State private var showing = false
+
+    var body: some View {
+        Button {
+            showing = true
+        } label: {
+            HStack(spacing: 4) {
+                Text(verbatim: preview)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "curlybraces")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.honeyText)
+                    .fixedSize()
+            }
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(Theme.ink)
+            .padding(.horizontal, 8)
+            .frame(width: width, alignment: .leading)
+            .clipped()
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Theme.line.opacity(0.5)).frame(width: 1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("This is JSON; click to read it whole")
+        .popover(isPresented: $showing, arrowEdge: .bottom) {
+            JSONInspector(text: pretty)
+        }
+    }
+}
+
+/// A JSON document, indented and selectable, in the panel a JSON cell opens.
+struct JSONInspector: View {
+    let text: String
+
+    var body: some View {
+        ScrollView {
+            Text(verbatim: text)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Theme.ink)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+        }
+        .frame(width: 520, height: 320)
+        .background(Theme.surface)
     }
 }
 

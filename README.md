@@ -268,7 +268,11 @@ It opens a window on the databases that service holds:
   views. PostgreSQL tables show their schema (`public.users`); MySQL tables
   belong to the database.
 - **The first 50 rows** of a chosen table, with each column's type and a key
-  for the primary key. Values are one line; hover one to see it whole.
+  for the primary key. Values are one line and stay inside their column;
+  hover one to see it whole. A JSON or JSONB value shows its one line with a
+  `{ }` mark: click it to read the whole document, indented.
+- **Column widths** are yours: drag the divider at the right edge of a column
+  in the header.
 - **Search** finds rows holding a text in any column. The database does the
   looking, so it sees the whole table, not just the rows on show; the first 50
   matches appear. **Filter tables** narrows the table list as you type.

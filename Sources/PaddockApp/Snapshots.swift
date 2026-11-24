@@ -68,6 +68,16 @@ enum Snapshots {
                 .environmentObject(databasesModel(searching: "ada"))), DatabasesView.size),
             ("databases-no-match", AnyView(DatabasesView().environmentObject(running)
                 .environmentObject(databasesModel(searching: "zzz"))), DatabasesView.size),
+            ("databases-json", AnyView(JSONInspector(text: """
+            {
+              "digest" : "weekly",
+              "fields" : [
+                "orders",
+                "stock"
+              ],
+              "theme" : "dark"
+            }
+            """)), CGSize(width: 520, height: 320)),
             ("databases-none", AnyView(DatabasesView().environmentObject(running).environmentObject(noDatabases)),
              DatabasesView.size),
         ]
@@ -394,13 +404,16 @@ enum Snapshots {
 
     private struct SampleDatabase: DatabaseBrowsing {
         static let users = DatabaseTable(schema: "public", name: "users", kind: "table")
-        static let userColumns = ["id", "name", "email", "email_verified_at", "created_at"]
+        static let userColumns = ["id", "name", "meta", "email", "created_at"]
         static let userRows: [[String?]] = [
-            ["1", "Ada Lovelace", "ada@example.test", "2026-11-20 09:14:02", "2026-11-18 12:01:44"],
-            ["2", "Grace Hopper", "grace@example.test", "2026-11-20 10:02:19", "2026-11-18 12:04:10"],
-            ["3", "Alan Turing", "alan@example.test", nil, "2026-11-19 08:31:55"],
-            ["4", "Katherine Johnson", "katherine@example.test", "2026-11-21 16:45:07", "2026-11-19 09:12:38"],
-            ["5", "Edsger Dijkstra", "edsger@example.test", nil, "2026-11-20 11:20:01"],
+            ["1", "Ada Lovelace", #"{"theme":"dark","digest":"weekly"}"#, "ada@example.test",
+             "2026-11-18 12:01:44"],
+            ["2", "Grace Hopper", #"{"theme":"light","digest":"never"}"#, "grace@example.test",
+             "2026-11-18 12:04:10"],
+            ["3", "Alan Turing", nil, "alan@example.test", "2026-11-19 08:31:55"],
+            ["4", "Katherine Johnson", #"{"theme":"dark","fields":["orders","stock"]}"#,
+             "katherine@example.test", "2026-11-19 09:12:38"],
+            ["5", "Edsger Dijkstra", nil, "edsger@example.test", "2026-11-20 11:20:01"],
         ]
 
         func databases(for service: DatabaseService) throws -> [String] { ["postgres", "shop"] }
@@ -416,9 +429,8 @@ enum Snapshots {
         func columns(for service: DatabaseService, database: String, table: DatabaseTable) throws -> [DatabaseColumn] {
             [DatabaseColumn(name: "id", type: "bigint", nullable: false, defaultValue: nil, primary: true),
              DatabaseColumn(name: "name", type: "varchar(255)", nullable: false, defaultValue: nil, primary: false),
+             DatabaseColumn(name: "meta", type: "jsonb", nullable: true, defaultValue: nil, primary: false),
              DatabaseColumn(name: "email", type: "varchar(255)", nullable: false, defaultValue: nil, primary: false),
-             DatabaseColumn(name: "email_verified_at", type: "timestamptz", nullable: true, defaultValue: nil,
-                            primary: false),
              DatabaseColumn(name: "created_at", type: "timestamptz", nullable: true, defaultValue: nil, primary: false)]
         }
 
