@@ -406,6 +406,13 @@ final class MySQLServiceTests: XCTestCase {
         expected = try browser.row(for: service, database: "laravel", table: editable, key: ["id": "1"])
         try browser.delete(for: service, database: "laravel", table: editable, key: ["id": "1"], expected: expected)
         XCTAssertEqual(try pdo(tcp(port), "count"), "2")
+
+        // A table with no key names no row.
+        let keyless = try XCTUnwrap(tables.first { $0.name == "keyless" })
+        XCTAssertThrowsError(try browser.update(for: service, database: "laravel", table: keyless,
+                                                key: [:], changes: ["body": "x"], expected: [:])) {
+            XCTAssertEqual($0 as? DatabaseError, .failed("No row was named."))
+        }
         manager.stopAll()
     }
 
