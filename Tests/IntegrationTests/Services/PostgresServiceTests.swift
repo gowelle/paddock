@@ -149,6 +149,31 @@ final class PostgresServiceTests: XCTestCase {
                             ->execute([$arg, "{\n  \"name\": \"Ada\",\n  \"tags\": [\"a\", \"b\"]\n}"]);
                         echo "ok\n";
                         break;
+                    case 'writable':
+                        $pdo->exec('CREATE TABLE IF NOT EXISTS editable (id serial PRIMARY KEY, name text NOT NULL,'
+                            . ' note text, meta jsonb, seen boolean NOT NULL DEFAULT false)');
+                        $pdo->exec('TRUNCATE editable RESTART IDENTITY');
+                        $pdo->prepare('INSERT INTO editable (name, note) VALUES (?, ?)')->execute(['Ada', 'first']);
+                        $pdo->prepare('INSERT INTO editable (name, note) VALUES (?, ?)')->execute(['Grace', 'second']);
+                        $pdo->exec('CREATE TABLE IF NOT EXISTS keyless (body text)');
+                        $pdo->exec('CREATE OR REPLACE VIEW editable_view AS SELECT id, name FROM editable');
+                        echo "ok\n";
+                        break;
+                    case 'count':
+                        echo $pdo->query('SELECT count(*) FROM editable')->fetchColumn(), "\n";
+                        break;
+                    case 'cell':
+                        [$table, $id, $column] = explode('|', $arg);
+                        $statement = $pdo->prepare("SELECT $column::text FROM $table WHERE id = ?");
+                        $statement->execute([$id]);
+                        $value = $statement->fetchColumn();
+                        echo $value === null ? 'NULL' : (string)$value, "\n";
+                        break;
+                    case 'set':
+                        [$id, $name] = explode('|', $arg);
+                        $pdo->prepare('UPDATE editable SET name = ? WHERE id = ?')->execute([$name, $id]);
+                        echo "ok\n";
+                        break;
                 }
             } catch (Throwable $e) {
                 fwrite(STDERR, $e->getMessage() . "\n");
@@ -390,6 +415,79 @@ final class PostgresServiceTests: XCTestCase {
           ]
         }
         """)
+        manager.stopAll()
+    }
+
+    /// The browser's writes over a real PostgreSQL: the flags, a row read whole, insert with defaults and an
+    /// explicit NULL, one change, a conflicting save, a delete, and the refusals.
+    func testDatabaseBrowserWritesPostgreSQL() async throws {
+        try requirePHP()
+        let manager = makeManager([try await postgres("18")])
+        let added = try await manager.add(kind: "postgres", version: "18")
+        _ = try postmaster(manager, added.id)
+        let port = try XCTUnwrap(added.ports["main"])
+        XCTAssertEqual(try manager.createDatabase(added.id, database: "laravel"), .done)
+        try pdo(tcp(port), "writable")
+
+        let service = try XCTUnwrap(status(manager, added.id).flatMap(DatabaseService.init))
+        let browser = DatabaseBrowser(php: php)
+        let tables = try browser.tables(for: service, database: "laravel")
+        let editable = try XCTUnwrap(tables.first { $0.name == "editable" })
+        let columns = try browser.columns(for: service, database: "laravel", table: editable)
+        let id = try XCTUnwrap(columns.first { $0.name == "id" })
+        XCTAssertTrue(id.primary)
+        XCTAssertTrue(id.identity)
+        XCTAssertFalse(id.isEditable)
+        let meta = try XCTUnwrap(columns.first { $0.name == "meta" })
+        XCTAssertTrue(meta.isEditable)
+        XCTAssertTrue(meta.nullable)
+
+        let row = try browser.row(for: service, database: "laravel", table: editable, key: ["id": "1"])
+        XCTAssertEqual(row["name"] ?? nil, "Ada")
+        XCTAssertEqual(row["note"] ?? nil, "first")
+        XCTAssertEqual(row["seen"] ?? nil, "false")
+        XCTAssertNil(row["meta"] ?? nil)
+
+        // A new row: name typed, note NULL, everything else defaulted.
+        try browser.insert(for: service, database: "laravel", table: editable,
+                           values: ["name": "Katherine", "note": nil])
+        XCTAssertEqual(try pdo(tcp(port), "count"), "3")
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|3|seen"), "false")
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|3|note"), "NULL")
+
+        // One change; the rest of the row stays.
+        let expected = try browser.row(for: service, database: "laravel", table: editable, key: ["id": "1"])
+        try browser.update(for: service, database: "laravel", table: editable, key: ["id": "1"],
+                           changes: ["note": nil], expected: expected)
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|1|note"), "NULL")
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|1|name"), "Ada")
+
+        // Someone else changes the row: the save refuses and writes nothing.
+        try pdo(tcp(port), "set", "1|Someone else")
+        XCTAssertThrowsError(try browser.update(for: service, database: "laravel", table: editable,
+                                                key: ["id": "1"], changes: ["note": "mine"], expected: expected)) {
+            XCTAssertEqual($0 as? DatabaseError,
+                           .failed("This row changed since it was read. Reload and try again."))
+        }
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|1|name"), "Someone else")
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|1|note"), "NULL", "nothing was written")
+
+        // Delete, then a second delete finds it gone.
+        let fresh = try browser.row(for: service, database: "laravel", table: editable, key: ["id": "1"])
+        try browser.delete(for: service, database: "laravel", table: editable, key: ["id": "1"], expected: fresh)
+        XCTAssertEqual(try pdo(tcp(port), "count"), "2")
+        XCTAssertThrowsError(try browser.delete(for: service, database: "laravel", table: editable,
+                                                key: ["id": "1"], expected: fresh)) {
+            XCTAssertEqual($0 as? DatabaseError,
+                           .failed("That row is no longer there. It may have been deleted."))
+        }
+
+        // A table with no key names no row; a view cannot be locked.
+        let keyless = try XCTUnwrap(tables.first { $0.name == "keyless" })
+        XCTAssertThrowsError(try browser.update(for: service, database: "laravel", table: keyless,
+                                                key: [:], changes: ["body": "x"], expected: [:])) {
+            XCTAssertEqual($0 as? DatabaseError, .failed("No row was named."))
+        }
         manager.stopAll()
     }
 

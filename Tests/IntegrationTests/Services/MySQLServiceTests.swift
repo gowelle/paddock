@@ -134,6 +134,33 @@ final class MySQLServiceTests: XCTestCase {
                         $pdo->prepare('INSERT INTO documents (meta) VALUES (?)')->execute([$arg]);
                         echo "ok\n";
                         break;
+                    case 'writable':
+                        $pdo->exec('CREATE TABLE IF NOT EXISTS editable (id INT AUTO_INCREMENT PRIMARY KEY,'
+                            . ' name VARCHAR(255) NOT NULL, note TEXT NULL, meta JSON NULL,'
+                            . ' seen TINYINT(1) NOT NULL DEFAULT 0)');
+                        $pdo->exec('TRUNCATE editable');
+                        $pdo->prepare('INSERT INTO editable (name, note) VALUES (?, ?)')->execute(['Ada', 'first']);
+                        $pdo->prepare('INSERT INTO editable (name, note) VALUES (?, ?)')->execute(['Grace', 'second']);
+                        $pdo->exec('CREATE TABLE IF NOT EXISTS keyless (body text)');
+                        $pdo->exec('DROP VIEW IF EXISTS editable_view');
+                        $pdo->exec('CREATE VIEW editable_view AS SELECT id, name FROM editable');
+                        echo "ok\n";
+                        break;
+                    case 'count':
+                        echo $pdo->query('SELECT count(*) FROM editable')->fetchColumn(), "\n";
+                        break;
+                    case 'cell':
+                        [$table, $id, $column] = explode('|', $arg);
+                        $statement = $pdo->prepare("SELECT $column FROM $table WHERE id = ?");
+                        $statement->execute([$id]);
+                        $value = $statement->fetchColumn();
+                        echo $value === null ? 'NULL' : (string)$value, "\n";
+                        break;
+                    case 'set':
+                        [$id, $name] = explode('|', $arg);
+                        $pdo->prepare('UPDATE editable SET name = ? WHERE id = ?')->execute([$name, $id]);
+                        echo "ok\n";
+                        break;
                 }
             } catch (Throwable $e) {
                 fwrite(STDERR, $e->getMessage() . "\n");
@@ -331,6 +358,54 @@ final class MySQLServiceTests: XCTestCase {
         let documentRows = try browser.rows(for: service, database: "laravel", table: documents, limit: 20)
         let meta = try XCTUnwrap(documentRows.value(row: 0, column: 1))
         XCTAssertEqual(DatabaseJSON.document(meta)?.preview, #"{"fields":["orders","stock"],"theme":"dark"}"#)
+        manager.stopAll()
+    }
+
+    /// The browser's writes over a real MySQL: defaults, an explicit NULL, an unchanged save (found rows),
+    /// a conflicting save, and a delete.
+    func testDatabaseBrowserWritesMySQL() async throws {
+        try requirePHP()
+        let manager = makeManager([try await mysql("8.4")])
+        let added = try await manager.add(kind: "mysql", version: "8.4")
+        _ = try server(manager, added.id)
+        let port = try XCTUnwrap(added.ports["main"])
+        XCTAssertEqual(try manager.createDatabase(added.id, database: "laravel"), .done)
+        try pdo(tcp(port), "writable")
+
+        let service = try XCTUnwrap(status(manager, added.id).flatMap(DatabaseService.init))
+        let browser = DatabaseBrowser(php: php)
+        let tables = try browser.tables(for: service, database: "laravel")
+        let editable = try XCTUnwrap(tables.first { $0.name == "editable" })
+        let columns = try browser.columns(for: service, database: "laravel", table: editable)
+        let id = try XCTUnwrap(columns.first { $0.name == "id" })
+        XCTAssertTrue(id.identity)
+        XCTAssertFalse(id.isEditable)
+
+        try browser.insert(for: service, database: "laravel", table: editable,
+                           values: ["name": "Katherine", "note": nil])
+        XCTAssertEqual(try pdo(tcp(port), "count"), "3")
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|3|seen"), "0")
+
+        // Setting a field to the value it already holds still counts the row (MySQL found rows).
+        var expected = try browser.row(for: service, database: "laravel", table: editable, key: ["id": "1"])
+        XCTAssertEqual(expected["name"] ?? nil, "Ada")
+        XCTAssertEqual(expected["note"] ?? nil, "first")
+        XCTAssertNil(expected["meta"] ?? nil)
+        try browser.update(for: service, database: "laravel", table: editable, key: ["id": "1"],
+                           changes: ["name": "Ada"], expected: expected)
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|1|name"), "Ada")
+
+        try pdo(tcp(port), "set", "1|Someone else")
+        XCTAssertThrowsError(try browser.update(for: service, database: "laravel", table: editable,
+                                                key: ["id": "1"], changes: ["note": "mine"], expected: expected)) {
+            XCTAssertEqual($0 as? DatabaseError,
+                           .failed("This row changed since it was read. Reload and try again."))
+        }
+        XCTAssertEqual(try pdo(tcp(port), "cell", "editable|1|note"), "first", "nothing was written")
+
+        expected = try browser.row(for: service, database: "laravel", table: editable, key: ["id": "1"])
+        try browser.delete(for: service, database: "laravel", table: editable, key: ["id": "1"], expected: expected)
+        XCTAssertEqual(try pdo(tcp(port), "count"), "2")
         manager.stopAll()
     }
 

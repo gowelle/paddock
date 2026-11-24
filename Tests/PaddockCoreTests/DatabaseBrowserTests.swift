@@ -206,6 +206,32 @@ final class DatabaseBrowserTests: XCTestCase {
         XCTAssertNil(runner.request)
     }
 
+    // MARK: - Writes
+
+    func testAWriteRequestTravelsInAPrivateFile() throws {
+        let runner = CapturingRunner(reply: #"{"ok":true,"result":{"affected":1}}"#)
+        let bridge = PHPDatabaseBridge(php: URL(fileURLWithPath: "/usr/bin/true"), runner: runner)
+        let request = DatabaseRequest(action: "update", driver: "pgsql", host: "127.0.0.1", port: 5432,
+                                      user: "root", password: "", database: "shop", schema: "public",
+                                      table: "users", sql: nil, limit: nil, search: nil,
+                                      key: ["id": "1"], changes: ["note": nil],
+                                      expected: ["id": "1", "note": "first"], values: nil)
+        let result = try bridge.run(request, as: DatabaseWriteResult.self, inFile: true)
+
+        XCTAssertEqual(result.affected, 1)
+        let path = try XCTUnwrap(runner.filePath)
+        XCTAssertEqual(runner.permissions, 0o600)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path), "the request file is gone afterwards")
+        XCTAssertNil(runner.environment["PADDOCK_DB_REQUEST"], "a write does not also sit in the environment")
+
+        let data = try XCTUnwrap(runner.fileContents)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(Data(base64Encoded: data)))
+            as? [String: Any])
+        XCTAssertEqual(json["action"] as? String, "update")
+        XCTAssertEqual((json["key"] as? [String: Any])?["id"] as? String, "1")
+        XCTAssertTrue((json["changes"] as? [String: Any])?["note"] is NSNull, "NULL travels as null")
+    }
+
     // MARK: - Helpers
 
     private func databaseService(engine: DatabaseEngine = .postgres) -> DatabaseService {
@@ -238,5 +264,28 @@ private final class FakeRunner: CommandRunner, @unchecked Sendable {
             request = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         }
         return (0, answer)
+    }
+}
+
+/// Reads the request file while it exists, then answers as PHP would.
+private final class CapturingRunner: CommandRunner, @unchecked Sendable {
+    let reply: String
+    private(set) var environment: [String: String] = [:]
+    private(set) var filePath: String?
+    private(set) var fileContents: Data?
+    private(set) var permissions: Int?
+
+    init(reply: String) { self.reply = reply }
+
+    func run(_ executable: String, _ arguments: [String],
+             environment: [String: String]?) throws -> (status: Int32, output: String) {
+        self.environment = environment ?? [:]
+        if let path = environment?["PADDOCK_DB_REQUEST_FILE"] {
+            filePath = path
+            fileContents = try Data(contentsOf: URL(fileURLWithPath: path))
+            permissions = (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions]
+                as? NSNumber)?.intValue
+        }
+        return (0, reply)
     }
 }

@@ -15,6 +15,10 @@ struct DatabaseRequest: Encodable, Sendable {
     var sql: String?
     var limit: Int?
     var search: String?
+    var key: [String: String?]? = nil
+    var changes: [String: String?]? = nil
+    var expected: [String: String?]? = nil
+    var values: [String: String?]? = nil
 }
 
 /// Runs the bundled PHP with a fixed PDO program and returns what it answered.
@@ -27,7 +31,8 @@ struct PHPDatabaseBridge: Sendable {
         self.runner = runner
     }
 
-    func run<Answer: Decodable>(_ request: DatabaseRequest, as: Answer.Type) throws -> Answer {
+    func run<Answer: Decodable>(_ request: DatabaseRequest, as: Answer.Type,
+                                inFile: Bool = false) throws -> Answer {
         let data: Data
         do {
             data = try JSONEncoder().encode(request)
@@ -35,7 +40,23 @@ struct PHPDatabaseBridge: Sendable {
             throw DatabaseError.failed("Paddock couldn't prepare the database request.")
         }
         var environment = ProcessInfo.processInfo.environment
-        environment["PADDOCK_DB_REQUEST"] = data.base64EncodedString()
+        var requestFile: URL?
+        if inFile {
+            // A write can hold a long value; the environment has a size limit on macOS. 0600 at creation.
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("paddock-db-\(UUID().uuidString).json")
+            guard FileManager.default.createFile(atPath: url.path, contents: Data(data.base64EncodedString().utf8),
+                                                 attributes: [.posixPermissions: 0o600]) else {
+                throw DatabaseError.failed("Paddock couldn't prepare the write request.")
+            }
+            requestFile = url
+            environment[Self.fileKey] = url.path
+        } else {
+            environment[Self.requestKey] = data.base64EncodedString()
+        }
+        // The function's scope, not the `if`'s: a defer inside that block runs as the block exits, deleting
+        // the file before PHP is started.
+        defer { if let requestFile { try? FileManager.default.removeItem(at: requestFile) } }
 
         let result: (status: Int32, output: String)
         do {
@@ -67,6 +88,9 @@ struct PHPDatabaseBridge: Sendable {
         let result: Answer?
     }
 
+    static let requestKey = "PADDOCK_DB_REQUEST"
+    static let fileKey = "PADDOCK_DB_REQUEST_FILE"
+
     private static let arguments = [
         "-d", "display_errors=0", "-d", "log_errors=0", "-d", "error_reporting=0", "-r", script,
     ]
@@ -76,6 +100,12 @@ struct PHPDatabaseBridge: Sendable {
     /// even when the first keyword looks harmless.
     static let script = #"""
     $raw = getenv('PADDOCK_DB_REQUEST');
+    $file = getenv('PADDOCK_DB_REQUEST_FILE');
+    if (!is_string($raw) && is_string($file) && $file !== '') {
+        $raw = @file_get_contents($file);
+        @unlink($file);
+        if (!is_string($raw)) fail('Paddock could not read its write request.');
+    }
     $request = is_string($raw) ? json_decode(base64_decode($raw), true) : null;
     function reply($payload) {
         echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -86,13 +116,77 @@ struct PHPDatabaseBridge: Sendable {
         $quote = $driver === 'mysql' ? '`' : '"';
         return $quote . str_replace($quote, $quote . $quote, $name) . $quote;
     }
-    function cell($value) {
+    function text($value) {
         if ($value === null) return null;
         if (is_bool($value)) return $value ? 'true' : 'false';
-        if (!is_scalar($value)) $value = json_encode($value);
-        $text = (string)$value;
-        if (strlen($text) > 4096) $text = substr($text, 0, 4096) . '…';
+        if (!is_scalar($value)) {
+            return json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        }
+        return (string)$value;
+    }
+    function cell($value) {
+        $text = text($value);
+        if ($text !== null && strlen($text) > 4096) $text = substr($text, 0, 4096) . '…';
         return $text;
+    }
+    function binaryTypes() {
+        return ['binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob', 'geometry', 'point',
+                'linestring', 'polygon', 'multipoint', 'multilinestring', 'multipolygon', 'geometrycollection'];
+    }
+    // The binary columns of a table: left out of a row read, never compared or written.
+    function binaryColumns($pdo, $driver, $schema, $table) {
+        if ($driver === 'mysql') {
+            $types = binaryTypes();
+            $marks = implode(', ', array_fill(0, count($types), '?'));
+            $statement = $pdo->prepare('SELECT column_name FROM information_schema.columns WHERE table_schema = ?'
+                . ' AND table_name = ? AND data_type IN (' . $marks . ')');
+            $statement->execute(array_merge([$schema, $table], $types));
+        } else {
+            $statement = $pdo->prepare("SELECT column_name FROM information_schema.columns WHERE table_schema = ?"
+                . " AND table_name = ? AND data_type = 'bytea'");
+            $statement->execute([$schema, $table]);
+        }
+        $set = [];
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $name) $set[(string)$name] = true;
+        return $set;
+    }
+    function qualified($driver, $schema, $table) {
+        return ($schema ? ident($driver, (string)$schema) . '.' : '') . ident($driver, $table);
+    }
+    // The row lock's condition: the key's columns, NULL-safe even though a key is never NULL.
+    function keyCondition($driver, $key) {
+        $conditions = [];
+        $parameters = [];
+        foreach ($key as $column => $value) {
+            $conditions[] = ident($driver, (string)$column) . ($driver === 'mysql' ? ' <=> ?' : ' IS NOT DISTINCT FROM ?');
+            $parameters[] = $value;
+        }
+        return [implode(' AND ', $conditions), $parameters];
+    }
+    function writeKey($request) {
+        return isset($request['key']) && is_array($request['key']) ? $request['key'] : [];
+    }
+    // The row as the database holds it now, locked until the transaction ends.
+    function lockedRow($pdo, $driver, $name, $key) {
+        [$where, $parameters] = keyCondition($driver, $key);
+        $statement = $pdo->prepare('SELECT * FROM ' . $name . ' WHERE ' . $where . ' FOR UPDATE');
+        $statement->execute($parameters);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return is_array($row) ? $row : null;
+    }
+    // Whether the locked row differs from the row the editor opened, past the 4096-character clip.
+    function differs($row, $expected) {
+        foreach ($expected as $column => $value) {
+            if (!array_key_exists($column, $row)) return true;
+            $actual = text($row[$column]);
+            if ($value === null ? $actual !== null : (string)$value !== $actual) return true;
+        }
+        return false;
+    }
+    function beginWrite($pdo, $driver) {
+        if ($driver === 'mysql') $pdo->exec('SET SESSION innodb_lock_wait_timeout = 5');
+        $pdo->beginTransaction();
+        if ($driver === 'pgsql') $pdo->exec("SET LOCAL statement_timeout = '5s'");
     }
     // A LIKE pattern matching the text anywhere, with LIKE's own marks (% _ and the escape) taken literally.
     function likePattern($text) {
@@ -101,11 +195,14 @@ struct PHPDatabaseBridge: Sendable {
     // The names of a table's columns, in order; binary columns are left out of MySQL's text search.
     function columnNames($pdo, $driver, $schema, $table) {
         if ($driver === 'mysql') {
-            $statement = $pdo->prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND data_type NOT IN (\'binary\', \'varbinary\', \'tinyblob\', \'blob\', \'mediumblob\', \'longblob\', \'geometry\', \'point\', \'linestring\', \'polygon\', \'multipoint\', \'multilinestring\', \'multipolygon\', \'geometrycollection\') ORDER BY ordinal_position');
+            $types = binaryTypes();
+            $marks = implode(', ', array_fill(0, count($types), '?'));
+            $statement = $pdo->prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND data_type NOT IN (' . $marks . ') ORDER BY ordinal_position');
+            $statement->execute(array_merge([$schema, $table], $types));
         } else {
             $statement = $pdo->prepare('SELECT column_name AS name FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position');
+            $statement->execute([$schema, $table]);
         }
-        $statement->execute([$schema, $table]);
         return array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
     }
     function readRows($statement, $limit) {
@@ -143,7 +240,10 @@ struct PHPDatabaseBridge: Sendable {
             ? "mysql:host=$host;port=$port;dbname=$database;charset=utf8mb4"
             : "pgsql:host=$host;port=$port;dbname=$database";
         $options = [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 5];
-        if ($driver === 'mysql') $options[PDO::ATTR_EMULATE_PREPARES] = false;
+        if ($driver === 'mysql') {
+            $options[PDO::ATTR_EMULATE_PREPARES] = false;
+            $options[PDO::MYSQL_ATTR_FOUND_ROWS] = true; // an unchanged save still counts the row as matched
+        }
         $pdo = new PDO($dsn, $user, $password, $options);
         $action = (string)$request['action'];
         switch ($action) {
@@ -183,9 +283,9 @@ struct PHPDatabaseBridge: Sendable {
             if ($table === '') fail('No table was named.');
             $schema = isset($request['schema']) ? (string)$request['schema'] : ($driver === 'mysql' ? $database : 'public');
             if ($driver === 'mysql') {
-                $statement = $pdo->prepare('SELECT column_name AS name, column_type AS type, is_nullable AS nullable, column_default AS default_value FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position');
+                $statement = $pdo->prepare('SELECT column_name AS name, column_type AS type, is_nullable AS nullable, column_default AS default_value, extra AS extra, data_type AS data_type FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position');
             } else {
-                $statement = $pdo->prepare('SELECT column_name AS name, data_type AS type, is_nullable AS nullable, column_default AS default_value FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position');
+                $statement = $pdo->prepare('SELECT column_name AS name, data_type AS type, is_nullable AS nullable, column_default AS default_value, is_generated AS generated, is_identity AS identity FROM information_schema.columns WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position');
             }
             $statement->execute([$schema, $table]);
             $primary = $pdo->prepare("SELECT kcu.column_name FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu ON tc.constraint_schema = kcu.constraint_schema AND tc.constraint_name = kcu.constraint_name AND tc.table_name = kcu.table_name WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ? AND tc.table_name = ?");
@@ -194,12 +294,30 @@ struct PHPDatabaseBridge: Sendable {
             foreach ($primary->fetchAll(PDO::FETCH_COLUMN) as $name) $keys[(string)$name] = true;
             $columns = [];
             foreach ($statement as $row) {
+                $binary = false;
+                $generated = false;
+                $identity = false;
+                $default = $row['default_value'] === null ? null : (string)$row['default_value'];
+                if ($driver === 'mysql') {
+                    $binary = in_array(strtolower((string)$row['data_type']), binaryTypes(), true);
+                    $generated = stripos((string)$row['extra'], 'VIRTUAL GENERATED') !== false
+                        || stripos((string)$row['extra'], 'STORED GENERATED') !== false;
+                    $identity = stripos((string)$row['extra'], 'auto_increment') !== false;
+                } else {
+                    $binary = strtolower((string)$row['type']) === 'bytea';
+                    $generated = strtoupper((string)$row['generated']) !== 'NEVER';
+                    $identity = strtoupper((string)$row['identity']) === 'YES'
+                        || ($default !== null && stripos($default, 'nextval(') === 0);
+                }
                 $columns[] = [
                     'name' => (string)$row['name'],
                     'type' => (string)$row['type'],
                     'nullable' => strtoupper((string)$row['nullable']) === 'YES',
-                    'default' => $row['default_value'] === null ? null : (string)$row['default_value'],
+                    'default' => $default,
                     'primary' => isset($keys[(string)$row['name']]),
+                    'binary' => $binary,
+                    'generated' => $generated,
+                    'identity' => $identity,
                 ];
             }
             reply(['ok' => true, 'result' => $columns]);
@@ -257,11 +375,123 @@ struct PHPDatabaseBridge: Sendable {
             $rows = readRows($statement, $limit);
             try { $pdo->rollBack(); } catch (Throwable $ignored) {}
             reply(['ok' => true, 'result' => $rows]);
+        case 'row':
+            $table = isset($request['table']) ? (string)$request['table'] : '';
+            if ($table === '') fail('No table was named.');
+            $key = writeKey($request);
+            if (empty($key)) fail('No row was named.');
+            $schema = isset($request['schema']) && $request['schema'] !== null
+                ? (string)$request['schema'] : ($driver === 'mysql' ? null : 'public');
+            $name = qualified($driver, $schema, $table);
+            $binary = binaryColumns($pdo, $driver, $schema ?: $database, $table);
+            [$where, $parameters] = keyCondition($driver, $key);
+            if ($driver === 'pgsql') {
+                $pdo->exec('BEGIN TRANSACTION READ ONLY');
+                $pdo->exec("SET LOCAL statement_timeout = '5s'");
+            } else {
+                $pdo->exec('SET SESSION MAX_EXECUTION_TIME = 5000');
+                $pdo->exec('START TRANSACTION READ ONLY');
+            }
+            $statement = $pdo->prepare('SELECT * FROM ' . $name . ' WHERE ' . $where . ' LIMIT 1');
+            $statement->execute($parameters);
+            $found = $statement->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($found)) fail('That row is no longer there. It may have been deleted.');
+            $out = [];
+            foreach ($found as $column => $value) {
+                if (!isset($binary[(string)$column])) $out[$column] = text($value);
+            }
+            try { $pdo->rollBack(); } catch (Throwable $ignored) {}
+            reply(['ok' => true, 'result' => $out]);
+        case 'insert':
+            $table = isset($request['table']) ? (string)$request['table'] : '';
+            if ($table === '') fail('No table was named.');
+            $values = isset($request['values']) && is_array($request['values']) ? $request['values'] : [];
+            $schema = isset($request['schema']) && $request['schema'] !== null
+                ? (string)$request['schema'] : ($driver === 'mysql' ? null : 'public');
+            $name = qualified($driver, $schema, $table);
+            beginWrite($pdo, $driver);
+            if (empty($values)) {
+                if ($driver === 'pgsql') {
+                    $pdo->exec('INSERT INTO ' . $name . ' DEFAULT VALUES');
+                } else {
+                    $pdo->exec('INSERT INTO ' . $name . ' () VALUES ()');
+                }
+            } else {
+                $names = [];
+                $marks = [];
+                $parameters = [];
+                foreach ($values as $column => $value) {
+                    $names[] = ident($driver, (string)$column);
+                    $marks[] = '?';
+                    $parameters[] = $value;
+                }
+                $statement = $pdo->prepare('INSERT INTO ' . $name . ' (' . implode(', ', $names) . ') VALUES ('
+                    . implode(', ', $marks) . ')');
+                $statement->execute($parameters);
+            }
+            $pdo->commit();
+            reply(['ok' => true, 'result' => ['affected' => 1]]);
+        case 'update':
+            $table = isset($request['table']) ? (string)$request['table'] : '';
+            if ($table === '') fail('No table was named.');
+            $key = writeKey($request);
+            if (empty($key)) fail('No row was named.');
+            $changes = isset($request['changes']) && is_array($request['changes']) ? $request['changes'] : [];
+            if (empty($changes)) fail('Nothing was changed.');
+            $expected = isset($request['expected']) && is_array($request['expected']) ? $request['expected'] : [];
+            $schema = isset($request['schema']) && $request['schema'] !== null
+                ? (string)$request['schema'] : ($driver === 'mysql' ? null : 'public');
+            $name = qualified($driver, $schema, $table);
+            beginWrite($pdo, $driver);
+            $found = lockedRow($pdo, $driver, $name, $key);
+            if ($found === null) fail('That row is no longer there. It may have been deleted.');
+            if (differs($found, $expected)) {
+                fail('This row changed since it was read. Reload and try again.');
+            }
+            $sets = [];
+            $parameters = [];
+            foreach ($changes as $column => $value) {
+                $sets[] = ident($driver, (string)$column) . ' = ?';
+                $parameters[] = $value;
+            }
+            [$where, $keyParameters] = keyCondition($driver, $key);
+            $statement = $pdo->prepare('UPDATE ' . $name . ' SET ' . implode(', ', $sets) . ' WHERE ' . $where);
+            $statement->execute(array_merge($parameters, $keyParameters));
+            if ($statement->rowCount() < 1) {
+                fail('This row changed since it was read. Reload and try again.');
+            }
+            $pdo->commit();
+            reply(['ok' => true, 'result' => ['affected' => 1]]);
+        case 'delete':
+            $table = isset($request['table']) ? (string)$request['table'] : '';
+            if ($table === '') fail('No table was named.');
+            $key = writeKey($request);
+            if (empty($key)) fail('No row was named.');
+            $expected = isset($request['expected']) && is_array($request['expected']) ? $request['expected'] : [];
+            $schema = isset($request['schema']) && $request['schema'] !== null
+                ? (string)$request['schema'] : ($driver === 'mysql' ? null : 'public');
+            $name = qualified($driver, $schema, $table);
+            beginWrite($pdo, $driver);
+            $found = lockedRow($pdo, $driver, $name, $key);
+            if ($found === null) fail('That row is no longer there. It may have been deleted.');
+            if (differs($found, $expected)) {
+                fail('This row changed since it was read. Reload and try again.');
+            }
+            [$where, $keyParameters] = keyCondition($driver, $key);
+            $statement = $pdo->prepare('DELETE FROM ' . $name . ' WHERE ' . $where);
+            $statement->execute($keyParameters);
+            if ($statement->rowCount() < 1) {
+                fail('This row changed since it was read. Reload and try again.');
+            }
+            $pdo->commit();
+            reply(['ok' => true, 'result' => ['affected' => 1]]);
         default:
             fail('Paddock does not know that database request.');
         }
     } catch (Throwable $error) {
+        try { if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack(); } catch (Throwable $ignored) {}
         fail($error->getMessage());
     }
     """#
 }
+

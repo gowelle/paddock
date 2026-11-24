@@ -252,13 +252,17 @@ public struct DatabaseBrowser: DatabaseBrowsing, Sendable {
 
     private func ask<Answer: Decodable>(_ action: String, service: DatabaseService, database: String,
                                         schema: String? = nil, table: String? = nil, sql: String? = nil,
-                                        search: String? = nil, limit: Int? = nil, as: Answer.Type) throws -> Answer {
+                                        search: String? = nil, limit: Int? = nil,
+                                        key: [String: String?]? = nil, changes: [String: String?]? = nil,
+                                        expected: [String: String?]? = nil, values: [String: String?]? = nil,
+                                        as: Answer.Type, inFile: Bool = false) throws -> Answer {
         guard service.isRunning else { throw DatabaseError.notRunning(service.name) }
         try Self.validate(database: database)
         let request = DatabaseRequest(action: action, driver: service.engine.driver, host: "127.0.0.1",
                                       port: service.port, user: "root", password: "", database: database,
-                                      schema: schema, table: table, sql: sql, limit: limit, search: search)
-        return try bridge.run(request, as: Answer.self)
+                                      schema: schema, table: table, sql: sql, limit: limit, search: search,
+                                      key: key, changes: changes, expected: expected, values: values)
+        return try bridge.run(request, as: Answer.self, inFile: inFile)
     }
 
     private static func clamp(_ limit: Int) -> Int { min(1000, max(1, limit)) }
@@ -272,6 +276,39 @@ public struct DatabaseBrowser: DatabaseBrowsing, Sendable {
               database.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
             throw DatabaseError.invalidDatabaseName(database)
         }
+    }
+}
+
+/// Writes go through the same bundled PHP, one row at a time; the SQL console's read-only rule is untouched.
+extension DatabaseBrowser: DatabaseWriting {
+    public func row(for service: DatabaseService, database: String, table: DatabaseTable,
+                    key: [String: String?]) throws -> [String: String?] {
+        guard !key.isEmpty else { throw DatabaseError.failed("No row was named.") }
+        return try ask("row", service: service, database: database, schema: table.schema, table: table.name,
+                       key: key, as: [String: String?].self)
+    }
+
+    public func insert(for service: DatabaseService, database: String, table: DatabaseTable,
+                       values: [String: String?]) throws {
+        _ = try ask("insert", service: service, database: database, schema: table.schema, table: table.name,
+                    values: values, as: DatabaseWriteResult.self, inFile: true)
+    }
+
+    public func update(for service: DatabaseService, database: String, table: DatabaseTable,
+                       key: [String: String?], changes: [String: String?],
+                       expected: [String: String?]) throws {
+        guard !key.isEmpty else { throw DatabaseError.failed("No row was named.") }
+        guard !changes.isEmpty else { throw DatabaseError.failed("Nothing was changed.") }
+        _ = try ask("update", service: service, database: database, schema: table.schema, table: table.name,
+                    key: key, changes: changes, expected: expected,
+                    as: DatabaseWriteResult.self, inFile: true)
+    }
+
+    public func delete(for service: DatabaseService, database: String, table: DatabaseTable,
+                       key: [String: String?], expected: [String: String?]) throws {
+        guard !key.isEmpty else { throw DatabaseError.failed("No row was named.") }
+        _ = try ask("delete", service: service, database: database, schema: table.schema, table: table.name,
+                    key: key, expected: expected, as: DatabaseWriteResult.self, inFile: true)
     }
 }
 
