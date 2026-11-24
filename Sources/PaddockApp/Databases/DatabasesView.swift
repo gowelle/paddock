@@ -45,6 +45,14 @@ struct DatabasesView: View {
                 databases.endWatching()
             }
         })
+        .alert("Discard the unsaved row?", isPresented: Binding(
+            get: { databases.pendingDiscard != nil },
+            set: { if !$0 { databases.cancelDiscard() } })) {
+            Button("Cancel", role: .cancel) { databases.cancelDiscard() }
+            Button("Discard", role: .destructive) { Task { await databases.discardAndGo() } }
+        } message: {
+            Text("The row you were editing hasn't been saved yet.")
+        }
     }
 }
 
@@ -74,7 +82,7 @@ private struct DatabaseSidebar: View {
                         SectionTitle("Services")
                         ForEach(databases.services) { service in
                             Button {
-                                Task { await databases.select(service: service.id) }
+                                Task { await databases.go(to: .service(service.id)) }
                             } label: {
                                 ServiceRow(service: service, selected: service.id == databases.selection)
                             }
@@ -87,7 +95,7 @@ private struct DatabaseSidebar: View {
                             SectionTitle("Databases")
                             ForEach(databases.databases, id: \.self) { name in
                                 Button {
-                                    Task { await databases.select(database: name) }
+                                    Task { await databases.go(to: .database(name)) }
                                 } label: {
                                     SidebarRow(title: name, symbol: "cylinder", selected: name == databases.database)
                                 }
@@ -114,7 +122,7 @@ private struct DatabaseSidebar: View {
                             } else {
                                 ForEach(filteredTables) { table in
                                     Button {
-                                        Task { await databases.select(table: table) }
+                                        Task { await databases.go(to: .table(table)) }
                                     } label: {
                                         SidebarRow(title: table.displayName,
                                                    symbol: table.isView ? "eye" : "tablecells",
@@ -229,6 +237,7 @@ private struct DatabaseTablePane: View {
                         set: { text in databases.setRowSearch(text) }))
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 190)
+                        .disabled(databases.draft != nil)
                         .help("Find rows with this text in any column, searched across the whole table")
                 }
                 if let count = databases.rowCountText, databases.table != nil {
@@ -236,8 +245,29 @@ private struct DatabaseTablePane: View {
                         .font(.caption)
                         .foregroundStyle(Theme.inkMuted)
                 }
-                if databases.isBusy {
+                if let notice = databases.notice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(Theme.inkMuted)
+                }
+                if databases.isBusy || databases.isSaving {
                     ProgressView().controlSize(.small)
+                }
+                if databases.table != nil {
+                    if databases.isEditableTable {
+                        Button {
+                            databases.beginInsert()
+                        } label: {
+                            Label("New row", systemImage: "plus")
+                        }
+                        .disabled(databases.draft != nil || databases.isSaving)
+                        .help("Add a row at the end of this table")
+                    } else if let note = databases.readOnlyNote {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(Theme.inkMuted)
+                            .help("Only tables with a primary key can be edited here")
+                    }
                 }
                 Button("Reload") { Task { await databases.reload() } }
                     .disabled(!databases.canReload)
@@ -249,18 +279,42 @@ private struct DatabaseTablePane: View {
             content
         }
         .background(Theme.surface)
+        .alert("Delete this row?", isPresented: Binding(
+            get: { databases.pendingDelete != nil },
+            set: { if !$0 { databases.cancelDelete() } })) {
+            Button("Cancel", role: .cancel) { databases.cancelDelete() }
+            Button("Delete", role: .destructive) { Task { await databases.confirmDelete() } }
+        } message: {
+            Text("Delete the row where \(databases.pendingDeleteText ?? "")? This can't be undone.")
+        }
     }
 
     @ViewBuilder
     private var content: some View {
         if databases.table != nil, let rows = databases.rows {
-            if let text = databases.noRowsText {
+            if let text = databases.noRowsText, databases.draft == nil {
                 Caption(text)
                     .textSelection(.enabled)
                     .padding(18)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
-                DatabaseRowsGrid(columns: gridColumns(rows), rows: rows.rows)
+                DatabaseRowsGrid(columns: gridColumns(rows), rows: rows.rows,
+                                 modelColumns: databases.columns,
+                                 actions: databases.isEditableTable
+                                     ? GridActions(
+                                         onEdit: { index in Task { await databases.beginEdit(row: index) } },
+                                         onDelete: { databases.requestDelete(row: $0) })
+                                     : nil,
+                                 editor: databases.draft.map { draft in
+                                     GridEditor(
+                                         draft: draft,
+                                         row: databases.editingRow,
+                                         saving: databases.isSaving,
+                                         onText: { databases.setDraftText($0, column: $1) },
+                                         onNull: { databases.setDraftNull($0, column: $1) },
+                                         onSave: { Task { await databases.saveDraft() } },
+                                         onCancel: { databases.cancelDraft() })
+                                 })
             }
         } else if let text = databases.detailText {
             Caption(text)
