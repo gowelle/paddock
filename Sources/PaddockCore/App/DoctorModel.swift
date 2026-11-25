@@ -33,11 +33,17 @@ public final class DoctorModel: ObservableObject {
         defer { isChecking = false }
         do {
             let status = try await fetchStatus()
+            // The Doctor window's task is cancelled when the window closes; a cancelled probe must
+            // not become a failed row, so drop the whole result.
+            guard !Task.isCancelled else { return }
+            let next = await diagnose(status, target)
+            guard !Task.isCancelled else { return }
             sites = status.sites
             if let target, !status.sites.contains(where: { $0.name == target }) { self.target = nil }
-            report = await diagnose(status, target)
+            report = next
             error = nil
         } catch {
+            guard !Task.isCancelled else { return }
             let sentence: String
             let clientError = error as? ClientError
             if clientError == .daemonNotRunning {

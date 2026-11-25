@@ -194,8 +194,8 @@ enum Snapshots {
             passed("daemon", "The daemon answers (build 24)", "The daemon answers (build 24)."),
             passed("ports", "Ports 80 and 443 are free",
                    "Nothing was listening on 80 or 443 before Paddock."),
-            passed("port-helper", "The port helper manages 80 and 443", "The port helper is installed."),
-            passed("resolver", "The .test resolver entry is installed", "The .test resolver is installed."),
+            passed("port-helper", "The port helper manages 80 and 443", "The port helper manages 80 and 443."),
+            passed("resolver", "The .test resolver entry is installed", "The .test resolver entry is installed."),
             passed("dns", "DNS answers shop.test", "shop.test resolves to 127.0.0.1."),
             passed("caddy", "Caddy is running", "Caddy is running."),
         ], sites: [
@@ -207,7 +207,7 @@ enum Snapshots {
                 problems
                     ? DoctorCheck(id: "http", title: "https://shop.test answers", outcome: .failed,
                                   detail: "HTTPS 500 in 30 ms. Some request reached the site and failed; "
-                                      + "see the log row.")
+                                      + "see the site's log.")
                     : passed("http", "https://shop.test answers", "HTTPS 200 in 24 ms."),
                 DoctorCheck(id: "log", title: "Newest error in the site's log", outcome: .info,
                             detail: "No errors in laravel.log."),

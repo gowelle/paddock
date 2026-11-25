@@ -165,7 +165,7 @@ final class DoctorTests: XCTestCase {
         let http = check(report.sites.first?.checks ?? [], "http")
         XCTAssertEqual(http?.outcome, .failed)
         XCTAssertEqual(http?.detail,
-                       "HTTPS 500 in 30 ms. Some request reached the site and failed; see the log row.")
+                       "HTTPS 500 in 30 ms. Some request reached the site and failed; see the site's log.")
         XCTAssertNil(http?.fix)
     }
 

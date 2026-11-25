@@ -18,6 +18,100 @@ final class DoctorModelTests: XCTestCase {
                                                secured: true, php: PHPVersion(major: 8, minor: 5),
                                                pinned: false)
 
+    /// A fetch that signals when it has started and answers only when released.
+    private final class SlowFetch: @unchecked Sendable {
+        let entered: AsyncStream<Void>
+        private let enteredContinuation: AsyncStream<Void>.Continuation
+        let answers: AsyncStream<EngineStatus>
+        private let answerContinuation: AsyncStream<EngineStatus>.Continuation
+        private let counter = Counter()
+
+        init() {
+            (entered, enteredContinuation) = AsyncStream<Void>.makeStream()
+            (answers, answerContinuation) = AsyncStream<EngineStatus>.makeStream()
+        }
+
+        var count: Int { counter.value }
+
+        func release(_ status: EngineStatus) {
+            answerContinuation.yield(status)
+            answerContinuation.finish()
+        }
+
+        nonisolated func fetch() async throws -> EngineStatus {
+            counter.increment()
+            enteredContinuation.yield()
+            for await status in answers { return status }
+            throw ClientError.daemonNotRunning
+        }
+    }
+
+    private final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored = 0
+
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        func increment() {
+            lock.lock()
+            defer { lock.unlock() }
+            stored += 1
+        }
+    }
+
+    func testACancelledCheckPublishesNothing() async {
+        let slow = SlowFetch()
+        let status = Self.sampleStatus(with: Self.shop)
+        let model = DoctorModel(fetchStatus: { try await slow.fetch() },
+                                diagnose: { status, _ in
+                                    DoctorReport(global: [], sites: [
+                                        .init(site: "shop", host: "shop.test",
+                                              php: status.sites[0].php,
+                                              url: "https://shop.test", checks: []),
+                                    ])
+                                })
+        var iterator = slow.entered.makeAsyncIterator()
+        let task = Task { await model.check() }
+        await iterator.next()
+        task.cancel()
+        slow.release(status)
+        await task.value
+
+        XCTAssertNil(model.report)
+        XCTAssertNil(model.error)
+        XCTAssertTrue(model.sites.isEmpty)
+        XCTAssertFalse(model.isChecking)
+    }
+
+    func testASecondCheckWhileOneIsRunningIsIgnored() async {
+        let slow = SlowFetch()
+        let status = Self.sampleStatus(with: Self.shop)
+        let expected = DoctorReport(global: [], sites: [
+            .init(site: "shop", host: "shop.test", php: Self.shop.php,
+                  url: "https://shop.test", checks: []),
+        ])
+        let model = DoctorModel(fetchStatus: { try await slow.fetch() },
+                                diagnose: { _, _ in expected })
+        var iterator = slow.entered.makeAsyncIterator()
+        let task = Task { await model.check() }
+        await iterator.next()
+        await model.check()
+
+        XCTAssertTrue(model.isChecking)
+        XCTAssertNil(model.report)
+
+        slow.release(status)
+        await task.value
+
+        XCTAssertEqual(model.report, expected)
+        XCTAssertFalse(model.isChecking)
+        XCTAssertEqual(slow.count, 1)
+    }
+
     func testCheckPublishesAFreshReportAndTheSites() async {
         let status = status()
         let expected = DoctorReport(global: [], sites: [

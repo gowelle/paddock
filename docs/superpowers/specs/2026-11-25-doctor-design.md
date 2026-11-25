@@ -149,7 +149,8 @@ a stopped daemon does not paint eleven rows red.
   `needsTrust`: `macOS doesn't trust Paddock's certificate.` Failed when trust is off:
   `Paddock can't install certificate trust in this build.`
 - **http.** Passed: `HTTP 200 in 24 ms.` (or `HTTPS`). A 5xx is failed:
-  `HTTPS 500 in 30 ms. Some request reached the site and failed; see the log row.` A
+  `HTTPS 500 in 30 ms. Some request reached the site and failed; see the site's log.` Any
+  other status passes: the site answered, and the status is its own answer. A
   transport error is failed with a mapped sentence:
   - certificate problems (`serverCertificateUntrusted`, `serverCertificateHasUnknownRoot`,
     `secureConnectionFailed`, …) → `TLS failed: <reason>.` fix `paddock trust`;
@@ -165,6 +166,8 @@ a stopped daemon does not paint eleven rows red.
 The log row reads the site's logs the way the Logs window does: `LogCatalog.siteLogs(in:)`
 (laravel.log first, at most 20, never following a symlink) and `MCPLogReader.tail` with the
 site folder as its root, parsed with `LogParser`; the newest entry with `isProblem` wins.
+Only entries LogParser marks as problems are reported; a raw PHP error with no Monolog header
+is not parsed, which is why the HTTP row points at the site's log rather than at this row.
 
 ### The HTTP probe
 
@@ -227,15 +230,16 @@ prints and chooses the exit code.
   symbol (checkmark in green, xmark in red, minus in grey, info in blue), title, detail,
   and the fix command in a monospaced, selectable line. A healthy report says
   "Everything checks out." Rows are stable while a new check runs (`isChecking` shows a
-  small progress line, not a blank window).
+  small progress line, not a blank window). In the all-sites list every site's rows are shown
+  under its heading.
 - Entry points: a "Check a Site…" MenuRow above Logs in the menu (opens the window), and a
   Check button in each Settings → Sites row that opens the window with that site chosen.
   The menu's site rows keep their one-click "open the site" behavior; `PopUpItem` has no
   submenu support and adding it would change that click, so the entry point is a row of
   its own.
-- Snapshots: `doctor` (healthy secured site) and `doctor-problems` (daemon down plus a
-  failing HTTP row) in `Snapshots.swift`, light and dark; the healthy shot goes into the
-  README.
+- Snapshots: `doctor` (healthy secured site) and `doctor-problems` (a healthy daemon whose
+  HTTPS check fails; a daemon-down report is one row, so it cannot also show a failing HTTP
+  row) in `Snapshots.swift`, light and dark; the healthy shot goes into the README.
 
 ## MCP
 

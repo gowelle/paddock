@@ -39,12 +39,8 @@ struct DoctorView: View {
                         } else {
                             CheckRows(checks: report.global)
                             ForEach(Array(report.sites.enumerated()), id: \.offset) { _, one in
-                                if one.checks.contains(where: { $0.outcome == .failed }) {
-                                    ReportHeading(report: one)
-                                    CheckRows(checks: one.checks)
-                                } else {
-                                    Text("\(one.host): OK.").font(.callout)
-                                }
+                                ReportHeading(report: one)
+                                CheckRows(checks: one.checks)
                             }
                         }
                         if report.isHealthy {

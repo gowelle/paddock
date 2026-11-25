@@ -159,6 +159,7 @@ final class CLITests: XCTestCase {
         XCTAssertTrue(result.out.contains("The daemon answers (build"), result.out)
         XCTAssertTrue(result.out.contains("Everything checks out.") || result.out.contains("needs attention."),
                       result.out)
+        XCTAssertFalse(result.out.contains("Paddock is stopped"), result.out)
         XCTAssertEqual(result.status, result.out.contains("Everything checks out.") ? 0 : 1)
     }
 

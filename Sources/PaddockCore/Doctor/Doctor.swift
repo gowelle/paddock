@@ -144,8 +144,9 @@ public struct Doctor: Sendable {
 
         // `causes` is checked first-match-wins: list the most specific cause first.
         func skipped(_ id: String, _ title: String, because causes: [String]) -> DoctorCheck? {
-            guard let cause = causes.first(where: { globalFailures[$0] != nil }) else { return nil }
-            return .skipped(id, title, "Skipped: \(globalFailures[cause]!) failed.")
+            guard let cause = causes.first(where: { globalFailures[$0] != nil }),
+                  let title = globalFailures[cause] else { return nil }
+            return .skipped(id, title, "Skipped: \(title) failed.")
         }
 
         add(.passed("daemon", "The daemon answers (build \(status.version))",
@@ -236,8 +237,9 @@ public struct Doctor: Sendable {
         func skipped(_ id: String, _ title: String, because causes: [String]) -> DoctorCheck? {
             var all = globalFailures
             for (key, value) in failures { all[key] = value }
-            guard let cause = causes.first(where: { all[$0] != nil }) else { return nil }
-            return .skipped(id, title, "Skipped: \(all[cause]!) failed.")
+            guard let cause = causes.first(where: { all[$0] != nil }),
+                  let title = all[cause] else { return nil }
+            return .skipped(id, title, "Skipped: \(title) failed.")
         }
 
         let phpTitle = "PHP \(site.php) is installed"
@@ -298,7 +300,7 @@ public struct Doctor: Sendable {
             let found = "\(scheme) \(probe.statusCode) in \(probe.milliseconds) ms."
             if (500..<600).contains(probe.statusCode) {
                 return .failed("http", title,
-                               found + " Some request reached the site and failed; see the log row.",
+                               found + " Some request reached the site and failed; see the site's log.",
                                fix: nil)
             }
             return .passed("http", title, found)
