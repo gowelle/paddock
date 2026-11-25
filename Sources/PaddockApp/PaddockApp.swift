@@ -22,6 +22,7 @@ struct PaddockApp: App {
     @ObservedObject private var logs = AppDelegate.logs
     @ObservedObject private var dumps = AppDelegate.dumps
     @ObservedObject private var databases = AppDelegate.databases
+    @ObservedObject private var doctor = AppDelegate.doctor
 
     var body: some Scene {
         // Window style, so the menu's content is one plain SwiftUI view the snapshot tool can render too.
@@ -46,6 +47,12 @@ struct PaddockApp: App {
                 .environmentObject(databases)
         }
         .defaultSize(DatabasesView.size)
+
+        Window("Doctor", id: DoctorView.windowID) {
+            DoctorView()
+                .environmentObject(doctor)
+        }
+        .defaultSize(DoctorView.size)
 
         Window("Logs", id: LogsView.windowID) {
             LogsView()
@@ -153,6 +160,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Browses and edits the database services the daemon reports, through the newest installed PHP.
     static let databases = DatabasesModel(browser: DatabaseBrowser(paths: .current),
                                           services: { model.status?.services ?? [] })
+
+    /// Checks a site the way `paddock doctor` does: a fresh status, then the real probes off the main actor.
+    static let doctor = DoctorModel(fetchStatus: {
+        let client = PaddockClient()
+        return try await Task.detached {
+            switch try client.send(.status, timeout: 10) {
+            case .ok(let status), .removed(_, let status), .databaseCreated(_, _, let status):
+                return status
+            case .error(_, let message):
+                throw ClientError.badResponse(message)
+            case .catalog, .envLines:
+                throw ClientError.badResponse("an answer for another status")
+            }
+        }.value
+    })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = Self.updates

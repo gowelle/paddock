@@ -4,6 +4,8 @@ import SwiftUI
 
 struct SitesTab: View {
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var doctor = AppDelegate.doctor
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -26,6 +28,15 @@ struct SitesTab: View {
                 .width(60)
                 TableColumn("PHP") { site in phpPicker(site) }
                     .width(140)
+                TableColumn("Check") { site in
+                    Button("Check") {
+                        doctor.target = site.name
+                        openWindow(id: DoctorView.windowID)
+                        Task { await doctor.check() }
+                    }
+                    .buttonStyle(.link)
+                }
+                .width(60)
             }
             .tableSurface()
 

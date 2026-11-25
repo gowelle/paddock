@@ -8,6 +8,7 @@ struct MenuContentView: View {
     @EnvironmentObject private var mail: MailModel
     @EnvironmentObject private var databases: DatabasesModel
     @ObservedObject private var updates = AppDelegate.updates
+    @ObservedObject private var doctor = AppDelegate.doctor
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -31,6 +32,12 @@ struct MenuContentView: View {
             }
             MenuDivider()
 
+            MenuRow("Check a Site…") {
+                activateApp()
+                doctor.target = nil
+                openWindow(id: DoctorView.windowID)
+                Task { await doctor.check() }
+            }
             MenuRow("Logs") {
                 activateApp()
                 openWindow(id: LogsView.windowID)
