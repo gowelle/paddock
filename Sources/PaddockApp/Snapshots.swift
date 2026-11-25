@@ -141,6 +141,20 @@ enum Snapshots {
 
     enum Sample { case running, blocked, stopped }
 
+    /// A scratch home holding php.ini files for the installed sample versions, so the PHP tab shows its buttons as
+    /// they are with real installs.
+    private static func samplePaths() -> Paths {
+        let paths = Paths(home: FileManager.default.temporaryDirectory
+            .appendingPathComponent("paddock-snapshot-home", isDirectory: true))
+        for version in [PHPVersion(major: 8, minor: 4), PHPVersion(major: 8, minor: 5)] {
+            let ini = paths.phpIni(version)
+            try? FileManager.default.createDirectory(at: ini.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try? Data().write(to: ini)
+        }
+        return paths
+    }
+
     private static let v84 = PHPVersion(major: 8, minor: 4)
     private static let v85 = PHPVersion(major: 8, minor: 5)
 
@@ -168,7 +182,8 @@ enum Snapshots {
         let model = AppModel(client: SampleClient(status: status),
                              services: SampleServices(parked: [home]),
                              quitter: SampleQuitter(),
-                             availablePHP: (1...5).map { PHPVersion(major: 8, minor: $0) })
+                             availablePHP: (1...5).map { PHPVersion(major: 8, minor: $0) },
+                             paths: samplePaths())
         model.status = status
         // Show one install in progress on the PHP tab.
         if sample == .running { model.busy = [AppModel.busyKey(.installPHP(version: PHPVersion(major: 8, minor: 3)))] }
@@ -549,14 +564,14 @@ enum Snapshots {
                     key: [String: String?], expected: [String: String?]) throws {}
     }
 
-    /// Three services in mixed states (running with a note, stopped, port in use); with `adding`, PostgreSQL 17 is
-    /// being added.
+    /// Three services in mixed states (two running, one with a note; one whose port is in use); with `adding`,
+    /// PostgreSQL 17 is being added.
     private static func servicesModel(adding: Bool) -> AppModel {
         let services = [
             service("meilisearch-1-57", "Meilisearch 1.57", kind: "meilisearch", state: .running, ports: ["main": 7701],
                     openURL: "http://127.0.0.1:7701",
                     notes: ["Search indexes are tied to Meilisearch 1.57; export a dump before changing version."]),
-            service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .stopped, ports: ["main": 5433]),
+            service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5433]),
             service("mail", "Mail", kind: "mail", state: .portInUse(holder: "Herd"), ports: ["smtp": 1025, "http": 8025],
                     openURL: "http://127.0.0.1:8025"),
         ]

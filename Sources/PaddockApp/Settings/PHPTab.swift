@@ -27,7 +27,6 @@ struct PHPTab: View {
 
             if let caption = model.xdebugCaption { TableCaption(caption) }
 
-
             HStack {
                 Picker("Default", selection: Binding(
                     get: { model.defaultPHP },
@@ -44,6 +43,7 @@ struct PHPTab: View {
                     if let ini = selectedIni { NSWorkspace.shared.open(ini) }
                 }
                 .disabled(selectedIni == nil)
+                .help("Open the selected version's php.ini, or the default version's")
             }
             SettingsFooter().padding(.horizontal, -20).padding(.bottom, -12)
         }
@@ -52,7 +52,9 @@ struct PHPTab: View {
 
     private var selectedVersion: PHPVersion? { selection.flatMap(PHPVersion.init) }
 
-    private var selectedIni: URL? { selectedVersion.flatMap(model.phpIni) }
+    private var selectedIni: URL? {
+        selectedVersion.flatMap(model.phpIni) ?? model.defaultPHP.flatMap(model.phpIni)
+    }
 
     @ViewBuilder
     private func stateText(_ version: PHPVersion) -> some View {

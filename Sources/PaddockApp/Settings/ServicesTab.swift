@@ -178,23 +178,31 @@ struct ServiceRowView: View {
                 }
                 Button("Restart") { Task { await model.restartService(row.id) } }
                     .disabled(!row.canStop)
-                Button("Copy .env") { Task { await model.copyEnv(row.id) } }
-                Button("Write to .env…", action: writeEnv)
-                    .disabled(model.sites.isEmpty)
-                if row.canOpen {
-                    Button("Open") {
-                        if row.opensMailWindow {
-                            activateApp()
-                            openWindow(id: MailView.windowID)
-                        } else {
-                            model.openService(row.id)
+                Menu {
+                    if row.canOpen {
+                        Button("Open") {
+                            if row.opensMailWindow {
+                                activateApp()
+                                openWindow(id: MailView.windowID)
+                            } else {
+                                model.openService(row.id)
+                            }
                         }
                     }
+                    Button("Open Log") { model.openServiceLog(row.id) }
+                    Button("Copy .env") { Task { await model.copyEnv(row.id) } }
+                    Button("Write to .env…", action: writeEnv)
+                        .disabled(model.sites.isEmpty)
+                    if row.canCreateDatabase {
+                        Button("Create Database…", action: createDatabase)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
                 }
-                if row.canCreateDatabase {
-                    Button("Create Database…", action: createDatabase)
-                }
-                Button("Open Log") { model.openServiceLog(row.id) }
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More actions for \(row.name)")
+                .accessibilityLabel(Text("More actions for \(row.name)"))
                 Spacer()
                 Menu("Remove") {
                     Button("Remove (Keep Data)") { Task { await model.removeService(row.id, deleteData: false) } }
