@@ -1,15 +1,14 @@
 import Foundation
 
-/// Which folder this is, beyond its path: its device, inode and creation time. A folder deleted and made again,
-/// or another folder renamed into its place, has another identity at the same path.
+/// Which folder this is, beyond its path: its inode and creation time. A folder deleted and made again, or another
+/// folder renamed into its place, has another identity at the same path. (macOS hands volumes another device number
+/// across reboots, so it isn't part of it.)
 public struct FolderIdentity: Codable, Equatable, Hashable, Sendable {
-    public let device: Int64
     public let inode: UInt64
     public let birthSeconds: Int
     public let birthNanoseconds: Int
 
-    public init(device: Int64, inode: UInt64, birthSeconds: Int, birthNanoseconds: Int) {
-        self.device = device
+    public init(inode: UInt64, birthSeconds: Int, birthNanoseconds: Int) {
         self.inode = inode
         self.birthSeconds = birthSeconds
         self.birthNanoseconds = birthNanoseconds
@@ -19,7 +18,7 @@ public struct FolderIdentity: Codable, Equatable, Hashable, Sendable {
     public static func of(path: String) -> FolderIdentity? {
         var info = stat()
         guard stat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return nil }
-        return FolderIdentity(device: Int64(info.st_dev), inode: UInt64(info.st_ino),
+        return FolderIdentity(inode: UInt64(info.st_ino),
                               birthSeconds: Int(info.st_birthtimespec.tv_sec),
                               birthNanoseconds: Int(info.st_birthtimespec.tv_nsec))
     }

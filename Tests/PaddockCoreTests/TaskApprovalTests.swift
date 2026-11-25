@@ -11,8 +11,8 @@ final class TaskApprovalTests: XCTestCase {
                       proxy: proxy)
     }
 
-    /// The folder at `path` in these tests (its device, inode and creation time).
-    private let folder = FolderIdentity(device: 1, inode: 42, birthSeconds: 1_700_000_000, birthNanoseconds: 5)
+    /// The folder at `path` in these tests (its inode and creation time).
+    private let folder = FolderIdentity(inode: 42, birthSeconds: 1_700_000_000, birthNanoseconds: 5)
 
     private func approved(_ file: SiteTasksFile, at sitePath: String? = nil) -> ApprovedTasks {
         ApprovedTasks(hash: file.hash, file: file, sitePath: sitePath ?? path, stopped: [], folder: folder)
@@ -106,7 +106,7 @@ final class TaskApprovalTests: XCTestCase {
 
     // MARK: - The folder it was approved for
 
-    /// A folder's identity is its device, inode and creation time: the same folder (renamed away and back) keeps
+    /// A folder's identity is its inode and creation time: the same folder (renamed away and back) keeps
     /// it; a folder made anew at the same path doesn't.
     func testAFolderReplacedAtTheSamePathHasAnotherIdentity() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("pdk-id-\(UUID().uuidString.prefix(6))")
@@ -132,12 +132,37 @@ final class TaskApprovalTests: XCTestCase {
         XCTAssertNil(FolderIdentity.of(path: base.appendingPathComponent("missing").path))
     }
 
+    /// macOS can hand a volume another device number across reboots. An approval stored under the old one still
+    /// holds for the same folder (its inode and creation time), so a reboot doesn't read as a replaced folder
+    /// (which would stop the site's tasks and drop its proxy routes).
+    func testAnApprovalStoredUnderAnOldVolumeDeviceStillHolds() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("pdk-id-\(UUID().uuidString.prefix(6))")
+        let directory = base.appendingPathComponent("blog")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let real = try XCTUnwrap(SiteTasksFile.realPath(directory.path))
+        let identity = try XCTUnwrap(FolderIdentity.of(path: real))
+        let current = file(proxy: ["/app": 8080])
+        let stored = """
+        {"device": 999999, "inode": \(identity.inode), "birthSeconds": \(identity.birthSeconds), \
+        "birthNanoseconds": \(identity.birthNanoseconds)}
+        """
+        var approval = approved(current, at: real)
+        approval.folder = try JSONDecoder().decode(FolderIdentity.self, from: Data(stored.utf8))
+        XCTAssertTrue(approval.holds(at: real, identity: identity), "the reboot's new device number isn't another folder")
+        let evaluation = evaluate(current: .file(current, hash: current.hash), approved: approval, sitePath: real,
+                                  folderIdentity: identity)
+        XCTAssertEqual(evaluation.approval, .approved)
+        XCTAssertFalse(evaluation.folderReplaced)
+        XCTAssertEqual(evaluation.running, current)
+    }
+
     /// An approval holds only for the very folder it was made for: a replaced folder at the same path runs and
     /// forwards nothing, and says why; an approval without the folder's identity (never adopted) holds for none.
     func testAnApprovalForAReplacedFolderRunsNothing() {
         let current = file(proxy: ["/app": 8080])
-        let made = FolderIdentity(device: 1, inode: 42, birthSeconds: 1_700_000_000, birthNanoseconds: 5)
-        let now = FolderIdentity(device: 1, inode: 77, birthSeconds: 1_800_000_000, birthNanoseconds: 0)
+        let made = FolderIdentity(inode: 42, birthSeconds: 1_700_000_000, birthNanoseconds: 5)
+        let now = FolderIdentity(inode: 77, birthSeconds: 1_800_000_000, birthNanoseconds: 0)
         var approval = approved(current)
         approval.folder = made
 
@@ -177,7 +202,7 @@ final class TaskApprovalTests: XCTestCase {
         state.taskApprovals["shop"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [],
                                                     folder: identity)
         state.taskApprovals["replaced"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: real, stopped: [],
-                                                        folder: FolderIdentity(device: 0, inode: 1, birthSeconds: 0,
+                                                        folder: FolderIdentity(inode: 1, birthSeconds: 0,
                                                                                birthNanoseconds: 0))
         state.taskApprovals["moved"] = ApprovedTasks(hash: routed.hash, file: routed, sitePath: "/elsewhere", stopped: [])
         state.taskApprovals["tampered"] = ApprovedTasks(hash: "v1:nope", file: routed, sitePath: real, stopped: [])
