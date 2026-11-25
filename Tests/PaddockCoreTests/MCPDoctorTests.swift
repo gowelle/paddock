@@ -47,6 +47,21 @@ final class MCPDoctorTests: MCPToolsTestCase {
         let json = try await answer(doctorTools(daemon(statusWithFPM())), "doctor")
         XCTAssertEqual(json["site"], JSONValue.null)
         XCTAssertEqual(json["sites"]?.array?.count, 2)
+        let global = try XCTUnwrap(json["global"]?.array)
+        XCTAssertFalse(global.isEmpty)
+        let daemon = global.first { $0["id"]?.string == "daemon" }
+        XCTAssertEqual(daemon?["outcome"]?.string, "passed")
+        for site in json["sites"]?.array ?? [] {
+            let checks = site["checks"]?.array
+            XCTAssertFalse(checks?.isEmpty ?? true, "\(site)")
+        }
+    }
+
+    func testBothArgumentsAreAFailure() async throws {
+        let result = try await call(doctorTools(daemon()), "doctor",
+                                    .object(["site": .string("shop"), "path": .string(shopPath)]))
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.text.contains("Give \"site\" or \"path\", not both."), result.text)
     }
 
     func testAnUnknownSiteIsAFailure() async throws {
