@@ -42,6 +42,14 @@ final class EnvWiringTests: XCTestCase {
         XCTAssertEqual(result.updated, ["DB_HOST"])
     }
 
+    func testAnExportLineIsNormalisedEvenWhenItsValueMatches() {
+        let result = EnvWiring.merge(existing: "export DB_HOST=127.0.0.1\n", service: ["DB_HOST=127.0.0.1"])
+        XCTAssertEqual(result.text, "DB_HOST=127.0.0.1\n")
+        XCTAssertEqual(result.settings, ["DB_HOST"])
+        XCTAssertEqual(result.added, [])
+        XCTAssertEqual(result.updated, ["DB_HOST"])
+    }
+
     func testACRLFFileAppendsCRLFLines() {
         let result = EnvWiring.merge(existing: "APP_NAME=shop\r\n",
                                      service: ["DB_HOST=127.0.0.1", "DB_PORT=5432"])
