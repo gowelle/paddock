@@ -52,6 +52,18 @@ final class CLITests: XCTestCase {
         XCTAssertTrue(result.out.contains("1 check needs attention."), result.out)
     }
 
+    func testEnvRequiresItsServiceArgument() throws {
+        let result = try run(["env"])
+        XCTAssertNotEqual(result.status, 0)
+        XCTAssertTrue(result.err.contains("service"), result.err)
+    }
+
+    func testEnvWithoutDaemonSaysNotRunning() throws {
+        let result = try run(["env", "mail"])
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.err.contains(Messages.daemonNotRunning), result.err)
+    }
+
     func testIsolateOldVersionNamesMinimum() throws {
         let result = try run(["isolate", "7.4"], cwd: home.parked.appendingPathComponent("plain-php"))
         XCTAssertEqual(result.status, 1)
@@ -150,6 +162,20 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(result.status, 1)
         XCTAssertFalse(result.err.isEmpty)
         XCTAssertEqual(result.out, "")
+    }
+
+    func testEnvOutsideASiteNamesTheSiteProblemFirst() throws {
+        try launchDaemon()
+        let result = try run(["env", "mail"])
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.err.contains(Messages.notASite), result.err)
+    }
+
+    func testEnvWithAnUnknownServiceNamesIt() throws {
+        try launchDaemon()
+        let result = try run(["env", "mail", "plain-php"])
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.err.contains("No service named \"mail\"."), result.err)
     }
 
     func testDoctorWithDaemonPrintsTheChecklist() throws {

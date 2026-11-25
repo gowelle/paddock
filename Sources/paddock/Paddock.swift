@@ -12,7 +12,7 @@ struct Paddock: ParsableCommand {
             Secure.self, Unsecure.self, Trust.self,
             Isolate.self, Unisolate.self, Use.self, XdebugGroup.self,
             Start.self, Stop.self, Restart.self, Status.self, DoctorCommand.self, Uninstall.self,
-            Open.self, Logs.self,
+            Open.self, Logs.self, EnvCommand.self,
             ServiceGroup.self, TaskGroup.self, DatabaseGroup.self, MCP.self,
         ]
     )
