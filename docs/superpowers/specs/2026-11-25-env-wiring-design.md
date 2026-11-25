@@ -170,11 +170,13 @@ sentence and exit 1.
   `0600`; missing, symlink and non-UTF-8 refusals write nothing; nothing-to-do also writes
   nothing; an unreadable file reports `unreadable` (`XCTSkipIf(getuid() == 0)`); a write
   into a read-only folder reports `unwritable`.
-- `Tests/IntegrationTests/CLITests.swift`, in the no-daemon and daemon sections: `paddock
-  env mail` outside a site prints `Messages.notASite` and exits 1; with a daemon and no
-  such service, the unknown-service sentence and exit 1; `paddock env` requires its service
-  argument. (Wiring a real service needs one added in the throwaway home, so the success
-  path is covered by `EnvFileTests` rather than the harness.)
+- `Tests/IntegrationTests/CLITests.swift`: in the daemon section, `paddock env mail`
+  outside a site prints `Messages.notASite` and exits 1, and `paddock env mail plain-php`
+  with no such service prints the unknown-service sentence and exits 1; `paddock env`
+  requires its service argument. In the no-daemon section it prints
+  `Messages.daemonNotRunning` (a site is only resolved from the daemon's status). (Wiring a
+  real service needs one added in the throwaway home, so the success path is covered by
+  `EnvFileTests` rather than the harness.)
 - App: `swift build`; the Settings → Services snapshot regenerates with the new button, and
   the new sheet has no snapshot.
 - Gates: `swift build`, `swift test --filter PaddockCoreTests`, `swift test --filter
