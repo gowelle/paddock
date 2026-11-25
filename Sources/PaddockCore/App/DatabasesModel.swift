@@ -299,19 +299,21 @@ public final class DatabasesModel: ObservableObject {
 
     // MARK: - Editing
 
-    /// Opens one row for editing, whole: the grid's clipped text never feeds a write.
-    public func beginEdit(row index: Int) async {
+    /// Opens one row for editing, whole: the grid's clipped text never feeds a write. Answers whether the
+    /// draft opened, so a cell clicked open can go back to showing its value.
+    @discardableResult
+    public func beginEdit(row index: Int) async -> Bool {
         guard draft == nil, !isSaving, isEditableTable,
               let table, let service = selectedService, let database, service.isRunning,
               let browser, let rows, rows.rows.indices.contains(index),
-              let key = rowKey(at: index) else { return }
+              let key = rowKey(at: index) else { return false }
         beginLoad()
         defer { endLoad() }
         do {
             let full = try await Task.detached(priority: .userInitiated) {
                 try browser.row(for: service, database: database, table: table, key: key.values)
             }.value
-            guard self.table?.id == table.id, self.rows?.rows.indices.contains(index) == true else { return }
+            guard self.table?.id == table.id, self.rows?.rows.indices.contains(index) == true else { return false }
             var original = full
             for (name, value) in zip(rows.columns, rows.rows[index]) where !original.keys.contains(name) {
                 original[name] = value
@@ -320,8 +322,10 @@ public final class DatabasesModel: ObservableObject {
             editingRow = index
             notice = nil
             lastError = nil
+            return true
         } catch {
             show(error)
+            return false
         }
     }
 

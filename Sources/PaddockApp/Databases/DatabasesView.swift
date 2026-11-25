@@ -308,7 +308,7 @@ private struct DatabaseTablePane: View {
                                  modelColumns: databases.columns,
                                  actions: databases.isEditableTable
                                      ? GridActions(
-                                         onEdit: { index in Task { await databases.beginEdit(row: index) } },
+                                         onEdit: { index in await databases.beginEdit(row: index) },
                                          onDelete: { databases.requestDelete(row: $0) })
                                      : nil,
                                  editor: databases.draft.map { draft in
@@ -349,10 +349,17 @@ private struct DatabaseGridColumn {
     let isKey: Bool
 }
 
-/// What a row's pencil and trash do. Passed only where the table can be written.
+/// What a row's pencil, trash and cells' clicks do. Passed only where the table can be written. Opening a
+/// row answers whether it opened.
 private struct GridActions {
-    let onEdit: (Int) -> Void
+    let onEdit: (Int) async -> Bool
     let onDelete: (Int) -> Void
+}
+
+/// The one cell clicked open for typing, and the row it belongs to.
+private struct InlineCell: Equatable {
+    let row: Int
+    let column: String
 }
 
 /// The open row: its draft, the row it belongs to (nil for a new row), and how to change it.
@@ -411,7 +418,7 @@ private struct JSONEditor: View {
 
 /// A result set as a grid: a row number gutter, then one column per result column, each as wide as its header
 /// divider has been dragged, then, where the table can be written, an actions column. A row open for editing
-/// replaces its cells with fields. Scrolls both ways.
+/// replaces its cells with fields; a cell clicked open becomes a field of its own. Scrolls both ways.
 private struct DatabaseRowsGrid: View {
     let columns: [DatabaseGridColumn]
     let rows: [[String?]]
@@ -425,6 +432,8 @@ private struct DatabaseRowsGrid: View {
     @SwiftUI.State private var resizeFrom: CGFloat = 0
     @SwiftUI.State private var hovered: Int?
     @SwiftUI.State private var jsonColumn: String?
+    /// The cell clicked open, and the row it belongs to; its field replaces that one cell.
+    @SwiftUI.State private var inlineCell: InlineCell?
     @FocusState private var focus: String?
 
     private static let gutter: CGFloat = 42
@@ -441,7 +450,9 @@ private struct DatabaseRowsGrid: View {
                     Rectangle().fill(Theme.line).frame(height: 1)
                     ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                         Group {
-                            if let editor, editor.row == index {
+                            if let editor, editor.row == index, inlineCell?.row == index {
+                                inlineRow(index: index, row: row, editor: editor)
+                            } else if let editor, editor.row == index {
                                 editRow(index: index, editor: editor)
                             } else {
                                 plainRow(index: index, row: row)
@@ -461,6 +472,10 @@ private struct DatabaseRowsGrid: View {
         .background(Theme.surface)
         .onChange(of: columns.count) { _ in
             widths = DatabaseGridWidths(columns: columns.count)
+        }
+        // The draft is gone: saved, cancelled, or the row closed from elsewhere. The open cell goes with it.
+        .onChange(of: editor?.row) { row in
+            if let inlineCell, row != inlineCell.row { self.inlineCell = nil }
         }
     }
 
@@ -511,10 +526,9 @@ private struct DatabaseRowsGrid: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { actions?.onEdit(index) }
         .contextMenu {
             if let actions {
-                Button("Edit Row\u{2026}") { actions.onEdit(index) }
+                Button("Edit Row\u{2026}") { Task { _ = await actions.onEdit(index) } }
                 Button("Delete Row\u{2026}", role: .destructive) { actions.onDelete(index) }
             }
         }
@@ -530,7 +544,7 @@ private struct DatabaseRowsGrid: View {
     private func actionButtons(_ actions: GridActions, row: Int) -> some View {
         HStack(spacing: 2) {
             if hovered == row, editor == nil {
-                Button { actions.onEdit(row) } label: {
+                Button { Task { _ = await actions.onEdit(row) } } label: {
                     Image(systemName: "pencil")
                 }
                 .help("Edit this row")
@@ -733,8 +747,17 @@ private struct DatabaseRowsGrid: View {
 
     @ViewBuilder
     private func valueCell(row: Int, column: Int, _ value: String?) -> some View {
-        if let value, let document = DatabaseJSON.document(value) {
+        let name = columns[column].name
+        if inlineCell == InlineCell(row: row, column: name), editor == nil {
+            pendingCell(width: widths[column])
+        } else if let value, let document = DatabaseJSON.document(value) {
             JSONCell(preview: document.preview, pretty: document.pretty, width: widths[column])
+        } else if let actions, editor == nil, modelColumn(at: column)?.isEditable == true {
+            cell(value.map { Text(verbatim: Self.oneLine($0)) } ?? Text("NULL").italic(),
+                 width: widths[column], muted: value == nil, selectable: false)
+                .help("Click to edit this cell")
+                .contentShape(Rectangle())
+                .onTapGesture { beginInlineEdit(row: row, column: name, actions: actions) }
         } else {
             cell(value.map { Text(verbatim: Self.oneLine($0)) } ?? Text("NULL").italic(),
                  width: widths[column], muted: value == nil)
@@ -742,13 +765,89 @@ private struct DatabaseRowsGrid: View {
         }
     }
 
-    private func cell(_ text: Text, width: CGFloat, muted: Bool = false) -> some View {
+    /// The cell waiting for its row to be read whole, before its field can hold the full value.
+    private func pendingCell(width: CGFloat) -> some View {
+        ProgressView()
+            .controlSize(.mini)
+            .padding(.horizontal, 8)
+            .frame(width: width, alignment: .leading)
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Theme.line.opacity(0.5)).frame(width: 1)
+            }
+    }
+
+    /// Opens one cell for typing. The row is read whole first, so the field holds the full value rather than
+    /// the grid's clipped text. Enter saves the one column; Escape puts the cell back.
+    private func beginInlineEdit(row: Int, column: String, actions: GridActions) {
+        guard editor == nil, inlineCell == nil else { return }
+        let cell = InlineCell(row: row, column: column)
+        inlineCell = cell
+        Task {
+            if !(await actions.onEdit(row)), inlineCell == cell {
+                inlineCell = nil
+            }
+        }
+    }
+
+    /// A plain row with the clicked cell, and only it, as a field.
+    private func inlineRow(index: Int, row: [String?], editor: GridEditor) -> some View {
+        HStack(spacing: 0) {
+            cell(Text(verbatim: "\(index + 1)"), width: Self.gutter, muted: true)
+            ForEach(columns.indices, id: \.self) { column in
+                if columns[column].name == inlineCell?.column, let model = modelColumn(at: column) {
+                    inlineField(model, index: column, editor: editor)
+                } else {
+                    valueCell(row: index, column: column, row[safe: column] ?? nil)
+                }
+            }
+            if actions != nil {
+                Color.clear.frame(width: Self.actionsWidth)
+            }
+        }
+        .padding(.vertical, 4)
+        .onAppear { focus = inlineCell?.column }
+    }
+
+    private func inlineField(_ column: DatabaseColumn, index: Int, editor: GridEditor) -> some View {
+        TextField("", text: Binding(
+            get: { editor.draft.text(for: column.name) },
+            set: { editor.onText($0, column.name) }))
+            .textFieldStyle(.plain)
+            .font(.system(.caption, design: .monospaced))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Theme.surface))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.honey))
+            .focused($focus, equals: column.name)
+            .onSubmit { submitInline(editor) }
+            .onExitCommand { editor.onCancel() }
+            .disabled(editor.saving)
+            .padding(.horizontal, 8)
+            .frame(width: widths[index], alignment: .leading)
+            .clipped()
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Theme.line.opacity(0.5)).frame(width: 1)
+            }
+    }
+
+    /// Enter saves the one column and closes; with nothing typed there is nothing to save.
+    private func submitInline(_ editor: GridEditor) {
+        guard !editor.saving else { return }
+        if editor.draft.hasChanges {
+            editor.onSave()
+        } else {
+            editor.onCancel()
+        }
+    }
+
+    private func cell(_ text: Text, width: CGFloat, muted: Bool = false,
+                      selectable: Bool = true) -> some View {
         text
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(muted ? Theme.inkMuted : Theme.ink)
             .lineLimit(1)
             .truncationMode(.tail)
-            .textSelection(.enabled)
+            .textSelectable(selectable)
             .padding(.horizontal, 8)
             .frame(width: width, alignment: .leading)
             .clipped()
@@ -910,5 +1009,12 @@ private struct DatabaseConsole: View {
 private extension Collection {
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+/// Text selection where a cell is only for reading; a cell that opens for typing keeps its clicks.
+private extension View {
+    @ViewBuilder func textSelectable(_ enabled: Bool) -> some View {
+        if enabled { textSelection(.enabled) } else { self }
     }
 }
