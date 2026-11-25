@@ -376,7 +376,7 @@ the Doctor window. It walks every step a request takes and says what it found:
 - the site's URL answers, with its status and latency;
 - the newest error in the site's own `storage/logs`, as evidence rather than a failure.
 
-A failed row carries the one command that fixes it; **Check again** reruns the whole
+A failed row with a remedy carries the one command that fixes it; **Check again** reruns the whole
 list. One cause makes one red row: a stopped daemon does not paint every row red.
 
 <p align="center">
