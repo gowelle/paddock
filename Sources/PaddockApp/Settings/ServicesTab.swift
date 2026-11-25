@@ -211,7 +211,8 @@ struct ServiceRowView: View {
 
     private var isBusy: Bool {
         [Request.serviceStart(name: row.id), .serviceStop(name: row.id), .serviceRestart(name: row.id),
-         .serviceRemove(name: row.id, deleteData: false), .serviceRemove(name: row.id, deleteData: true)]
+         .serviceRemove(name: row.id, deleteData: false), .serviceRemove(name: row.id, deleteData: true),
+         .serviceEnv(id: row.id)]
             .contains(where: model.isBusy)
     }
 }
