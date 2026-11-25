@@ -991,6 +991,49 @@ extension AppModelTests {
         XCTAssertTrue(otherClient.requests.contains(.serviceEnv(id: "meilisearch-1-57")))
     }
 
+    /// Write to .env… fetches the full lines and writes them into the chosen site's `.env`, saying what changed
+    /// by key name only: nothing goes to the pasteboard and no value is kept or shown.
+    func testWriteEnvUpdatesTheSitesFileAndNamesTheKeys() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdk writeenv-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        try Data("DB_HOST=old\n".utf8).write(to: folder.appendingPathComponent(".env"))
+        let full = ["DB_HOST=127.0.0.1", "MEILISEARCH_KEY=\(secretKey)"]
+        let (model, client, outside) = servicesModel { request in
+            if case .serviceEnv = request { return .envLines(full) }
+            return .ok(statusWith(services: [meili]))
+        }
+        await model.refresh()
+        let site = Site(name: "shop", path: folder.path, kind: .parked, secured: false, php: v85, pinned: false)
+        await model.writeEnv("meilisearch-1-57", into: site)
+        XCTAssertEqual(client.requests.filter { $0 != .status }, [.serviceEnv(id: "meilisearch-1-57")])
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent(".env"), encoding: .utf8),
+                       "DB_HOST=127.0.0.1\nMEILISEARCH_KEY=\(secretKey)\n")
+        XCTAssertEqual(model.serviceNotice,
+                       "Wired Meilisearch 1.57 into shop.test's .env: added MEILISEARCH_KEY; updated DB_HOST.")
+        XCTAssertEqual(outside.copied, [], "nothing goes to the pasteboard")
+        XCTAssertFalse((model.serviceNotice ?? "").contains(secretKey))
+        XCTAssertNil(model.lastError)
+    }
+
+    func testWriteEnvIntoASiteWithoutAnEnvFileSaysWhyItRefused() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdk writeenv-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let (model, _, _) = servicesModel { request in
+            if case .serviceEnv = request { return .envLines(["A=1"]) }
+            return .ok(statusWith(services: [meili]))
+        }
+        let site = Site(name: "shop", path: folder.path, kind: .parked, secured: false, php: v85, pinned: false)
+        await model.writeEnv("meilisearch-1-57", into: site)
+        XCTAssertEqual(model.serviceNotice,
+                       "shop.test has no .env. Create one from .env.example first; "
+                       + "Paddock won't write secrets into a new file.")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".env").path))
+    }
+
     func testOpenOpensTheServicesPageOnlyWhenItHasOne() async {
         let (model, _, outside) = servicesModel { _ in .ok(statusWith(services: [mail, postgres])) }
         await model.refresh()

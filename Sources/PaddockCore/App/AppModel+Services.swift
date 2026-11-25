@@ -194,6 +194,21 @@ extension AppModel {
         }
     }
 
+    /// Writes the service's full `.env` lines into `site`'s `.env`, updating its keys in place. The notice names
+    /// the keys that changed; no value is shown or kept.
+    public func writeEnv(_ id: String, into site: Site) async {
+        let name = serviceName(id)
+        guard case .envLines(let lines)? = await act(.serviceEnv(id: id), timeout: 30) else { return }
+        do {
+            let result = try EnvFile.wire(lines, intoSiteAt: site.path)
+            showNotice(Messages.envWiringResult(result, service: name, host: site.host))
+        } catch let problem as EnvFile.Problem {
+            showNotice(Messages.envWiringProblem(problem, host: site.host))
+        } catch {
+            showNotice(Messages.couldntWriteEnvFile(site.host, reason: error.localizedDescription))
+        }
+    }
+
     public func openService(_ id: String) {
         guard let row = serviceRows.first(where: { $0.id == id }), row.canOpen,
               let page = status?.services.first(where: { $0.id == id })?.openURL, let url = URL(string: page) else { return }

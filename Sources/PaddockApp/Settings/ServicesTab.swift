@@ -7,6 +7,9 @@ struct ServicesTab: View {
     /// The service whose `Create Database…` sheet is open.
     @SwiftUI.State private var databaseFor: String?
     @SwiftUI.State private var databaseName = ""
+    /// The service whose **Write to .env…** sheet is open, and the site it will write into.
+    @SwiftUI.State private var envFor: String?
+    @SwiftUI.State private var envSite: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -29,6 +32,9 @@ struct ServicesTab: View {
                         ServiceRowView(row: row, createDatabase: {
                             databaseName = ""
                             databaseFor = row.id
+                        }, writeEnv: {
+                            envSite = model.sites.first?.name
+                            envFor = row.id
                         })
                         Divider()
                     }
@@ -63,6 +69,9 @@ struct ServicesTab: View {
         }
         .sheet(isPresented: Binding(get: { databaseFor != nil }, set: { if !$0 { databaseFor = nil } })) {
             createDatabaseSheet
+        }
+        .sheet(isPresented: Binding(get: { envFor != nil }, set: { if !$0 { envFor = nil } })) {
+            writeEnvSheet
         }
     }
 
@@ -109,6 +118,38 @@ struct ServicesTab: View {
         .padding(20)
         .frame(width: 360)
     }
+
+    private var writeEnvSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(verbatim: "Wire \(model.serviceRows.first { $0.id == envFor }?.name ?? "") into a site's .env")
+                .font(.headline)
+            if model.sites.isEmpty {
+                Caption("No sites yet.")
+            } else {
+                Picker("Site", selection: $envSite) {
+                    ForEach(model.sites) { site in
+                        Text(verbatim: site.host).tag(Optional(site.name))
+                    }
+                }
+                .fixedSize()
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { envFor = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("Write") {
+                    guard let id = envFor, let name = envSite,
+                          let site = model.sites.first(where: { $0.name == name }) else { return }
+                    envFor = nil
+                    Task { await model.writeEnv(id, into: site) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(envSite == nil)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+    }
 }
 
 /// One service: name, state and ports, its notes, and its actions.
@@ -117,6 +158,7 @@ struct ServiceRowView: View {
     @Environment(\.openWindow) private var openWindow
     let row: ServiceRow
     let createDatabase: () -> Void
+    let writeEnv: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -137,6 +179,8 @@ struct ServiceRowView: View {
                 Button("Restart") { Task { await model.restartService(row.id) } }
                     .disabled(!row.canStop)
                 Button("Copy .env") { Task { await model.copyEnv(row.id) } }
+                Button("Write to .env…", action: writeEnv)
+                    .disabled(model.sites.isEmpty)
                 if row.canOpen {
                     Button("Open") {
                         if row.opensMailWindow {

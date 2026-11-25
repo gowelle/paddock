@@ -199,7 +199,7 @@ General, PHP, Sites, Services and Tasks.
 
 <p align="center">
   <img src="docs/images/settings-sites-light.png" width="420" alt="The Sites tab: each site with a Secure checkbox and a PHP version picker">
-  <img src="docs/images/settings-services-light.png" width="420" alt="The Services tab: Meilisearch, PostgreSQL and Mail with Start, Stop, Restart, Copy .env and Remove">
+  <img src="docs/images/settings-services-light.png" width="420" alt="The Services tab: Meilisearch, PostgreSQL and Mail with Start, Stop, Restart, Copy .env, Write to .env and Remove">
 </p>
 <p align="center">
   <img src="docs/images/settings-tasks-running-light.png" width="420" alt="The Tasks tab: a site's queue, scheduler and websocket tasks with their state">
