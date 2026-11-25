@@ -36,9 +36,23 @@ final class DoctorTests: XCTestCase {
         let report = await doctor().report(for: status())
         XCTAssertEqual(report.global.map(\.outcome), Array(repeating: .passed, count: 6),
                        report.global.map { "\($0.id): \($0.detail)" }.joined(separator: "\n"))
+        XCTAssertEqual(check(report.global, "daemon")?.detail,
+                       "The daemon answers (build \(PaddockBuild.number)).")
+        XCTAssertEqual(check(report.global, "ports")?.detail,
+                       "Nothing was listening on 80 or 443 before Paddock.")
+        XCTAssertEqual(check(report.global, "port-helper")?.detail,
+                       "The port helper manages 80 and 443.")
+        XCTAssertEqual(check(report.global, "resolver")?.detail,
+                       "The .test resolver entry is installed.")
+        XCTAssertEqual(check(report.global, "dns")?.detail, "shop.test resolves to 127.0.0.1.")
+        XCTAssertEqual(check(report.global, "caddy")?.detail, "Caddy is running.")
         let checks = report.sites.first?.checks ?? []
         XCTAssertEqual(report.sites.first?.site, "shop")
         XCTAssertEqual(checks.filter { $0.outcome == .failed }.count, 0)
+        XCTAssertEqual(check(checks, "php")?.detail, "PHP 8.5 is installed.")
+        XCTAssertEqual(check(checks, "php-fpm")?.detail, "PHP-FPM 8.5 is running.")
+        XCTAssertEqual(check(checks, "folder")?.detail, "/tmp/paddock-doctor-shop can be read.")
+        XCTAssertEqual(check(checks, "trust")?.detail, "macOS trusts Paddock's certificate.")
         XCTAssertEqual(check(checks, "http")?.detail, "HTTPS 200 in 12 ms.")
         XCTAssertEqual(check(checks, "trust")?.outcome, .passed)
         XCTAssertTrue(report.isHealthy)
@@ -135,6 +149,14 @@ final class DoctorTests: XCTestCase {
         XCTAssertEqual(trust?.outcome, .failed)
         XCTAssertEqual(trust?.detail, "macOS doesn't trust Paddock's certificate.")
         XCTAssertEqual(trust?.fix, "paddock trust")
+    }
+
+    func testTrustOffFailsWithoutAFix() async {
+        let report = await doctor().report(for: status(trust: false))
+        let trust = check(report.sites.first?.checks ?? [], "trust")
+        XCTAssertEqual(trust?.outcome, .failed)
+        XCTAssertEqual(trust?.detail, "Paddock can't install certificate trust in this build.")
+        XCTAssertNil(trust?.fix)
     }
 
     func testAFiveHundredIsAFailureWithoutAFix() async {

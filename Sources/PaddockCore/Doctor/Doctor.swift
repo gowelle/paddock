@@ -126,6 +126,10 @@ public struct Doctor: Sendable {
     }
 
     /// Every check, in order. `named` limits the site rows (the caller has already resolved it).
+    ///
+    /// A non-nil `named` must be a site the caller resolved from `status`; an unknown name produces
+    /// an empty site list. The CLI and MCP resolve names and own the failure sentence, so no row is
+    /// added here for a name that isn't in `status`.
     public func report(for status: EngineStatus, site named: String? = nil) async -> DoctorReport {
         if let stopped = stoppedReport(status) { return stopped }
 
@@ -138,6 +142,7 @@ public struct Doctor: Sendable {
             if check.outcome == .failed { globalFailures[check.id] = check.title }
         }
 
+        // `causes` is checked first-match-wins: list the most specific cause first.
         func skipped(_ id: String, _ title: String, because causes: [String]) -> DoctorCheck? {
             guard let cause = causes.first(where: { globalFailures[$0] != nil }) else { return nil }
             return .skipped(id, title, "Skipped: \(globalFailures[cause]!) failed.")
@@ -147,7 +152,8 @@ public struct Doctor: Sendable {
                     "The daemon answers (build \(status.version))."))
 
         if status.blockedBy.isEmpty {
-            add(.passed("ports", "Ports 80 and 443 are free", "Ports 80 and 443 are free."))
+            add(.passed("ports", "Ports 80 and 443 are free",
+                        "Nothing was listening on 80 or 443 before Paddock."))
         } else {
             add(.failed("ports", "Ports 80 and 443 are free", Messages.cantStart(status.blockedBy),
                         fix: status.blockedBy.compactMap(\.stopCommand).first ?? "paddock start"))
@@ -226,6 +232,7 @@ public struct Doctor: Sendable {
             if check.outcome == .failed { failures[check.id] = check.title }
         }
 
+        // `causes` is checked first-match-wins: list the most specific cause first.
         func skipped(_ id: String, _ title: String, because causes: [String]) -> DoctorCheck? {
             var all = globalFailures
             for (key, value) in failures { all[key] = value }
