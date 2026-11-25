@@ -64,17 +64,20 @@ public struct MCPTools: Sendable {
     let send: @Sendable (Request) throws -> Response
     let logSections: @Sendable (EngineStatus) -> [LogSection]
     let mail: any MailReading
+    let doctor: Doctor
 
     /// `send` asks the daemon (`PaddockClient.send`); `logSections` lists the logs there are
     /// (`LogCatalog.sections`); `mail` reads the mail service.
     public init(options: Options = Options(),
                 send: @escaping @Sendable (Request) throws -> Response,
                 logSections: @escaping @Sendable (EngineStatus) -> [LogSection],
-                mail: any MailReading) {
+                mail: any MailReading,
+                doctor: Doctor = Doctor()) {
         self.options = options
         self.send = send
         self.logSections = logSections
         self.mail = mail
+        self.doctor = doctor
     }
 
     /// The tools on offer, given the options.

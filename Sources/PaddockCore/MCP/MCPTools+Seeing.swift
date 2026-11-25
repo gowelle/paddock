@@ -204,6 +204,19 @@ extension MCPTools {
                 return .ok(json(fresh.sites.first { $0.name == found.name } ?? found, withTasks: true))
             }),
         MCPToolDefinition(
+            name: "doctor",
+            description: "Check every step between a request and a site: the daemon, ports, resolver, DNS, "
+                + "Caddy, PHP, the site folder, the certificate, the HTTP answer and the newest log error. "
+                + "Read the failed rows before suggesting anything; each fix is a command for the owner to run, "
+                + "and you must not run it. Name a site (or a folder inside it) to check one; leave both out "
+                + "to check every site.",
+            inputSchema: mcpSchema([
+                "site": .object(["type": "string", "description": "The site's name: shop or shop.test."]),
+                "path": .object(["type": "string", "description": "An absolute path to a folder inside the site."]),
+            ]),
+            readOnly: true, idempotent: true,
+            run: { tools, arguments in try await tools.diagnose(arguments) }),
+        MCPToolDefinition(
             name: "logs_list",
             description: "The logs there are: Paddock's own, PHP's, each service's, each site task's and each "
                 + "site's storage/logs. Each has an id to give logs_read.",
