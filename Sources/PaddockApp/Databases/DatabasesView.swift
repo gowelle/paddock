@@ -45,12 +45,15 @@ struct DatabasesView: View {
                 databases.endWatching()
             }
         })
+        // The destination rides with the dialog: dismissing it clears the pending one before these buttons'
+        // tasks could read it.
         .alert("Discard the unsaved row?", isPresented: Binding(
             get: { databases.pendingDiscard != nil },
-            set: { if !$0 { databases.cancelDiscard() } })) {
+            set: { if !$0 { databases.cancelDiscard() } }),
+            presenting: databases.pendingDiscard) { destination in
             Button("Cancel", role: .cancel) { databases.cancelDiscard() }
-            Button("Discard", role: .destructive) { Task { await databases.discardAndGo() } }
-        } message: {
+            Button("Discard", role: .destructive) { Task { await databases.discardAndGo(destination) } }
+        } message: { _ in
             Text("The row you were editing hasn't been saved yet.")
         }
     }
@@ -279,13 +282,16 @@ private struct DatabaseTablePane: View {
             content
         }
         .background(Theme.surface)
+        // The key rides with the dialog: dismissing it clears the pending row before these buttons' tasks
+        // could read it.
         .alert("Delete this row?", isPresented: Binding(
             get: { databases.pendingDelete != nil },
-            set: { if !$0 { databases.cancelDelete() } })) {
+            set: { if !$0 { databases.cancelDelete() } }),
+            presenting: databases.pendingDelete) { key in
             Button("Cancel", role: .cancel) { databases.cancelDelete() }
-            Button("Delete", role: .destructive) { Task { await databases.confirmDelete() } }
-        } message: {
-            Text("Delete the row where \(databases.pendingDeleteText ?? "")? This can't be undone.")
+            Button("Delete", role: .destructive) { Task { await databases.confirmDelete(key) } }
+        } message: { key in
+            Text("Delete the row where \(key.description)? This can't be undone.")
         }
     }
 

@@ -108,13 +108,25 @@ final class DatabasesModelTests: XCTestCase {
 
     func testDeletingReadsTheRowFirstAndReloads() async throws {
         model.requestDelete(row: 1)
-        XCTAssertEqual(model.pendingDeleteText, "id = 2")
-        await model.confirmDelete()
+        let key = try XCTUnwrap(model.pendingDelete)
+        XCTAssertEqual(key.description, "id = 2")
+        await model.confirmDelete(key)
 
         XCTAssertEqual(browser.deleted, ["id": "2"])
         XCTAssertEqual(model.notice, "Deleted.")
         XCTAssertNil(model.pendingDelete)
         XCTAssertEqual(model.rows?.rows.count, 5)
+    }
+
+    /// The alert clears the pending row as it dismisses, before the task its Delete button starts can read it.
+    func testDeletingHoldsTheRowTheDialogNamedPastItsDismissal() async throws {
+        model.requestDelete(row: 1)
+        let key = try XCTUnwrap(model.pendingDelete)
+        model.cancelDelete()
+        await model.confirmDelete(key)
+
+        XCTAssertEqual(browser.deleted, ["id": "2"])
+        XCTAssertEqual(model.notice, "Deleted.")
     }
 
     func testATableWithoutAPrimaryKeyCannotBeEdited() async throws {
@@ -141,7 +153,9 @@ final class DatabasesModelTests: XCTestCase {
 
         XCTAssertEqual(model.pendingDiscard, .table(FakeBrowser.logs))
         XCTAssertEqual(model.table?.id, FakeBrowser.users.id, "still here until the answer")
-        await model.discardAndGo()
+        let destination = try XCTUnwrap(model.pendingDiscard)
+        model.cancelDiscard()
+        await model.discardAndGo(destination)
 
         XCTAssertNil(model.pendingDiscard)
         XCTAssertNil(model.draft)

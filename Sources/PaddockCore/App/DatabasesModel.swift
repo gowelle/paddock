@@ -106,8 +106,6 @@ public final class DatabasesModel: ObservableObject {
         return draft.mode == .insert || draft.hasChanges
     }
 
-    public var pendingDeleteText: String? { pendingDelete?.description }
-
     /// `shop.users`, or the database alone while no table is chosen.
     public var title: String {
         guard let database else { return "Databases" }
@@ -400,11 +398,13 @@ public final class DatabasesModel: ObservableObject {
 
     public func cancelDelete() { pendingDelete = nil }
 
-    /// Deletes the confirmed row, after reading it whole so the check does not run on clipped text.
-    public func confirmDelete() async {
-        guard let key = pendingDelete, let service = selectedService, let database, let table,
+    /// Deletes the row the dialog named, after reading it whole so the check does not run on clipped text.
+    /// The key comes from the dialog: the alert clears `pendingDelete` as it dismisses, before the task its
+    /// button starts could read it.
+    public func confirmDelete(_ key: DatabaseRowKey) async {
+        guard let service = selectedService, let database, let table,
               service.isRunning, let browser, !isSaving else { return }
-        pendingDelete = nil
+        if pendingDelete == key { pendingDelete = nil }
         isSaving = true
         defer { isSaving = false }
         do {
@@ -438,9 +438,10 @@ public final class DatabasesModel: ObservableObject {
         await perform(destination)
     }
 
-    public func discardAndGo() async {
-        guard let destination = pendingDiscard else { return }
-        pendingDiscard = nil
+    /// Goes where the dialog asked, after discarding. The destination comes from the dialog for the same
+    /// reason `confirmDelete`'s key does.
+    public func discardAndGo(_ destination: DatabaseDestination) async {
+        if pendingDiscard == destination { pendingDiscard = nil }
         cancelDraft()
         await perform(destination)
     }
