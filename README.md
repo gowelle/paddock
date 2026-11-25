@@ -209,8 +209,8 @@ General, PHP, Sites, Services and Tasks.
 - **Sites:** open a site, secure it with a checkbox, pin its PHP version.
 - **PHP:** install and remove versions, choose the default, switch Xdebug on
   or off for a version, open `php.ini`.
-- **Services:** add, start, stop, restart and remove services, copy a
-  service's `.env` lines, and open its log.
+- **Services:** add, start, stop, restart and remove services, copy or
+  write a service's `.env` lines into a site, and open its log.
 - **Tasks:** review and approve a site's `paddock.json`, then start, stop and
   restart its tasks and open their logs.
 - **General:** start at login, manage parked folders, add Paddock to your
