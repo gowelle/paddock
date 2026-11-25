@@ -74,7 +74,7 @@ private struct ReportHeading: View {
     let report: DoctorReport.SiteReport
 
     var body: some View {
-        Text("\(report.host) — PHP \(report.php), \(report.url)")
+        Text("\(report.host) — PHP \(report.php.description), \(report.url)")
             .font(Theme.heading(15))
             .padding(.top, 4)
     }
