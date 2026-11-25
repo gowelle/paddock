@@ -75,6 +75,37 @@ final class DoctorTextTests: XCTestCase {
         ])
     }
 
+    func testOneSiteSelectsTheNamedSiteWhenItIsNotFirst() {
+        let report = DoctorReport(global: [
+            check("daemon", "The daemon answers (build 24)", .passed, "The daemon answers (build 24)."),
+        ], sites: [
+            siteReport("blog", [check("http", "http://blog.test answers", .passed, "HTTP 200 in 3 ms.")]),
+            siteReport("shop", [check("folder", "The site folder is readable", .failed,
+                                      "/Users/you/Sites/shop can't be read.")]),
+        ])
+
+        XCTAssertEqual(DoctorText.lines(for: report, site: "shop"), [
+            "shop.test — PHP 8.5, https://shop.test",
+            "",
+            "  ✓ The daemon answers (build 24).",
+            "  ✗ The site folder is readable.",
+            "      /Users/you/Sites/shop can't be read.",
+            "",
+            "1 check needs attention.",
+        ])
+    }
+
+    func testOneSiteAlsoSelectsByHost() {
+        let report = DoctorReport(global: [], sites: [
+            siteReport("blog", [check("http", "http://blog.test answers", .passed, "HTTP 200 in 3 ms.")]),
+            siteReport("shop", [check("http", "https://shop.test answers", .passed, "HTTPS 200 in 9 ms.")]),
+        ])
+
+        let lines = DoctorText.lines(for: report, site: "shop.test")
+        XCTAssertEqual(lines.first, "shop.test — PHP 8.5, https://shop.test")
+        XCTAssertTrue(lines.contains("  ✓ https://shop.test answers."), lines.joined(separator: "\n"))
+    }
+
     func testAllSitesSummarisesFailures() {
         let report = DoctorReport(global: [
             check("daemon", "The daemon answers (build 24)", .passed, "The daemon answers (build 24)."),

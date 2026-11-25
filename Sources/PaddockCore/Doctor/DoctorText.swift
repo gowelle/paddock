@@ -4,16 +4,21 @@ import Foundation
 public enum DoctorText {
     /// With `site`, that site's global and own checks under one heading; without it, Paddock's checks
     /// once and then each site, a healthy site as one line.
+    ///
+    /// `site` names a site by its `site` name or its `host`; when no report matches (a full report
+    /// with no such site, or a report with no sites at all), the first report is used, then the bare
+    /// name.
     public static func lines(for report: DoctorReport, site: String? = nil) -> [String] {
         var lines: [String] = []
-        if site != nil {
-            if let one = report.sites.first {
+        if let site {
+            let one = report.sites.first { $0.site == site || $0.host == site } ?? report.sites.first
+            if let one {
                 lines.append(heading(one))
             } else {
-                lines.append(site!)
+                lines.append(site)
             }
             lines.append("")
-            for check in report.global + (report.sites.first?.checks ?? []) {
+            for check in report.global + (one?.checks ?? []) {
                 append(check, to: &lines)
             }
         } else {
