@@ -384,6 +384,44 @@ public enum Messages {
         "\(service) has no .env lines to wire."
     }
 
+    /// Refused and failed writes name why and say the file was left as it was, so nobody looks for a
+    /// half-written `.env`; none of them ever shows a value.
+    public static func noEnvFile(_ host: String) -> String {
+        "\(host) has no .env. Create one from .env.example first; Paddock won't write secrets into a new file."
+    }
+
+    public static func symlinkedEnvFile(_ host: String) -> String {
+        "\(host)'s .env is a symlink; Paddock won't write through it."
+    }
+
+    public static func utf8EnvFile(_ host: String) -> String {
+        "\(host)'s .env isn't UTF-8; Paddock left it alone."
+    }
+
+    public static func couldntReadEnvFile(_ host: String, reason: String) -> String {
+        "Paddock couldn't read \(host)'s .env: \(ending(reason))"
+    }
+
+    public static func couldntWriteEnvFile(_ host: String, reason: String) -> String {
+        "Paddock couldn't write \(host)'s .env: \(ending(reason))"
+    }
+
+    /// The sentence for a refused or failed write, as the CLI prints it and the app shows it.
+    public static func envWiringProblem(_ problem: EnvFile.Problem, host: String) -> String {
+        switch problem {
+        case .missing: return noEnvFile(host)
+        case .symlink: return symlinkedEnvFile(host)
+        case .notUTF8: return utf8EnvFile(host)
+        case .unreadable(let reason): return couldntReadEnvFile(host, reason: reason)
+        case .unwritable(let reason): return couldntWriteEnvFile(host, reason: reason)
+        }
+    }
+
+    /// The system's sentence usually ends with its own period; never print two.
+    private static func ending(_ sentence: String) -> String {
+        sentence.hasSuffix(".") ? sentence : sentence + "."
+    }
+
     /// What `paddock service remove` prints (and the app shows).
     public static func serviceRemoved(_ name: String, dataPath: String, deletedData: Bool) -> String {
         deletedData ? "Removed \(name) and deleted its data." : "Removed \(name). Its data is still at \(dataPath)."
