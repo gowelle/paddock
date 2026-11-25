@@ -358,6 +358,32 @@ public enum Messages {
         "# \(name): run \"paddock service env \(id)\""
     }
 
+    // MARK: - .env wiring
+
+    /// What a finished merge says: the keys that changed, by name — never a value — or that there was nothing
+    /// to do.
+    public static func envWiringResult(_ result: EnvWiring.Result, service: String, host: String) -> String {
+        if result.settings.isEmpty { return serviceHasNoEnvLines(service) }
+        if result.added.isEmpty && result.updated.isEmpty { return envAlreadyWired(service: service, host: host) }
+        return wiredEnv(service: service, host: host, added: result.added, updated: result.updated)
+    }
+
+    /// `Wired mail into shop.test's .env: added REDIS_HOST, REDIS_PORT; updated DB_PASSWORD.`
+    public static func wiredEnv(service: String, host: String, added: [String], updated: [String]) -> String {
+        var parts: [String] = []
+        if !added.isEmpty { parts.append("added " + added.joined(separator: ", ")) }
+        if !updated.isEmpty { parts.append("updated " + updated.joined(separator: ", ")) }
+        return "Wired \(service) into \(host)'s .env: \(parts.joined(separator: "; "))."
+    }
+
+    public static func envAlreadyWired(service: String, host: String) -> String {
+        "\(host)'s .env already has every line from \(service)."
+    }
+
+    public static func serviceHasNoEnvLines(_ service: String) -> String {
+        "\(service) has no .env lines to wire."
+    }
+
     /// What `paddock service remove` prints (and the app shows).
     public static func serviceRemoved(_ name: String, dataPath: String, deletedData: Bool) -> String {
         deletedData ? "Removed \(name) and deleted its data." : "Removed \(name). Its data is still at \(dataPath)."
