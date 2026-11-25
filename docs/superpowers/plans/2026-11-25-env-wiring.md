@@ -230,28 +230,25 @@ public enum EnvWiring {
             return Result(text: existing, settings: [], added: [], updated: [])
         }
         let newline = appendedNewline(of: existing)
-        var parts = existing.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let endsWithNewline = existing.hasSuffix("\n")
-        if endsWithNewline { parts.removeLast() }
+        var lines = splitLines(existing)
+        let endsWithNewline = lines.last.map { !$0.terminator.isEmpty } ?? false
 
         var present: Set<String> = []
         var changed: Set<String> = []
-        for index in parts.indices {
-            let original = parts[index]
-            let carriageReturn = original.hasSuffix("\r")
-            var line = carriageReturn ? String(original.dropLast()) : original
+        for index in lines.indices {
+            let original = lines[index].line
+            var line = original
             if line.hasPrefix("export ") { line.removeFirst("export ".count) }
             guard let found = setting(line), let value = service.values[found.key] else { continue }
             present.insert(found.key)
-            let replacement = "\(found.key)=\(value)" + (carriageReturn ? "\r" : "")
+            let replacement = "\(found.key)=\(value)"
             if replacement != original {
-                parts[index] = replacement
+                lines[index].line = replacement
                 changed.insert(found.key)
             }
         }
 
-        var text = parts.joined(separator: "\n")
-        if endsWithNewline { text += "\n" }
+        var text = lines.map { $0.line + $0.terminator }.joined()
         let added = service.keys.filter { !present.contains($0) }
         if !added.isEmpty {
             let block = added.map { "\($0)=\(service.values[$0] ?? "")" }.joined(separator: newline)
@@ -265,6 +262,32 @@ public enum EnvWiring {
         }
         return Result(text: text, settings: service.keys, added: added,
                       updated: service.keys.filter { changed.contains($0) })
+    }
+
+    /// The text's lines, each with the terminator it had (`\n`, `\r\n`, or none on an unterminated last
+    /// line). Scanned by Unicode scalar: `String.split(separator: "\n")` never matches, because `"\r\n"` is
+    /// one grapheme cluster in a String.
+    private static func splitLines(_ text: String) -> [(line: String, terminator: String)] {
+        let scalars = Array(text.unicodeScalars)
+        var lines: [(line: String, terminator: String)] = []
+        var current = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar == "\n" {
+                lines.append((String(current), "\n"))
+                current = String.UnicodeScalarView()
+            } else if scalar == "\r", index + 1 < scalars.count, scalars[index + 1] == "\n" {
+                lines.append((String(current), "\r\n"))
+                current = String.UnicodeScalarView()
+                index += 1
+            } else {
+                current.append(scalar)
+            }
+            index += 1
+        }
+        if !current.isEmpty { lines.append((String(current), "")) }
+        return lines
     }
 
     /// The service's settings: comments, blanks and non-settings ignored; a repeated key keeps its first
@@ -295,8 +318,8 @@ public enum EnvWiring {
 
     /// `\r\n` when every line the file terminates ends with `\r\n`; `\n` otherwise.
     private static func appendedNewline(of text: String) -> String {
-        let terminated = text.split(separator: "\n", omittingEmptySubsequences: false).dropLast()
-        return !terminated.isEmpty && terminated.allSatisfy({ $0.hasSuffix("\r") }) ? "\r\n" : "\n"
+        let terminated = splitLines(text).filter { !$0.terminator.isEmpty }
+        return !terminated.isEmpty && terminated.allSatisfy { $0.terminator == "\r\n" } ? "\r\n" : "\n"
     }
 }
 ```
@@ -1019,3 +1042,5 @@ git commit -m "Document one-action .env wiring"
 - The sentence uses the service's display name (`service.name`, e.g. `Mail`, `Meilisearch 1.57`), as `serviceRemoved` does; the spec's `mail` example is illustrative.
 - `EnvFile.wire` checks the symlink before existence, so a dangling `.env` link is reported as a symlink rather than a missing file.
 - `Messages.envWiringProblem` is the one place a `Problem` becomes a sentence, so the CLI and the app cannot drift.
+
+**Corrections after the first dispatch:** `EnvWiring.merge` splits lines by Unicode scalar (`splitLines`), not with `String.split(separator: "\n")`: Swift reads `"\r\n"` as one grapheme cluster, so that separator never matches and CRLF files lost both their terminator and the appended newline. The 19 tests were correct and are unchanged.
