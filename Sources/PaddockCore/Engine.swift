@@ -4,7 +4,7 @@ import Foundation
 /// Which build of Paddock this is, so a client can tell a daemon from another build.
 public enum PaddockBuild {
     /// Raised with every release whose daemon and clients must match (it is in every status reply).
-    public static let number = 24
+    public static let number = 25
 
     /// The running program, symlinks resolved.
     public static var runningExecutable: String? {
