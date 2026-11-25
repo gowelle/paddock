@@ -43,6 +43,15 @@ final class CLITests: XCTestCase {
         XCTAssertTrue(result.out.contains("Paddock isn't running."), result.out)
     }
 
+    func testDoctorWithoutDaemonNamesStart() throws {
+        let result = try run(["doctor"])
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.out.contains("The daemon answers."), result.out)
+        XCTAssertTrue(result.out.contains("Paddock isn't running. Start it with: paddock start"), result.out)
+        XCTAssertTrue(result.out.contains("Fix: paddock start"), result.out)
+        XCTAssertTrue(result.out.contains("1 check needs attention."), result.out)
+    }
+
     func testIsolateOldVersionNamesMinimum() throws {
         let result = try run(["isolate", "7.4"], cwd: home.parked.appendingPathComponent("plain-php"))
         XCTAssertEqual(result.status, 1)
