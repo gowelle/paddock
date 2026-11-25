@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import PaddockCore
 
@@ -62,6 +63,7 @@ final class DoctorProbesTests: XCTestCase {
     }
 
     func testAnUnreadableLogIsReported() throws {
+        try XCTSkipIf(getuid() == 0, "root can read a 0o000 file")
         try write("[2026-11-25 10:00:00] production.ERROR: Hidden")
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: log.path)
         XCTAssertEqual(Doctor.logFindingFor(site), .unreadable(file: "laravel.log"))

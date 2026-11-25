@@ -38,7 +38,7 @@ extension Doctor {
         components.host = site.host
         let port = site.secured ? settings.httpsPort : settings.httpPort
         if port != (site.secured ? 443 : 80) { components.port = port }
-        return components.url ?? URL(string: site.url)!
+        return components.url ?? URL(string: site.url) ?? URL(fileURLWithPath: "/")
     }
 
     /// One GET with a 5-second timeout and default TLS trust: what a browser would get.
@@ -58,7 +58,7 @@ extension Doctor {
         return DoctorProbe(statusCode: http.statusCode, milliseconds: milliseconds)
     }
 
-    /// The newest error in the site's own log, read the way the Logs window and `logs_read` read it.
+    /// The newest error in the part of the site's own log the Logs window reads (the last 256 KB).
     public static func logFindingFor(_ site: Site) -> DoctorLogFinding {
         let root = URL(fileURLWithPath: site.path, isDirectory: true)
         guard let source = LogCatalog.siteLogs(in: root).first else { return .none }
