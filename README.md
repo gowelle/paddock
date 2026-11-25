@@ -97,7 +97,7 @@ you a question Paddock could answer itself.
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
 | **A Dumps window** | While it is open, `dump()` and `dd()` from every site and from `php` in the terminal show in Paddock instead of in the page. Close it and they show where they always did. |
 | **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
-| **A Doctor** | One command, one window or one MCP tool that walks the whole path to a site — daemon, ports, DNS, web server, PHP, certificate, the HTTP answer and the newest log error — and names the one command that fixes each failure. |
+| **A Doctor** | One command, one window or one MCP tool that walks the whole path to a site — daemon, ports, DNS, web server, PHP, certificate, the HTTP answer and the newest log error — and names the command that fixes each failure where one exists. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A Databases window** | Browse and edit the PostgreSQL and MySQL services you added: their databases, tables, columns and rows, with one read-only SQL statement beside them. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
@@ -647,7 +647,7 @@ does. It opens no network port.
 |---|---|
 | `status` | Whether Paddock is running, every site (name, URL, folder, PHP version, HTTPS), the installed PHP versions, and every service with its state, ports and `.env` lines, without the keys Paddock generated. |
 | `site` | One site and its tasks, by name or by any folder inside it. |
-| `doctor` | Every step between a request and a site, with the one command that fixes each failed row. Read-only; the agent is told to suggest fixes, not run them. |
+| `doctor` | Every step between a request and a site, with the command that can fix each failed row. Read-only; the agent is told to suggest fixes, not run them. |
 | `logs_list`, `logs_read` | The logs the Logs window shows, and the last lines of one (up to 500, optionally only lines mentioning a word). |
 | `mail_list`, `mail_read` | The mail your applications sent, and one message's text and attachment names. Reading a message marks it read, as opening it in the Mail window does. |
 
