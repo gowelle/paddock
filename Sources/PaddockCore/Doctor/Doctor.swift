@@ -111,12 +111,12 @@ public struct Doctor: Sendable {
     let newestLogError: LogFindingProbe
     let siteURL: @Sendable (Site) -> URL
 
-    public init(build: Int,
-                resolve: @escaping @Sendable (String) -> [String],
-                readable: @escaping @Sendable (String) -> Bool,
-                probe: @escaping Probe,
-                logFinding: @escaping LogFindingProbe,
-                url: @escaping @Sendable (Site) -> URL) {
+    public init(build: Int = PaddockBuild.number,
+                resolve: @escaping @Sendable (String) -> [String] = Doctor.probeAddresses,
+                readable: @escaping @Sendable (String) -> Bool = Doctor.folderIsReadable,
+                probe: @escaping Probe = Doctor.probeHTTP,
+                logFinding: @escaping LogFindingProbe = Doctor.logFindingFor,
+                url: @escaping @Sendable (Site) -> URL = { Doctor.siteAddress($0) }) {
         self.build = build
         self.resolveHost = resolve
         self.readableFolder = readable
