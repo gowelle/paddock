@@ -94,6 +94,7 @@ you a question Paddock could answer itself.
 | **`php` and `composer` that follow you** | The `php` and `composer` commands in your terminal use the PHP version of the site whose folder you are in. |
 | **Framework-aware routing** | Paddock vendors and patches Laravel Valet's PHP request router, so Laravel, WordPress, Symfony and friends resolve the way Valet users expect. |
 | **One-action services** | Add PostgreSQL, MySQL, Redis (Valkey), Meilisearch, S3-compatible object storage or a local mail catcher with one command or one click. Each prints the exact `.env` lines for a Laravel app. |
+| **One-action `.env` wiring** | **Write to .env…** (or `paddock env <service> [site]`) updates a site's `.env` with the keys a service owns, in place, and leaves every other line exactly as it was. |
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
 | **A Dumps window** | While it is open, `dump()` and `dd()` from every site and from `php` in the terminal show in Paddock instead of in the page. Close it and they show where they always did. |
 | **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
@@ -515,6 +516,7 @@ the entry for you to add instead. If your `php.ini` sets
 | `paddock service env <name>` | Print a service's `.env` lines for a Laravel app. |
 | `paddock service logs <name>` | Show the end of a service's log. |
 | `paddock service open <name>` | Open a service's page in the browser. |
+| `paddock env <name> [site]` | Write a service's `.env` lines into a site's `.env`, updating its keys in place. |
 
 A service's name is like `mail` or `postgres-18`. A version is a series such as
 `18`, or an exact version.
@@ -576,6 +578,11 @@ Every service:
 - starts and stops with Paddock;
 - keeps its data through stop, restart, app updates, uninstall and remove,
   unless you explicitly ask to delete it.
+
+A site's `.env` is wired in one action too: **Write to .env…** in Settings → Services, or
+`paddock env <name> [site]`, writes the service's keys into that site's `.env` and leaves
+every other line as it was. Keys the file already sets are updated in place. A missing,
+symlinked or non-UTF-8 `.env` is refused, never created, and no value is ever printed.
 
 ## Site tasks and `paddock.json`
 
