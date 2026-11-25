@@ -68,6 +68,7 @@ you a question Paddock could answer itself.
   - [The Databases window](#the-databases-window)
   - [The Dumps window](#the-dumps-window)
   - [The Logs window](#the-logs-window)
+  - [The Doctor](#the-doctor)
 - [The `paddock` CLI](#the-paddock-cli)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
@@ -96,6 +97,7 @@ you a question Paddock could answer itself.
 | **Project-owned background tasks** | A `paddock.json` in a project keeps its queue worker, scheduler, websocket server and custom scripts running, with your approval, restarted when they crash or the code changes. |
 | **A Dumps window** | While it is open, `dump()` and `dd()` from every site and from `php` in the terminal show in Paddock instead of in the page. Close it and they show where they always did. |
 | **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
+| **A Doctor** | One command, one window or one MCP tool that walks the whole path to a site — daemon, ports, DNS, web server, PHP, certificate, the HTTP answer and the newest log error — and names the one command that fixes each failure. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A Databases window** | Browse and edit the PostgreSQL and MySQL services you added: their databases, tables, columns and rows, with one read-only SQL statement beside them. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
@@ -359,6 +361,31 @@ own logs.
 The pictures in this section are rendered from sample data by the app's own
 snapshot tool (`PaddockApp --snapshots <dir>`).
 
+### The Doctor
+
+**Check a Site…** in the menu, or **Check** on a site in Settings → Sites, opens
+the Doctor window. It walks every step a request takes and says what it found:
+
+- the daemon answers, and at this build;
+- ports 80 and 443 are free;
+- the port helper and the `.test` resolver are installed;
+- the site's host resolves to 127.0.0.1;
+- Caddy and the site's PHP-FPM are running, and its PHP is installed;
+- the site folder can be read;
+- macOS trusts Paddock's certificate (for an HTTPS site);
+- the site's URL answers, with its status and latency;
+- the newest error in the site's own `storage/logs`, as evidence rather than a failure.
+
+A failed row carries the one command that fixes it; **Check again** reruns the whole
+list. One cause makes one red row: a stopped daemon does not paint every row red.
+
+<p align="center">
+  <img src="docs/images/doctor-light.png" width="560" alt="The Doctor window: a healthy secured site, every check passing, and the newest log line">
+</p>
+
+The same diagnosis is in the terminal with `paddock doctor [site]`, and an AI agent
+can ask for it with the `doctor` tool (read-only).
+
 ## The `paddock` CLI
 
 Run `paddock --help` or `paddock <command> --help` for details. Commands that
@@ -469,6 +496,7 @@ the entry for you to add instead. If your `php.ini` sets
 | `paddock restart` | Restart Paddock. |
 | `paddock status` | Show whether Paddock is running, and its sites. |
 | `paddock logs` | Show the end of each Paddock log. |
+| `paddock doctor [site]` | Check every step between a request and a site, and say what is wrong. |
 | `paddock uninstall` | Remove Paddock's resolver, port 80/443 entry, login item and certificate trust. Keeps your sites and data. |
 
 ### Services
@@ -619,6 +647,7 @@ does. It opens no network port.
 |---|---|
 | `status` | Whether Paddock is running, every site (name, URL, folder, PHP version, HTTPS), the installed PHP versions, and every service with its state, ports and `.env` lines, without the keys Paddock generated. |
 | `site` | One site and its tasks, by name or by any folder inside it. |
+| `doctor` | Every step between a request and a site, with the one command that fixes each failed row. Read-only; the agent is told to suggest fixes, not run them. |
 | `logs_list`, `logs_read` | The logs the Logs window shows, and the last lines of one (up to 500, optionally only lines mentioning a word). |
 | `mail_list`, `mail_read` | The mail your applications sent, and one message's text and attachment names. Reading a message marks it read, as opening it in the Mail window does. |
 

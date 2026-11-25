@@ -152,6 +152,16 @@ final class CLITests: XCTestCase {
         XCTAssertEqual(result.out, "")
     }
 
+    func testDoctorWithDaemonPrintsTheChecklist() throws {
+        try launchDaemon()
+        let result = try run(["doctor", "plain-php"])
+        XCTAssertTrue(result.out.contains("plain-php.test — PHP"), result.out)
+        XCTAssertTrue(result.out.contains("The daemon answers (build"), result.out)
+        XCTAssertTrue(result.out.contains("Everything checks out.") || result.out.contains("needs attention."),
+                      result.out)
+        XCTAssertEqual(result.status, result.out.contains("Everything checks out.") ? 0 : 1)
+    }
+
     func testStartLaunchesDaemonThenStopShutsItDown() throws {
         let start = try run(["start"], timeout: 90)
         XCTAssertEqual(start.status, 0, start.err)

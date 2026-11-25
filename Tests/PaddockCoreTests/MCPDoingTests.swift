@@ -115,13 +115,13 @@ final class MCPDoingTests: MCPToolsTestCase {
     func testReadOnlyLeavesTheDoingToolsOut() async {
         let daemon = self.daemon()
         let tools = self.tools(daemon, options: .init(readOnly: true))
-        XCTAssertEqual(tools.toolNames, ["status", "site", "logs_list", "logs_read", "mail_list", "mail_read"])
+        XCTAssertEqual(tools.toolNames, ["status", "site", "doctor", "logs_list", "logs_read", "mail_list", "mail_read"])
         let refused = await tools.call("site_php", arguments: .object(["site": "shop"]))
         XCTAssertNil(refused)
         XCTAssertEqual(daemon.requests, [])
-        XCTAssertEqual(self.tools(daemon).toolNames.count, 11)
+        XCTAssertEqual(self.tools(daemon).toolNames.count, 12)
         XCTAssertEqual(self.tools(daemon, options: .init(readOnly: true, logs: false)).toolNames,
-                       ["status", "site", "mail_list", "mail_read"])
+                       ["status", "site", "doctor", "mail_list", "mail_read"])
     }
 
     func testEveryToolSaysWhatItIs() {

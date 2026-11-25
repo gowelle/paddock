@@ -31,6 +31,10 @@ enum Snapshots {
             ("settings-php", AnyView(PHPTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-sites", AnyView(SitesTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-sites-empty", AnyView(SitesTab().settingsTheme().environmentObject(sampleModel(.stopped))), SettingsView.size),
+            ("doctor", AnyView(DoctorView().environmentObject(doctorModel(problems: false))),
+             DoctorView.size),
+            ("doctor-problems", AnyView(DoctorView().environmentObject(doctorModel(problems: true))),
+             DoctorView.size),
             ("settings-services-none", AnyView(ServicesTab().settingsTheme().environmentObject(running)), SettingsView.size),
             ("settings-services", AnyView(ServicesTab().settingsTheme().environmentObject(servicesModel(adding: false))),
              SettingsView.size),
@@ -168,6 +172,50 @@ enum Snapshots {
         model.status = status
         // Show one install in progress on the PHP tab.
         if sample == .running { model.busy = [AppModel.busyKey(.installPHP(version: PHPVersion(major: 8, minor: 3)))] }
+        return model
+    }
+
+    // MARK: - Doctor
+
+    /// A healthy secured site, or a report with a failed HTTP row, without touching the network.
+    private static func doctorModel(problems: Bool) -> DoctorModel {
+        let php = PHPVersion(major: 8, minor: 5)
+        let site = Site(name: "shop", path: "/Users/you/Sites/shop", kind: .parked, secured: true,
+                        php: php, pinned: false)
+        let status = EngineStatus(running: true, blockedBy: [], sites: [site], installedPHP: [php],
+                                  defaultPHP: php,
+                                  processes: ["caddy": "running (pid 1)", "php-fpm-8.5": "running (pid 2)"],
+                                  resolverInstalled: true, trustEnabled: true, dnsRunning: true,
+                                  portHelperInstalled: true)
+        let passed = { (id: String, title: String, detail: String) in
+            DoctorCheck(id: id, title: title, outcome: .passed, detail: detail)
+        }
+        let report = DoctorReport(global: [
+            passed("daemon", "The daemon answers (build 24)", "The daemon answers (build 24)."),
+            passed("ports", "Ports 80 and 443 are free",
+                   "Nothing was listening on 80 or 443 before Paddock."),
+            passed("port-helper", "The port helper manages 80 and 443", "The port helper is installed."),
+            passed("resolver", "The .test resolver entry is installed", "The .test resolver is installed."),
+            passed("dns", "DNS answers shop.test", "shop.test resolves to 127.0.0.1."),
+            passed("caddy", "Caddy is running", "Caddy is running."),
+        ], sites: [
+            .init(site: "shop", host: "shop.test", php: php, url: "https://shop.test", checks: [
+                passed("php", "PHP 8.5 is installed", "PHP 8.5 is installed."),
+                passed("php-fpm", "PHP-FPM 8.5 is running", "PHP-FPM 8.5 is running."),
+                passed("folder", "The site folder is readable", "/Users/you/Sites/shop can be read."),
+                passed("trust", "macOS trusts Paddock's certificate", "macOS trusts Paddock's certificate."),
+                problems
+                    ? DoctorCheck(id: "http", title: "https://shop.test answers", outcome: .failed,
+                                  detail: "HTTPS 500 in 30 ms. Some request reached the site and failed; "
+                                      + "see the log row.")
+                    : passed("http", "https://shop.test answers", "HTTPS 200 in 24 ms."),
+                DoctorCheck(id: "log", title: "Newest error in the site's log", outcome: .info,
+                            detail: "No errors in laravel.log."),
+            ]),
+        ])
+        let model = DoctorModel(fetchStatus: { status }, diagnose: { _, _ in report })
+        model.target = "shop"
+        settle { await model.check() }
         return model
     }
 
