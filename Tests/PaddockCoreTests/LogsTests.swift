@@ -136,6 +136,74 @@ final class LogParserTests: XCTestCase {
         XCTAssertEqual(entries[0].detail.count, LogParser.detailLimit + 1)
         XCTAssertEqual(entries[0].detail.last, "(25 more lines)")
     }
+
+    func testPHPFPMAndPHPErrorLinesGetLevelsAndFoldWhatFollowsThem() {
+        var parser = LogParser()
+        var entries: [LogEntry] = []
+        parser.append([
+            "[26-Nov-2026 10:14:10] NOTICE: fpm is running, pid 1234",
+            "[26-Nov-2026 10:14:11] WARNING: [pool paddock] child 1234 exited on signal 11 (SIGSEGV)",
+            "[26-Nov-2026 10:14:12]  [pool paddock] pid 9999",
+            "script_filename = /Users/you/Code/shop/public/index.php",
+            "[0x00007f8b8c0d9b20] run() /Users/you/Code/shop/vendor/laravel/framework/src/Illuminate/Foundation/Application.php:1",
+            "[26-Nov-2026 10:14:13] ERROR: failed to ptrace(PEEKDATA) pid 1234: Input/output error (5)",
+            "[26-Nov-2026 10:14:14 UTC] PHP Warning:  Undefined array key \"id\" in /app/routes.php on line 12",
+            "[26-Nov-2026 10:14:15 UTC] PHP Fatal error:  Uncaught Error: Call to undefined method App\\Order::ship()",
+            "Stack trace:",
+            "#0 /app/x.php(10): foo()",
+            "#1 {main}",
+            "  thrown in /app/x.php on line 5",
+        ], to: &entries)
+        XCTAssertEqual(entries.map(\.level), ["NOTICE", "WARNING", nil, "ERROR", "WARNING", "ERROR"])
+        XCTAssertEqual(entries[2].detail.count, 2, "the slowlog's script and stack lines belong to it")
+        XCTAssertEqual(entries[5].detail.count, 4, "PHP's stack trace folds under its fatal error")
+        XCTAssertTrue(entries[1].isWarning)
+        XCTAssertTrue(entries[5].isProblem)
+        XCTAssertFalse(entries[2].isProblem, "a slowlog entry has no error level of its own")
+    }
+
+    func testPostgresLinesGetLevelsAndTheirDetailsFold() {
+        var parser = LogParser()
+        var entries: [LogEntry] = []
+        parser.append([
+            "2026-11-26 10:14:10.123 UTC [1234] LOG:  database system is ready to accept connections",
+            "2026-11-26 10:14:12.000 UTC [1235] ERROR:  relation \"orders\" does not exist at character 15",
+            "2026-11-26 10:14:12.000 UTC [1235] STATEMENT:  select * from orders;",
+            "2026-11-26 10:14:12.000 UTC [1235] HINT:  Perhaps you meant to reference the table \"public.order\".",
+            "2026-11-26 10:14:13.000 UTC [1236] FATAL:  the database system is starting up",
+        ], to: &entries)
+        XCTAssertEqual(entries.map(\.level), ["INFO", "ERROR", "CRITICAL"])
+        XCTAssertEqual(entries[1].detail.count, 2)
+        XCTAssertTrue(entries[1].isProblem)
+        XCTAssertTrue(entries[2].isProblem)
+    }
+
+    func testMySQLLinesGetLevels() {
+        var parser = LogParser()
+        var entries: [LogEntry] = []
+        parser.append([
+            "2026-11-26T10:14:10.123456Z 0 [System] [MY-010116] [Server] /usr/local/bin/mysqld (mysqld 8.4.4) starting as process 123",
+            "2026-11-26T10:14:11.000000Z 12 [ERROR] [MY-000067] [Server] unknown variable 'foo=bar'",
+            "2026-11-26T10:14:12.000000Z 12 [Warning] [MY-010055] [Server] IP address '1.2.3.4' could not be resolved",
+        ], to: &entries)
+        XCTAssertEqual(entries.map(\.level), ["INFO", "ERROR", "WARNING"])
+        XCTAssertTrue(entries[1].isProblem)
+        XCTAssertTrue(entries[2].isWarning)
+    }
+
+    func testCaddyJSONLinesGetLevelsAndShowTheirMessage() {
+        var parser = LogParser()
+        var entries: [LogEntry] = []
+        parser.append([
+            #"{"level":"info","ts":1700000000.1,"msg":"serving initial configuration"}"#,
+            #"{"level":"error","ts":1700000001.2,"logger":"http.log.error","msg":"dial tcp 127.0.0.1:9000: connect: connection refused","request":{"remote_ip":"127.0.0.1"}}"#,
+        ], to: &entries)
+        XCTAssertEqual(entries.map(\.level), ["INFO", "ERROR"])
+        XCTAssertEqual(entries.map(\.text), ["serving initial configuration",
+                                             "dial tcp 127.0.0.1:9000: connect: connection refused"])
+        XCTAssertEqual(entries[1].detail, ["logger=http.log.error"], "the other scalar fields stay, folded under it")
+        XCTAssertTrue(entries[1].isProblem)
+    }
 }
 
 final class LogCatalogTests: XCTestCase {
@@ -280,6 +348,32 @@ final class LogsModelTests: XCTestCase {
         XCTAssertEqual(model.emptyText, "Nothing in this log mentions \u{201C}zzz\u{201D}.")
         model.setFilter("  ")
         XCTAssertEqual(model.shown.count, 3)
+    }
+
+    func testErrorsOnlyKeepsTheProblemsAndSaysWhenThereAreNone() async throws {
+        let folder = try temporaryFolder(self)
+        try append("""
+        [2026-11-22 10:14:10] local.INFO: started
+        [2026-11-22 10:14:11] local.WARNING: slow
+        [2026-11-22 10:14:12] local.ERROR: Boom
+
+        """, to: folder.appendingPathComponent("laravel.log"))
+        let model = makeModel(folder, ["laravel.log"])
+        await model.tick()
+        model.setProblemsOnly(true)
+        XCTAssertEqual(model.shown.map(\.level), ["ERROR"])
+        model.setFilter("started")
+        XCTAssertEqual(model.emptyText, "Nothing in this log mentions \u{201C}started\u{201D}.")
+        model.setFilter("")
+        model.setProblemsOnly(false)
+        XCTAssertEqual(model.shown.count, 3)
+
+        try append("alpha\n", to: folder.appendingPathComponent("plain.log"))
+        let plain = makeModel(folder, ["plain.log"])
+        await plain.tick()
+        plain.setProblemsOnly(true)
+        XCTAssertEqual(plain.shown, [])
+        XCTAssertEqual(plain.emptyText, "Nothing in this log is an error.")
     }
 
     func testPausedNothingIsAddedAndResumingCatchesUp() async throws {

@@ -2,6 +2,31 @@ import AppKit
 import PaddockCore
 import SwiftUI
 
+/// The menu bar icon: the gate, with a dot while something has crashed and Paddock stopped restarting it. It
+/// also brings the Logs window forward when a notification's Open Log asks for it, even with no window open.
+struct MenuBarLabel: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var logs: LogsModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: "pedestrian.gate.closed")
+            .overlay(alignment: .topTrailing) {
+                if model.crashCount > 0 {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 5, height: 5)
+                        .offset(x: 2, y: -1)
+                }
+            }
+            .accessibilityLabel(Text(model.crashCount > 0 ? "Paddock: \(model.crashCount) crashed" : "Paddock"))
+            .onChange(of: logs.openRequests) { _ in
+                activateApp()
+                openWindow(id: LogsView.windowID)
+            }
+    }
+}
+
 /// The menu bar menu: one plain view, shown in the menu bar panel and rendered by the snapshot tool.
 struct MenuContentView: View {
     @EnvironmentObject private var model: AppModel

@@ -91,6 +91,17 @@ public final class AppModel: ObservableObject {
     @Published public internal(set) var approvalState: ApprovalSheetState = .loading
     /// The sheet's own error line: why approving failed. Starts empty each time the sheet opens.
     @Published public internal(set) var approvalError: String?
+    /// The crashes Paddock has stopped restarting, by `CrashAlert.id`; the menu bar dot shows how many there are.
+    @Published public internal(set) var crashAlerts: [String: CrashAlert] = [:]
+    /// Where crash notices go: the app's notifier. Nil until the app sets it.
+    public var alertSink: (any CrashAlertSink)?
+    /// False until the first status: crashes from before the app started are seeded, never announced.
+    var crashAlertsSeeded = false
+    var crashAlertPolicy = CrashAlertPolicy()
+    /// The clock the alert rate limit reads; tests choose it.
+    var now: () -> Date = Date.init
+    /// How many crashes Paddock has stopped restarting (the menu bar dot).
+    public var crashCount: Int { crashAlerts.count }
 
     /// Every PHP version Paddock can install.
     public let availablePHP: [PHPVersion]
@@ -120,6 +131,11 @@ public final class AppModel: ObservableObject {
     private let paths: Paths?
     private var watchers = 0
     private var refreshTask: Task<Void, Never>?
+    /// True once the app asked for the menu bar's own watching: a refresh every few seconds even with every
+    /// window closed, so a crash is noticed.
+    private var monitoring = false
+    /// Seconds between refreshes while only the app (no window) watches. The app sets 5.
+    public var refreshInterval: TimeInterval = 2
     /// Pause between start attempts while a quit application lets go of its port.
     var quitRetryDelay: UInt64 = 500_000_000
     /// How long a services or tasks notice shows.
@@ -298,6 +314,7 @@ public final class AppModel: ObservableObject {
         switch result {
         case .success(.ok(let fresh)), .success(.removed(_, let fresh)), .success(.databaseCreated(_, _, let fresh)):
             status = fresh
+            updateCrashAlerts(from: fresh)
             // Setup finished meanwhile (say, from the command line): the held ports are old news.
             if fresh.running && fresh.portHelperInstalled { setupBlockedBy = [] }
             if errorCameFromRefresh { lastError = nil }
@@ -307,6 +324,7 @@ public final class AppModel: ObservableObject {
             break
         case .failure(ClientError.daemonNotRunning):
             status = nil
+            clearCrashAlerts()
             if errorCameFromRefresh { lastError = nil }
         case .failure(let error):
             showRefreshError(Self.describe(error))
@@ -642,22 +660,42 @@ public final class AppModel: ObservableObject {
 
     // MARK: - Refreshing while visible
 
-    /// Call when the menu or settings window appears; refreshes every 2 seconds until the last one closes.
+    /// Call when the menu or settings window appears; refreshes every 2 seconds until it closes.
     public func beginWatching() {
         watchers += 1
-        guard refreshTask == nil else { return }
-        refreshTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-            }
-        }
+        startRefreshing()
     }
 
     public func endWatching() {
         watchers = max(0, watchers - 1)
+        guard watchers == 0, !monitoring else { return }
+        refreshTask?.cancel()
+        refreshTask = nil
+    }
+
+    /// The app keeps watching after launch, even with every window closed: a refresh every `refreshInterval`
+    /// seconds, so a crash is noticed (and badged) with no window open.
+    public func beginMonitoring() {
+        monitoring = true
+        startRefreshing()
+    }
+
+    public func endMonitoring() {
+        monitoring = false
         guard watchers == 0 else { return }
         refreshTask?.cancel()
         refreshTask = nil
+    }
+
+    private func startRefreshing() {
+        guard refreshTask == nil else { return }
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refresh()
+                guard let self else { return }
+                let pause = self.watchers > 0 ? 2.0 : self.refreshInterval
+                try? await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000))
+            }
+        }
     }
 }

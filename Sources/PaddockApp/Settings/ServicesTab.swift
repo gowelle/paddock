@@ -176,6 +176,21 @@ struct ServiceRowView: View {
                     Button("Start") { Task { await model.startService(row.id) } }
                         .disabled(!row.canStart)
                 }
+                if let version = row.updateAvailable {
+                    Button {
+                        Task { await model.updateService(row.id) }
+                    } label: {
+                        if model.isBusy(.serviceUpdate(name: row.id)) {
+                            HStack(spacing: 4) {
+                                ProgressView().controlSize(.mini)
+                                Text(verbatim: "Updating…")
+                            }
+                        } else {
+                            Text(verbatim: "Update to \(version)")
+                        }
+                    }
+                    .help("Download \(row.name) \(version) and switch to it")
+                }
                 Button("Restart") { Task { await model.restartService(row.id) } }
                     .disabled(!row.canStop)
                 Menu {
@@ -220,7 +235,7 @@ struct ServiceRowView: View {
     private var isBusy: Bool {
         [Request.serviceStart(name: row.id), .serviceStop(name: row.id), .serviceRestart(name: row.id),
          .serviceRemove(name: row.id, deleteData: false), .serviceRemove(name: row.id, deleteData: true),
-         .serviceEnv(id: row.id)]
+         .serviceEnv(id: row.id), .serviceUpdate(name: row.id)]
             .contains(where: model.isBusy)
     }
 }

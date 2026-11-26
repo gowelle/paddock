@@ -1413,10 +1413,11 @@ public final class ServiceManager: @unchecked Sendable {
         let logNotice = logNotices[instance.id]
         runtimeLock.unlock()
         let state: ServiceState
+        let processName = Self.processName(instance.id)
         if known == .starting {
             state = .starting
         } else {
-            switch supervisor.status(Self.processName(instance.id)) {
+            switch supervisor.status(processName) {
             case .running: state = .running
             case .crashed: state = .crashed
             case .stopped:
@@ -1438,7 +1439,8 @@ public final class ServiceManager: @unchecked Sendable {
             openURL: openURL, dataPath: paths.serviceData(instance.id).path, autostart: instance.autostart,
             mainPort: recipe?.ports.first.flatMap { instance.ports[$0.name] }, notice: [notice ?? skipped, keyNotice, logNotice].compactMap { $0 }.joined(separator: " ").nonEmpty,
             updateAvailable: update, series: instance.series, notes: recipe?.notes,
-            secretEnvNames: recipe.map(Self.secretEnvNames).flatMap { $0.isEmpty ? nil : $0 })
+            secretEnvNames: recipe.map(Self.secretEnvNames).flatMap { $0.isEmpty ? nil : $0 },
+            gaveUp: state == .crashed && supervisor.hasGivenUp(processName) ? true : nil)
     }
 
     // MARK: - Templates and folders

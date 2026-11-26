@@ -314,14 +314,19 @@ public struct TaskStatus: Codable, Equatable, Sendable {
     public let logPath: String
     /// A sentence about the task (say, that Paddock cut its stop short when it shut down).
     public let warning: String?
+    /// True when the crash was terminal: its supervisor gave up restarting it (5 failures in 60 seconds).
+    /// Nil from an older daemon, and when it isn't crashed.
+    public let gaveUp: Bool?
 
-    public init(name: String, run: String, state: TaskState, restartOnChange: Bool, logPath: String, warning: String?) {
+    public init(name: String, run: String, state: TaskState, restartOnChange: Bool, logPath: String, warning: String?,
+                gaveUp: Bool? = nil) {
         self.name = name
         self.run = run
         self.state = state
         self.restartOnChange = restartOnChange
         self.logPath = logPath
         self.warning = warning
+        self.gaveUp = gaveUp
     }
 }
 

@@ -26,11 +26,13 @@ struct PaddockApp: App {
 
     var body: some Scene {
         // Window style, so the menu's content is one plain SwiftUI view the snapshot tool can render too.
-        MenuBarExtra("Paddock", systemImage: "pedestrian.gate.closed") {
+        MenuBarExtra {
             MenuContentView()
                 .environmentObject(model)
                 .environmentObject(mail)
                 .environmentObject(databases)
+        } label: {
+            MenuBarLabel(model: model, logs: logs)
         }
         .menuBarExtraStyle(.window)
 
@@ -154,6 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// without the menu ever being opened.
     static let updates = Updates(preview: CommandLine.arguments.contains("--snapshots"))
 
+    /// Shows and takes down crash notifications; the model tells it what crashed.
+    static let notifier = CrashNotifier()
+
     /// Reads the mail service wherever the daemon's status says it answers.
     static let mail = MailModel(client: HTTPMailClient(), services: { model.status?.services ?? [] })
 
@@ -178,10 +183,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = Self.updates
+        Self.notifier.start()
+        Self.model.alertSink = Self.notifier
+        Self.notifier.restart = { alert in Task { await Self.model.restart(alert) } }
+        Self.notifier.openLog = { alert in Self.model.openCrashLog(alert) }
+        // The menu bar app keeps watching even with every window closed, so a crash is noticed and badged.
+        Self.model.refreshInterval = 5
         if UserDefaults.standard.bool(forKey: Self.licenseAcceptedKey) {
             // Every accepted launch: start Paddock exactly as `paddock start` does.
             Task {
                 await Self.model.launch()
+                Self.model.beginMonitoring()
                 // A window that was open when the app last quit left PHP sending dumps to nobody.
                 await Self.dumps.reconcile(daemonSendsTo: Self.model.status?.dumpsTo)
             }
@@ -213,7 +225,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     UserDefaults.standard.set(true, forKey: Self.licenseAcceptedKey)
                     window?.close()
                     self.licenseWindow = nil
-                    Task { await Self.model.launch() }
+                    Task {
+                        await Self.model.launch()
+                        Self.model.beginMonitoring()
+                    }
                 },
                 onDecline: {
                     NSApplication.shared.terminate(nil)

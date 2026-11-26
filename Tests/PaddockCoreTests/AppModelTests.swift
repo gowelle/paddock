@@ -770,10 +770,12 @@ private final class Outside {
 
 private func service(_ id: String, name: String, kind: String = "mail", state: ServiceState = .running,
                      ports: [String: Int] = ["main": 1025], openURL: String? = nil, notice: String? = nil,
-                     notes: [String]? = nil, env: [String] = ["MAIL_PORT=1025"], secrets: [String]? = nil) -> ServiceStatus {
-    ServiceStatus(id: id, name: name, kind: kind, version: "1.0", displayName: name, state: state, ports: ports,
+                     notes: [String]? = nil, env: [String] = ["MAIL_PORT=1025"], secrets: [String]? = nil,
+                     gaveUp: Bool? = nil, version: String = "1.0", updateAvailable: String? = nil) -> ServiceStatus {
+    ServiceStatus(id: id, name: name, kind: kind, version: version, displayName: name, state: state, ports: ports,
                   env: env, openURL: openURL, dataPath: "/h/services/\(id)/data", autostart: true,
-                  mainPort: ports["main"], notice: notice, notes: notes, secretEnvNames: secrets)
+                  mainPort: ports["main"], notice: notice, updateAvailable: updateAvailable, notes: notes,
+                  secretEnvNames: secrets, gaveUp: gaveUp)
 }
 
 private func statusWith(services: [ServiceStatus] = [], sites: [Site]? = nil) -> EngineStatus {
@@ -1157,9 +1159,9 @@ private let longCommand = "php artisan queue:work --queue=high,default,low --tri
     + String(repeating: "--memory=512 ", count: 15) + "--name=paddock-worker-one --env=local"
 
 private func task(_ name: String, run: String = "php artisan queue:work", state: TaskState = .running(pid: 41),
-                  restartOnChange: Bool = true, warning: String? = nil) -> TaskStatus {
+                  restartOnChange: Bool = true, warning: String? = nil, gaveUp: Bool? = nil) -> TaskStatus {
     TaskStatus(name: name, run: run, state: state, restartOnChange: restartOnChange,
-               logPath: "/h/log/tasks/shop/\(name).log", warning: warning)
+               logPath: "/h/log/tasks/shop/\(name).log", warning: warning, gaveUp: gaveUp)
 }
 
 private func site(_ name: String, tasks: SiteTasksStatus?) -> Site {
@@ -1652,5 +1654,178 @@ extension AppModelTests {
         let (model, _) = sheetModel { [bare] _ in .ok(statusWith(sites: [bare])) }
         await model.refresh()
         XCTAssertEqual(model.taskSites.first?.notice, bare.notice)
+    }
+}
+
+// MARK: - Crash alerts
+
+/// Where the model's crash notices go in these tests: the app's notifier in the real app.
+@MainActor
+private final class FakeAlerts: CrashAlertSink {
+    var announced: [CrashAlert] = []
+    var withdrawn: [String] = []
+    func announce(_ alert: CrashAlert) { announced.append(alert) }
+    func withdraw(_ id: String) { withdrawn.append(id) }
+}
+
+/// What the fake daemon answers next; the handler must be Sendable, so changes go through a box.
+private final class Answers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: EngineStatus
+    init(_ value: EngineStatus) { self.value = value }
+    var status: EngineStatus {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); defer { lock.unlock() }; value = newValue }
+    }
+}
+
+/// What Open Log asked to show.
+@MainActor
+private final class Shown {
+    var urls: [URL] = []
+}
+
+extension AppModelTests {
+    private static let gaveUpReason =
+        "exited with status 1 5 times within a minute, so Paddock stopped restarting it. See: paddock tasks logs queue"
+
+    private func shopStatus(_ tasks: [TaskStatus]) -> EngineStatus {
+        statusWith(sites: [site("shop", tasks: SiteTasksStatus(approval: .approved, tasks: tasks, pending: [],
+                                                               pendingHash: nil, notice: nil))])
+    }
+
+    private var runningQueue: EngineStatus { shopStatus([task("queue")]) }
+    private var crashedQueue: EngineStatus {
+        shopStatus([task("queue", state: .crashed(reason: Self.gaveUpReason), gaveUp: true)])
+    }
+
+    private func alertsModel(_ handler: @escaping @Sendable (Request) throws -> Response,
+                             shown: @escaping @MainActor (URL) -> Void = { _ in })
+        -> (AppModel, FakeClient, FakeAlerts) {
+        let client = FakeClient(handler)
+        let sink = FakeAlerts()
+        let model = AppModel(client: client, paths: Paths(home: URL(fileURLWithPath: "/h")), showLog: shown)
+        model.alertSink = sink
+        return (model, client, sink)
+    }
+
+    /// A crash from before the app started is badged, never announced.
+    func testTheFirstStatusOnlySeedsCrashesAndDoesNotAnnounceThem() async {
+        let crashed = crashedQueue
+        let (model, _, sink) = alertsModel { _ in .ok(crashed) }
+        await model.refresh()
+        XCTAssertEqual(model.crashCount, 1)
+        XCTAssertEqual(sink.announced, [], "the crash predates the app: not news")
+        XCTAssertEqual(model.crashAlerts["task:shop:queue"]?.title, "shop: queue")
+        XCTAssertEqual(model.crashAlerts["task:shop:queue"]?.reason, Self.gaveUpReason)
+        XCTAssertEqual(model.crashAlerts["task:shop:queue"]?.logPath, "/h/log/tasks/shop/queue.log")
+    }
+
+    /// A task that crashes terminally while the app watches is announced once; its recovery takes the notice back.
+    func testATerminalCrashIsAnnouncedOnceAndWithdrawnWhenItRecovers() async {
+        let answers = Answers(runningQueue)
+        let (model, _, sink) = alertsModel { _ in .ok(answers.status) }
+        await model.refresh()
+        XCTAssertEqual(sink.announced, [])
+
+        answers.status = crashedQueue
+        await model.refresh()
+        XCTAssertEqual(sink.announced.map(\.id), ["task:shop:queue"])
+        XCTAssertEqual(model.crashCount, 1)
+        await model.refresh()
+        XCTAssertEqual(sink.announced.count, 1, "still crashed: not announced again")
+
+        answers.status = runningQueue
+        await model.refresh()
+        XCTAssertEqual(model.crashCount, 0)
+        XCTAssertEqual(sink.withdrawn, ["task:shop:queue"])
+    }
+
+    /// A crash Paddock is still restarting (during its backoff) is not news yet: no notice, no badge.
+    func testACrashPaddockIsStillRestartingIsNotAnnounced() async {
+        let answers = Answers(runningQueue)
+        let (model, _, sink) = alertsModel { _ in .ok(answers.status) }
+        await model.refresh()
+        answers.status = shopStatus([task("queue", state: .crashed(reason: "exited with status 1; Paddock restarts it in a moment"))])
+        await model.refresh()
+        XCTAssertEqual(model.crashCount, 0)
+        XCTAssertEqual(sink.announced, [])
+    }
+
+    /// A service whose supervisor gave up is announced, and Restart asks the daemon to restart it.
+    func testAServiceCrashIsAnnouncedAndRestartAsksTheDaemonToRestartIt() async {
+        let answers = Answers(statusWith(services: [service("postgres-18", name: "PostgreSQL 18", kind: "postgres")]))
+        let (model, client, sink) = alertsModel { _ in .ok(answers.status) }
+        await model.refresh()
+        answers.status = statusWith(services: [service("postgres-18", name: "PostgreSQL 18", kind: "postgres",
+                                                       state: .crashed, gaveUp: true)])
+        await model.refresh()
+        XCTAssertEqual(sink.announced.map(\.title), ["PostgreSQL 18"])
+        XCTAssertEqual(sink.announced.map(\.id), ["service:postgres-18"])
+        XCTAssertEqual(sink.announced.first?.logPath, "/h/log/service-postgres-18.log")
+
+        await model.restart(sink.announced[0])
+        XCTAssertTrue(client.requests.contains(.serviceStart(name: "postgres-18")), "\(client.requests)")
+    }
+
+    /// Open Log shows the crashed item's log and takes its notification down; the badge stays until it runs.
+    func testOpenLogShowsTheCrashedItemsLogAndTakesItsNoticeDown() async {
+        let shown = Shown()
+        let answers = Answers(runningQueue)
+        let (model, _, sink) = alertsModel({ _ in .ok(answers.status) }, shown: { shown.urls.append($0) })
+        await model.refresh()
+        answers.status = crashedQueue
+        await model.refresh()
+        guard let alert = sink.announced.first else { return XCTFail("nothing announced") }
+
+        model.openCrashLog(alert)
+        XCTAssertEqual(shown.urls, [URL(fileURLWithPath: "/h/log/tasks/shop/queue.log")])
+        XCTAssertEqual(sink.withdrawn, ["task:shop:queue"])
+        XCTAssertEqual(model.crashCount, 1, "still crashed: the menu still says so")
+    }
+
+    /// The daemon going away takes the crash notices and the badge with it.
+    func testTheDaemonGoingAwayClearsCrashesAndTakesTheirNoticesDown() async {
+        let crashed = crashedQueue
+        let (model, client, sink) = alertsModel { _ in .ok(crashed) }
+        await model.refresh()
+        XCTAssertEqual(model.crashCount, 1)
+        client.handler = { _ in throw ClientError.daemonNotRunning }
+        await model.refresh()
+        XCTAssertEqual(model.crashCount, 0)
+        XCTAssertEqual(sink.withdrawn, ["task:shop:queue"])
+    }
+}
+
+// MARK: - Service updates
+
+extension AppModelTests {
+    /// A service with a newer version in its series offers it on its row.
+    func testAServiceRowOffersTheUpdateTheStatusReports() async {
+        let update = service("mysql-8-4", name: "MySQL 8.4", kind: "mysql", version: "8.4.5",
+                             updateAvailable: "8.4.7")
+        let model = AppModel(client: FakeClient { _ in .ok(statusWith(services: [update])) })
+        await model.refresh()
+        XCTAssertEqual(model.serviceRows.first?.updateAvailable, "8.4.7")
+    }
+
+    /// Update sends the request the CLI sends, with the hour it may take, and says what now runs.
+    func testUpdateServiceSendsTheUpdateAndSaysWhatNowRuns() async {
+        let answers = Answers(statusWith(services: [service("mysql-8-4", name: "MySQL 8.4", kind: "mysql",
+                                                             version: "8.4.5", updateAvailable: "8.4.7")]))
+        let (model, client, _) = servicesModel { request in
+            if case .serviceUpdate(let name) = request {
+                XCTAssertEqual(name, "mysql-8-4")
+                answers.status = statusWith(services: [service("mysql-8-4", name: "MySQL 8.4", kind: "mysql",
+                                                               version: "8.4.7")])
+            }
+            return .ok(answers.status)
+        }
+        await model.refresh()
+        await model.updateService("mysql-8-4")
+        XCTAssertTrue(client.requests.contains(.serviceUpdate(name: "mysql-8-4")), "\(client.requests)")
+        let index = client.requests.firstIndex(of: .serviceUpdate(name: "mysql-8-4"))!
+        XCTAssertEqual(client.timeouts[index], 3600, "an update may take an hour")
+        XCTAssertEqual(model.serviceNotice, "MySQL 8.4 now runs 8.4.7.")
     }
 }

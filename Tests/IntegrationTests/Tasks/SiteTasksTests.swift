@@ -255,6 +255,8 @@ final class SiteTasksTests: XCTestCase {
             XCTAssertTrue(reason.contains("status 3"), reason)
         }
         XCTAssertEqual(log("shop", "boom").components(separatedBy: "exploding").count - 1, 5, "five tries, then no more")
+        XCTAssertEqual(tasks(engine, "shop")?.tasks.first { $0.name == "boom" }?.gaveUp, true,
+                       "the app can tell a terminal crash from a restart")
 
         XCTAssertTrue(waitFor(30) { self.state(engine, "shop", "once") == .stopped(reason: .exited) },
                       "a command that finishes by itself is stopped, not crashed: \(String(describing: state(engine, "shop", "once")))")

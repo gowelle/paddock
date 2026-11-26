@@ -166,11 +166,14 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
     /// The `.env` variables whose values are secrets (`MEILISEARCH_KEY`), left out of `env`; nil when none.
     /// `serviceEnv` (`paddock service env`) answers their lines.
     public let secretEnvNames: [String]?
+    /// True when the crash was terminal: its supervisor gave up restarting it (5 failures in 60 seconds).
+    /// Nil from an older daemon, and when it isn't crashed.
+    public let gaveUp: Bool?
 
     public init(id: String, name: String, kind: String, version: String, displayName: String, state: ServiceState,
                 ports: [String: Int], env: [String], openURL: String?, dataPath: String, autostart: Bool,
                 mainPort: Int?, notice: String? = nil, updateAvailable: String? = nil, series: String? = nil,
-                notes: [String]? = nil, secretEnvNames: [String]? = nil) {
+                notes: [String]? = nil, secretEnvNames: [String]? = nil, gaveUp: Bool? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -188,6 +191,7 @@ public struct ServiceStatus: Codable, Equatable, Sendable {
         self.series = series
         self.notes = notes
         self.secretEnvNames = secretEnvNames
+        self.gaveUp = gaveUp
     }
 }
 

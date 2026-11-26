@@ -126,10 +126,26 @@ final class ServiceInstanceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 6, "the status changed: the build number moves on")
     }
 
+    /// A crash Paddock stopped restarting travels as `gaveUp`; a status from an older daemon has no such word.
+    func testAGaveUpCrashTravelsInTheStatusAndIsNilFromOlderDaemons() throws {
+        let crashed = ServiceStatus(id: "postgres-18", name: "PostgreSQL 18", kind: "postgres", version: "18.3.0",
+                                    displayName: "PostgreSQL", state: .crashed, ports: ["main": 5432], env: [],
+                                    openURL: nil, dataPath: "/h/services/postgres-18/data", autostart: true,
+                                    mainPort: 5432, gaveUp: true)
+        let json = String(decoding: try JSONEncoder().encode(crashed), as: UTF8.self)
+        XCTAssertTrue(json.contains(#""gaveUp":true"#), json)
+        XCTAssertEqual(try JSONDecoder().decode(ServiceStatus.self, from: Data(json.utf8)), crashed)
+
+        let older = ServiceStatus(id: "mail", name: "Mail", kind: "mail", version: "1", displayName: "Mail",
+                                  state: .running, ports: [:], env: [], openURL: nil, dataPath: "/d", autostart: true,
+                                  mainPort: nil)
+        XCTAssertNil(older.gaveUp)
+        XCTAssertNil(try JSONDecoder().decode(ServiceStatus.self, from: JSONEncoder().encode(older)).gaveUp)
+    }
+
     /// A newer daemon's unknown state reads as unavailable, and one service that can't be read never
     /// costs the whole status.
-    func testStatusDecodingIsForwardTolerant() throws {
-        let state = try JSONDecoder().decode(ServiceState.self, from: Data(#"{"upgrading": {"to": "2"}}"#.utf8))
+    func testStatusDecodingIsForwardTolerant() throws {        let state = try JSONDecoder().decode(ServiceState.self, from: Data(#"{"upgrading": {"to": "2"}}"#.utf8))
         XCTAssertEqual(state, .unavailable(reason: "unknown state"))
         let good = ServiceStatus(id: "mail", name: "Mail", kind: "mail", version: "1.34.0", displayName: "Mail",
                                  state: .running, ports: ["smtp": 1025], env: [], openURL: nil, dataPath: "/d",

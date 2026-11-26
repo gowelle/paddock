@@ -13,6 +13,8 @@ public final class LogsModel: ObservableObject {
     @Published public private(set) var entries: [LogEntry] = []
     /// Only entries mentioning this are shown.
     @Published public private(set) var filter = ""
+    /// Only entries with an error level are shown.
+    @Published public private(set) var problemsOnly = false
     /// While paused, nothing new is added (it is caught up on when resumed).
     @Published public private(set) var isPaused = false
     /// The entries whose detail (a stack trace) is unfolded.
@@ -55,10 +57,12 @@ public final class LogsModel: ObservableObject {
         return sections.lazy.flatMap(\.sources).first { $0.id == selection }
     }
 
-    /// The entries to show: all of them, or those mentioning the filter.
+    /// The entries to show: all of them, those mentioning the filter, those that are errors, or both.
     public var shown: [LogEntry] {
         let wanted = filter.trimmingCharacters(in: .whitespaces)
-        return wanted.isEmpty ? entries : entries.filter { $0.matches(wanted) }
+        return entries.filter { entry in
+            (wanted.isEmpty || entry.matches(wanted)) && (!problemsOnly || entry.isProblem)
+        }
     }
 
     /// What to say in place of the entries when there are none to show; nil otherwise.
@@ -68,6 +72,7 @@ public final class LogsModel: ObservableObject {
         if entries.isEmpty { return "Nothing in this log yet." }
         let wanted = filter.trimmingCharacters(in: .whitespaces)
         if !wanted.isEmpty, shown.isEmpty { return "Nothing in this log mentions \u{201C}\(wanted)\u{201D}." }
+        if problemsOnly, shown.isEmpty { return "Nothing in this log is an error." }
         return nil
     }
 
@@ -110,6 +115,12 @@ public final class LogsModel: ObservableObject {
     public func setFilter(_ text: String) {
         guard text != filter else { return }
         filter = text
+    }
+
+    /// Shows only the entries that are errors, or everything again.
+    public func setProblemsOnly(_ on: Bool) {
+        guard on != problemsOnly else { return }
+        problemsOnly = on
     }
 
     /// Stops adding new lines, or goes on and catches up.

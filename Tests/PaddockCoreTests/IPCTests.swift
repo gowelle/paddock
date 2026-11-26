@@ -61,6 +61,7 @@ final class IPCTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 15, "serviceEnv is new and status leaves secrets out")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 16, "catalog entries say why they can't run here")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 17, "approvals name their folder; tasksApprove may too")
+        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 30, "task and service statuses say when a crash was terminal")
         // An approval from a client that doesn't name the folder still reads.
         let older = try JSONDecoder().decode(Request.self, from: Data(#"{"tasksApprove":{"site":"shop","hash":"v1:x"}}"#.utf8))
         XCTAssertEqual(older, .tasksApprove(site: "shop", hash: "v1:x", folder: nil))

@@ -29,7 +29,8 @@ extension SiteTaskManager {
                     tasks.append(TaskStatus(name: name, run: Messages.shownCommand(definition.run), state: taskState,
                                             restartOnChange: definition.restartsOnChange,
                                             logPath: logFile(site: view.name, task: name).path,
-                                            warning: state.report ?? warning ?? state.listening))
+                                            warning: state.report ?? warning ?? state.listening,
+                                            gaveUp: gaveUp(process, state: state) ? true : nil))
                 }
             } else if let pending = evaluation.pending {
                 tasks = pending.tasks.keys.sorted().map { name in
@@ -74,6 +75,12 @@ extension SiteTaskManager {
                 routes: approvedRoutes.filter { !reserved.contains($0.value) }, folder: view.folder)
         }
         return result
+    }
+
+    /// Whether the task's last crash was terminal: its supervisor gave up, or it settled as given up.
+    func gaveUp(_ process: String, state: Runtime) -> Bool {
+        if case .gaveUp? = state.settled { return true }
+        return supervisor.hasGivenUp(process)
     }
 
     /// A task's state, always the truth: what the supervisor says, refined by why Paddock left it as it is.

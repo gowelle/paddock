@@ -18,6 +18,8 @@ public struct ServiceRow: Identifiable, Equatable, Sendable {
     public let opensMailWindow: Bool
     /// A database server (PostgreSQL, MySQL), while it runs.
     public let canCreateDatabase: Bool
+    /// A newer version of its series `Update` would switch to; nil when it is up to date.
+    public let updateAvailable: String?
 }
 
 /// The `Remove and Delete Data…` question as the dialog presents it; confirming hands it back whole.
@@ -81,7 +83,8 @@ extension AppModel {
                               portText: Messages.servicePorts(service), notes: notes,
                               canStart: startable, canStop: stoppable, canOpen: running && service.openURL != nil,
                               opensMailWindow: running && service.kind == "mail",
-                              canCreateDatabase: running && Self.databaseKinds.contains(service.kind))
+                              canCreateDatabase: running && Self.databaseKinds.contains(service.kind),
+                              updateAvailable: service.updateAvailable)
         }
     }
 
@@ -128,6 +131,24 @@ extension AppModel {
     public func startService(_ id: String) async { await serviceAction(.serviceStart(name: id)) }
     public func stopService(_ id: String) async { await serviceAction(.serviceStop(name: id)) }
     public func restartService(_ id: String) async { await serviceAction(.serviceRestart(name: id)) }
+
+    /// Downloads the newest version of the service's series and switches to it, as `paddock service update`
+    /// does: it may take an hour, so the row says it is busy meanwhile.
+    public func updateService(_ id: String) async {
+        let before = status?.services.first { $0.id == id }
+        guard case .ok(let after)? = await act(.serviceUpdate(name: id), timeout: 3600) else {
+            await refresh()
+            return
+        }
+        let updated = after.services.first { $0.id == id }
+        let name = updated?.name ?? before?.name ?? id
+        if let version = updated?.version, version != before?.version {
+            showNotice("\(name) now runs \(version).")
+        } else if let version = before?.version {
+            showNotice("\(name) is up to date (\(version)).")
+        }
+        await refresh()
+    }
 
     /// `Remove and Delete Data…`: issues the question, with a token only its confirmation can use.
     public func askToRemoveAndDeleteData(_ id: String) {

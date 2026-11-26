@@ -93,6 +93,11 @@ struct LogDetail: View {
             HStack(spacing: 8) {
                 TextField("Filter", text: Binding(get: { logs.filter }, set: { logs.setFilter($0) }))
                     .textFieldStyle(.roundedBorder)
+                Toggle("Errors only", isOn: Binding(
+                    get: { logs.problemsOnly },
+                    set: { logs.setProblemsOnly($0) }))
+                    .toggleStyle(.button)
+                    .help("Show only the entries that are errors")
                 Toggle("Pause", isOn: Binding(
                     get: { logs.isPaused },
                     set: { paused in Task { await logs.setPaused(paused) } }))

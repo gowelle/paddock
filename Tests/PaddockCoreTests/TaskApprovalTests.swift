@@ -362,6 +362,18 @@ final class TaskApprovalTests: XCTestCase {
 
     // MARK: - Status on the wire
 
+    func testAGaveUpCrashTravelsInTheTaskStatusAndIsNilFromOlderDaemons() throws {
+        let status = TaskStatus(name: "queue", run: "php artisan queue:work", state: .crashed(reason: "exited 5 times"),
+                                restartOnChange: false, logPath: "/h/log/tasks/shop/queue.log", warning: nil,
+                                gaveUp: true)
+        let json = String(decoding: try JSONEncoder().encode(status), as: UTF8.self)
+        XCTAssertTrue(json.contains(#""gaveUp":true"#), json)
+        XCTAssertEqual(try JSONDecoder().decode(TaskStatus.self, from: Data(json.utf8)), status)
+
+        let older = #"{"name": "q", "run": "x", "state": {"crashed": {"reason": "r"}}, "restartOnChange": false, "logPath": "/l"}"#
+        XCTAssertNil(try JSONDecoder().decode(TaskStatus.self, from: Data(older.utf8)).gaveUp)
+    }
+
     func testTaskStatusRoundTripsAndUnknownStatesFallBack() throws {
         let status = SiteTasksStatus(
             approval: .changed,

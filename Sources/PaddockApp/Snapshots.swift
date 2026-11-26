@@ -261,10 +261,12 @@ enum Snapshots {
     }
 
     private static func service(_ id: String, _ name: String, kind: String, state: ServiceState, ports: [String: Int],
-                                openURL: String? = nil, notes: [String]? = nil) -> ServiceStatus {
+                                openURL: String? = nil, notes: [String]? = nil,
+                                updateAvailable: String? = nil) -> ServiceStatus {
         ServiceStatus(id: id, name: name, kind: kind, version: "1", displayName: name, state: state, ports: ports,
                       env: [], openURL: openURL, dataPath: "/Users/you/Library/Application Support/Paddock/services/\(id)/data",
-                      autostart: true, mainPort: ports["main"] ?? ports["smtp"], notes: notes)
+                      autostart: true, mainPort: ports["main"] ?? ports["smtp"],
+                      updateAvailable: updateAvailable, notes: notes)
     }
 
     // MARK: - Dumps
@@ -571,7 +573,8 @@ enum Snapshots {
             service("meilisearch-1-57", "Meilisearch 1.57", kind: "meilisearch", state: .running, ports: ["main": 7701],
                     openURL: "http://127.0.0.1:7701",
                     notes: ["Search indexes are tied to Meilisearch 1.57; export a dump before changing version."]),
-            service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5433]),
+            service("postgres-18", "PostgreSQL 18", kind: "postgres", state: .running, ports: ["main": 5433],
+                    updateAvailable: "18.7.0"),
             service("mail", "Mail", kind: "mail", state: .portInUse(holder: "Herd"), ports: ["smtp": 1025, "http": 8025],
                     openURL: "http://127.0.0.1:8025"),
         ]
