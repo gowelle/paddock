@@ -7,6 +7,17 @@ public enum Caddyfile {
     /// (`VALET_STATIC_PREFIX` in Resources/router/server.php).
     static let valetStaticPrefix = "41c270e4-5535-4daa-b23e-c269744c2f45"
 
+    /// The sites the LAN listener serves, and the port its landing page links to.
+    public struct LANSharing: Equatable, Sendable {
+        public var sites: [String]
+        public var port: Int
+
+        public init(sites: [String], port: Int) {
+            self.sites = sites
+            self.port = port
+        }
+    }
+
     /// The name of Paddock's local certificate authority. Its root's common name starts with it; Caddy's
     /// default ("Caddy Local Authority") is shared with other Caddy-based tools, whose roots browsers
     /// could pick instead by name.
@@ -17,7 +28,8 @@ public enum Caddyfile {
     /// its own block(s) where each route is handled before the PHP router; every other site renders as without.
     public static func render(sites: [Site], defaultPHP: PHPVersion, paths: Paths,
                               settings: Settings, namesAuthority: Bool = true,
-                              proxies: [String: [String: Int]] = [:], dumpsTo: Int? = nil) -> String {
+                              proxies: [String: [String: Int]] = [:], dumpsTo: Int? = nil,
+                              lan: LANSharing? = nil) -> String {
         // With a listener for dumps, every PHP request is told to send its `dump()` output there
         // (`DumpDestination`): two FastCGI variables, which PHP shows a site as `$_SERVER` entries.
         let dumps = DumpDestination.environment(port: dumpsTo).sorted { $0.key < $1.key }
@@ -127,7 +139,51 @@ public enum Caddyfile {
                 """
             }
         }
+
+        if let lan {
+            let bind = quote("unix/" + paths.lanSocket.path)
+            let names = lan.sites.sorted()
+            out += """
+
+            http:// {
+                bind \(bind)
+                header Content-Type "text/html; charset=utf-8"
+                respond \(quote(landingPage(sites: names, port: lan.port)))
+            }
+            """
+            for name in names {
+                guard let site = sites.first(where: { $0.name == name }) else { continue }
+                let socket = quote(paths.fpmSocket(site.php).path)
+                out += """
+
+                http://\(LAN.host(for: name)), http://*.\(LAN.host(for: name)) {
+                    bind \(bind)
+                    import paddock_php \(socket)
+                }
+                """
+            }
+        }
         return out
+    }
+
+    /// The page the LAN port shows for a host that is not a shared site (an IP address, say).
+    static func landingPage(sites: [String], port: Int) -> String {
+        let items = sites.map { name in
+            let url = htmlEscape(LAN.url(for: name, port: port))
+            return "<li><a href=\"\(url)\">\(htmlEscape(name))</a></li>"
+        }.joined()
+        let list = sites.isEmpty
+            ? "<p>No sites are shared on this network yet. Choose sites in Paddock's settings.</p>"
+            : "<ul>\(items)</ul>"
+        return "<!doctype html><meta charset=\"utf-8\"><title>Sites on this network</title>"
+            + "<h1>Sites on this network</h1>\(list)"
+    }
+
+    static func htmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     /// A site's routes as rendered: only prefixes that pass the file's own rule (checked again here) and ports in

@@ -19,11 +19,18 @@ public struct State: Codable, Equatable, Sendable {
     /// The loopback port PHP sends its dumps to (the app's Dumps window, while it is open); nil when nothing
     /// is listening for them and `dump()` shows where it always did.
     public var dumpsTo: Int?
+    /// The master switch for serving chosen sites to other devices on the network.
+    public var lanEnabled: Bool
+    /// The sites the owner chose to serve on the network; inert while `lanEnabled` is off.
+    public var lanSites: Set<String>
+    /// The port the LAN listener holds, once one has been picked (8080 or the next free); nil tries the default.
+    public var lanPort: Int?
 
     public init(parked: [String] = [], links: [String: String] = [:], secured: Set<String> = [],
                 phpPins: [String: PHPVersion] = [:], defaultPHP: PHPVersion? = nil,
                 previousResolver: String? = nil, services: [ServiceInstance] = [],
-                taskApprovals: [String: ApprovedTasks] = [:], xdebug: Set<PHPVersion> = [], dumpsTo: Int? = nil) {
+                taskApprovals: [String: ApprovedTasks] = [:], xdebug: Set<PHPVersion> = [], dumpsTo: Int? = nil,
+                lanEnabled: Bool = false, lanSites: Set<String> = [], lanPort: Int? = nil) {
         self.parked = parked
         self.links = links
         self.secured = secured
@@ -34,10 +41,14 @@ public struct State: Codable, Equatable, Sendable {
         self.taskApprovals = taskApprovals
         self.xdebug = xdebug
         self.dumpsTo = dumpsTo
+        self.lanEnabled = lanEnabled
+        self.lanSites = lanSites
+        self.lanPort = lanPort
     }
 
     private enum CodingKeys: String, CodingKey {
         case parked, links, secured, phpPins, defaultPHP, previousResolver, services, taskApprovals, xdebug, dumpsTo
+        case lanEnabled, lanSites, lanPort
     }
 
     /// As before services existed, plus `services` (absent in older files: none) and `taskApprovals` (absent:
@@ -56,6 +67,9 @@ public struct State: Codable, Equatable, Sendable {
         // Absent in older files, and never worth the file: off.
         xdebug = Set(((try? c.decodeIfPresent([Lenient<PHPVersion>].self, forKey: .xdebug)) ?? []).compactMap(\.value))
         dumpsTo = ((try? c.decodeIfPresent(Int.self, forKey: .dumpsTo)) ?? nil).flatMap { DumpDestination.isPort($0) ? $0 : nil }
+        lanEnabled = ((try? c.decodeIfPresent(Bool.self, forKey: .lanEnabled)) ?? nil) ?? false
+        lanSites = Set((try? c.decodeIfPresent([String].self, forKey: .lanSites)) ?? [])
+        lanPort = ((try? c.decodeIfPresent(Int.self, forKey: .lanPort)) ?? nil).flatMap { LAN.isUsablePort($0) ? $0 : nil }
     }
 
     /// First-run state: `~/Paddock` parked, expanded to an absolute path.

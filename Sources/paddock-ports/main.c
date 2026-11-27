@@ -1,7 +1,8 @@
-// paddock-ports: accepts connections on listening loopback TCP sockets and copies bytes to and
-// from Paddock's two owner-only Unix sockets (http and https). The listening sockets come from
-// launchd (`launchd` form, ports 80/443) or are bound here (`listen` form, development and tests).
-// Everything after "these are the listening fds" is shared by both forms.
+// paddock-ports: accepts connections on listening TCP sockets and copies bytes to and from
+// Paddock's owner-only Unix sockets. The listening sockets come from launchd (`launchd` form,
+// ports 80/443), are bound on loopback here (`listen` form, development and tests), or are bound
+// on every interface for the LAN (`lan` form, one port, one socket). Everything after "these are
+// the listening fds" is shared by all forms.
 //
 // Written in C because `launch_activate_socket` (<launch.h>) is not visible to Swift via Darwin.
 
@@ -34,14 +35,14 @@ enum {
     THREAD_STACK = 256 * 1024,
 };
 
-enum service { HTTP = 0, HTTPS = 1 };
+enum service { HTTP = 0, HTTPS = 1, LAN = 2 };
 
 struct listener {
     int fd;
     enum service service;
 };
 
-static const char *socket_paths[2];
+static const char *socket_paths[3];
 static atomic_int active_connections;
 // Fixed at MAX_CONNECTIONS and IDLE_SECONDS except in the `listen` form, whose hidden trailing
 // arguments let tests use small values. Never read from the environment or a file.
@@ -52,7 +53,8 @@ static pthread_attr_t detached_threads;  // one per connection
 
 static _Noreturn void usage(void) {
     fputs("usage: paddock-ports launchd <http-socket-path> <https-socket-path>\n"
-          "       paddock-ports listen <http-port> <https-port> <http-socket-path> <https-socket-path>\n",
+          "       paddock-ports listen <http-port> <https-port> <http-socket-path> <https-socket-path>\n"
+          "       paddock-ports lan <port> <socket-path>\n",
           stderr);
     exit(EXIT_USAGE);
 }
@@ -222,8 +224,9 @@ static void serve_forever(const struct listener *listeners, int count) {
         if (flags >= 0) (void)fcntl(listeners[i].fd, F_SETFL, flags | O_NONBLOCK);
         polled[i] = (struct pollfd){ .fd = listeners[i].fd, .events = POLLIN };
     }
-    fprintf(stderr, "paddock-ports: forwarding %d listening sockets to %s and %s\n",
-            count, socket_paths[HTTP], socket_paths[HTTPS]);
+    fprintf(stderr, "paddock-ports: forwarding %d listening sockets to", count);
+    for (int i = 0; i < 3; i++) if (socket_paths[i] != NULL) fprintf(stderr, " %s", socket_paths[i]);
+    fputc('\n', stderr);
     for (;;) {
         if (poll(polled, (nfds_t)count, -1) < 0) {
             if (errno == EINTR) continue;
@@ -270,7 +273,7 @@ static int launchd_listeners(struct listener **out) {
     return total;
 }
 
-static int listen_on(int family, const char *address, int port) {
+static int listen_on(int family, bool any_interface, int port) {
     int fd = socket(family, SOCK_STREAM, 0);
     int status = -1;
     int error = errno;
@@ -279,12 +282,13 @@ static int listen_on(int family, const char *address, int port) {
         if (family == AF_INET6) {
             set_option(fd, IPPROTO_IPV6, IPV6_V6ONLY);
             struct sockaddr_in6 sa = { .sin6_len = sizeof sa, .sin6_family = AF_INET6,
-                                       .sin6_port = htons((in_port_t)port), .sin6_addr = in6addr_loopback };
+                                       .sin6_port = htons((in_port_t)port),
+                                       .sin6_addr = any_interface ? in6addr_any : in6addr_loopback };
             status = bind(fd, (struct sockaddr *)&sa, sizeof sa);
         } else {
             struct sockaddr_in sa = { .sin_len = sizeof sa, .sin_family = AF_INET,
                                       .sin_port = htons((in_port_t)port),
-                                      .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+                                      .sin_addr.s_addr = htonl(any_interface ? INADDR_ANY : INADDR_LOOPBACK) };
             status = bind(fd, (struct sockaddr *)&sa, sizeof sa);
         }
         if (status == 0) status = listen(fd, SOMAXCONN);
@@ -292,7 +296,8 @@ static int listen_on(int family, const char *address, int port) {
     }
     if (status != 0) {
         char what[64];
-        snprintf(what, sizeof what, "cannot listen on %s port %d", address, port);
+        snprintf(what, sizeof what, "cannot listen on %s port %d",
+                 any_interface ? "all interfaces" : (family == AF_INET6 ? "::1" : "127.0.0.1"), port);
         fatal(1, what, strerror(error));
     }
     return fd;
@@ -303,11 +308,20 @@ static int bound_listeners(const int ports[2], struct listener **out) {
     static struct listener listeners[4];
     int n = 0;
     for (int s = HTTP; s <= HTTPS; s++) {
-        listeners[n++] = (struct listener){ listen_on(AF_INET, "127.0.0.1", ports[s]), (enum service)s };
-        listeners[n++] = (struct listener){ listen_on(AF_INET6, "::1", ports[s]), (enum service)s };
+        listeners[n++] = (struct listener){ listen_on(AF_INET, false, ports[s]), (enum service)s };
+        listeners[n++] = (struct listener){ listen_on(AF_INET6, false, ports[s]), (enum service)s };
     }
     *out = listeners;
     return n;
+}
+
+/// `lan` form: binds 0.0.0.0 and :: on one port, forwarding to the LAN socket.
+static int lan_listeners(int port, struct listener **out) {
+    static struct listener listeners[2];
+    listeners[0] = (struct listener){ listen_on(AF_INET, true, port), LAN };
+    listeners[1] = (struct listener){ listen_on(AF_INET6, true, port), LAN };
+    *out = listeners;
+    return 2;
 }
 
 // MARK: - Startup
@@ -347,14 +361,14 @@ static void raise_descriptor_limit(void) {
 }
 
 int main(int argc, char *argv[]) {
-    bool from_launchd;
+    enum { MODE_LAUNCHD, MODE_LISTEN, MODE_LAN } mode;
     int ports[2] = { 0, 0 };
     if (argc == 4 && strcmp(argv[1], "launchd") == 0) {
-        from_launchd = true;
+        mode = MODE_LAUNCHD;
         socket_paths[HTTP] = argv[2];
         socket_paths[HTTPS] = argv[3];
     } else if (argc >= 6 && argc <= 8 && strcmp(argv[1], "listen") == 0) {
-        from_launchd = false;
+        mode = MODE_LISTEN;
         ports[HTTP] = parse_number(argv[2], 1, 65535);
         ports[HTTPS] = parse_number(argv[3], 1, 65535);
         socket_paths[HTTP] = argv[4];
@@ -362,11 +376,16 @@ int main(int argc, char *argv[]) {
         // Hidden, for tests only: [idle-seconds [max-connections]], never above the defaults.
         if (argc >= 7) idle_seconds = parse_number(argv[6], 1, IDLE_SECONDS);
         if (argc == 8) max_connections = parse_number(argv[7], 1, MAX_CONNECTIONS);
+    } else if (argc >= 4 && argc <= 6 && strcmp(argv[1], "lan") == 0) {
+        mode = MODE_LAN;
+        ports[HTTP] = parse_number(argv[2], 1, 65535);
+        socket_paths[LAN] = argv[3];
+        if (argc >= 5) idle_seconds = parse_number(argv[4], 1, IDLE_SECONDS);
+        if (argc == 6) max_connections = parse_number(argv[5], 1, MAX_CONNECTIONS);
     } else {
         usage();
     }
-    check_socket_path(socket_paths[HTTP]);
-    check_socket_path(socket_paths[HTTPS]);
+    for (int s = HTTP; s <= LAN; s++) if (socket_paths[s] != NULL) check_socket_path(socket_paths[s]);
 
     signal(SIGPIPE, SIG_IGN);
     signal(SIGTERM, exit_on_sigterm);
@@ -378,7 +397,12 @@ int main(int argc, char *argv[]) {
     pthread_attr_setdetachstate(&detached_threads, PTHREAD_CREATE_DETACHED);
 
     struct listener *listeners;
-    int count = from_launchd ? launchd_listeners(&listeners) : bound_listeners(ports, &listeners);
+    int count;
+    switch (mode) {
+    case MODE_LAUNCHD: count = launchd_listeners(&listeners); break;
+    case MODE_LISTEN: count = bound_listeners(ports, &listeners); break;
+    case MODE_LAN: count = lan_listeners(ports[HTTP], &listeners); break;
+    }
     serve_forever(listeners, count);
     return 0;
 }

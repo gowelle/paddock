@@ -155,6 +155,67 @@ final class CaddyfileTests: XCTestCase {
         XCTAssertEqual(out.components(separatedBy: "bind ").count - 1, 4, out)
     }
 
+    // MARK: - LAN
+
+    private func render(_ sites: [Site], lan: Caddyfile.LANSharing?) -> String {
+        var settings = Settings()
+        settings.httpPort = 18080
+        settings.httpsPort = 18443
+        return Caddyfile.render(sites: sites, defaultPHP: v84, paths: paths, settings: settings, lan: lan)
+    }
+
+    /// Shared sites answer on the LAN socket as plain HTTP, whatever their loopback block looks like;
+    /// a secured site is not redirected to HTTPS there, and its proxy routes stay off the LAN.
+    func testSharedSitesGetPlainHttpLanBlocks() {
+        let out = render([site("blog", pinned: true, php: v83), site("shop", secured: true), site("plain")],
+                         lan: Caddyfile.LANSharing(sites: ["blog", "shop"], port: 8090))
+        XCTAssertTrue(out.contains("""
+        http://blog.paddock.local, http://*.blog.paddock.local {
+            bind "unix//h/Paddock/run/lan.sock"
+            import paddock_php "/h/Paddock/run/php-8.3.sock"
+        }
+        """), out)
+        XCTAssertTrue(out.contains("""
+        http://shop.paddock.local, http://*.shop.paddock.local {
+            bind "unix//h/Paddock/run/lan.sock"
+            import paddock_php "/h/Paddock/run/php-8.4.sock"
+        }
+        """), out)
+        XCTAssertFalse(out.contains("http://plain.paddock.local"), "only chosen sites are shared")
+    }
+
+    /// Proxy routes are loopback dev servers; sharing a site on the LAN must not expose them.
+    func testLanBlocksNeverIncludeProxyRoutes() {
+        var settings = Settings()
+        settings.httpPort = 18080
+        settings.httpsPort = 18443
+        let out = Caddyfile.render(sites: [site("blog")], defaultPHP: v84, paths: paths, settings: settings,
+                                   proxies: ["blog": ["/app": 9000]],
+                                   lan: Caddyfile.LANSharing(sites: ["blog"], port: 8090))
+        guard let start = out.range(of: "http://blog.paddock.local") else { return XCTFail(out) }
+        let block = out[start.lowerBound...]
+        XCTAssertFalse(block.contains("reverse_proxy"), String(block))
+    }
+
+    func testLanLandingPageListsSharedSitesAndTheirPort() {
+        let out = render([site("blog"), site("shop")], lan: Caddyfile.LANSharing(sites: ["blog", "shop"], port: 8090))
+        XCTAssertTrue(out.contains("Sites on this network"))
+        XCTAssertTrue(out.contains("http://blog.paddock.local:8090"))
+        XCTAssertTrue(out.contains("http://shop.paddock.local:8090"))
+        XCTAssertTrue(out.contains("bind \"unix//h/Paddock/run/lan.sock\""))
+        XCTAssertFalse(out.contains("{http.request.host}"), "the page never echoes what the request asked for")
+    }
+
+    func testLanLandingPageExplainsWhenNothingIsShared() {
+        let out = render([site("blog")], lan: Caddyfile.LANSharing(sites: [], port: 8090))
+        XCTAssertTrue(out.contains("No sites are shared"))
+        XCTAssertFalse(out.contains("http://blog.paddock.local"))
+    }
+
+    func testWithoutTheMasterSwitchNothingIsRenderedForTheLan() {
+        XCTAssertFalse(render([site("blog")], lan: nil).contains("paddock.local"))
+    }
+
     // MARK: - Proxy routes
 
     private func render(_ sites: [Site], proxies: [String: [String: Int]]) -> String {

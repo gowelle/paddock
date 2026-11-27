@@ -74,6 +74,9 @@ struct MenuContentView: View {
             MenuRow("Open Sites Folder", isEnabled: model.sitesFolder != nil) {
                 if let folder = model.sitesFolder { NSWorkspace.shared.open(folder) }
             }
+            if let url = model.lanURL {
+                MenuRow("Copy Network Link") { model.copyLANLink(url) }
+            }
             if model.isRunning {
                 MenuRow("Stop", isEnabled: !model.isBusy(.stop)) { Task { await model.stop() } }
             } else {
@@ -123,8 +126,11 @@ struct MenuContentView: View {
     }
 
     private var siteItems: [PopUpItem] {
-        model.sites.map { site in
-            PopUpItem(title: site.host, detail: "PHP \(site.php)", symbol: site.secured ? "lock.fill" : nil) {
+        let sharing = model.status?.lan?.enabled == true
+        return model.sites.map { site in
+            PopUpItem(title: site.host,
+                      detail: "PHP \(site.php)" + (sharing && site.lan ? " · on your network" : ""),
+                      symbol: site.secured ? "lock.fill" : nil) {
                 if let url = URL(string: site.url) { NSWorkspace.shared.open(url) }
             }
         }

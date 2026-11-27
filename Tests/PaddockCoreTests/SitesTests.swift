@@ -108,6 +108,15 @@ final class SitesTests: XCTestCase {
         XCTAssertEqual(r.site(containing: prefixed)?.name, "outer-two")
     }
 
+    func testLanMembershipApplied() throws {
+        let parked = try mkdir("Sites")
+        try mkdir("Sites/a")
+        try mkdir("Sites/b")
+        let r = registry(State(parked: [parked], lanEnabled: true, lanSites: ["a"]))
+        XCTAssertTrue(r.site(named: "a")!.lan)
+        XCTAssertFalse(r.site(named: "b")!.lan)
+    }
+
     func testPinAndSecuredApplied() throws {
         let parked = try mkdir("Sites")
         try mkdir("Sites/a")

@@ -174,6 +174,14 @@ extension Engine {
             }
             return .ok(status())
 
+        case .lan(let enabled):
+            return await change { $0.lanEnabled = enabled }
+        case .lanSite(let name, let enabled):
+            guard let site = knownSite(name, alsoIn: { $0.lanSites }) else { return unknownSite(name) }
+            return await change { state in
+                if enabled { state.lanSites.insert(site) } else { state.lanSites.remove(site) }
+            }
+
         case .serviceAdd, .serviceRemove, .serviceStart, .serviceStop, .serviceRestart, .serviceCatalog, .serviceUpdate,
              .serviceCreateDatabase, .serviceEnv:
             return await performService(request)

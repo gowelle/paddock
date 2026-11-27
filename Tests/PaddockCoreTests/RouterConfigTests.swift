@@ -31,6 +31,12 @@ final class RouterConfigTests: XCTestCase {
         XCTAssertEqual(json["paths"] as? [String], [sitesDir, "/a/b", "/c d"])
     }
 
+    /// The router strips this suffix as it strips `.test`, so site.paddock.local names the same site.
+    func testConfigNamesTheLanDomain() throws {
+        try RouterConfig.write(state: State(), paths: paths, settings: Settings())
+        XCTAssertEqual(try config()["lan_domain"] as? String, "paddock.local")
+    }
+
     /// A real directory for a link to point at (the registry serves only links to directories, and the
     /// router follows the same rule).
     private func target(_ name: String) throws -> String {

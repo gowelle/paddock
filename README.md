@@ -70,6 +70,8 @@ you a question Paddock could answer itself.
   - [The Logs window](#the-logs-window)
   - [The Doctor](#the-doctor)
 - [The `paddock` CLI](#the-paddock-cli)
+  - [Sites](#sites)
+  - [Sites on your network](#sites-on-your-network)
 - [Services](#services)
 - [Site tasks and `paddock.json`](#site-tasks-and-paddockjson)
 - [Using Paddock from an AI agent](#using-paddock-from-an-ai-agent)
@@ -99,6 +101,7 @@ you a question Paddock could answer itself.
 | **A Dumps window** | While it is open, `dump()` and `dd()` from every site and from `php` in the terminal show in Paddock instead of in the page. Close it and they show where they always did. |
 | **A Logs window** | Paddock's logs, each service's, each site task's and each site's own `storage/logs`, in one window that follows them as they are written. Laravel errors fold their stack traces. |
 | **A Doctor** | One command, one window or one MCP tool that walks the whole path to a site — daemon, ports, DNS, web server, PHP, certificate, the HTTP answer and the newest log error — and names the command that fixes each failure where one exists. |
+| **Sites on your network** | Tick a site and other devices on the same network open it at `http://<site>.paddock.local:8080`. Off by default; only the sites you pick are reachable, over plain HTTP, with no login. |
 | **A Mail window** | Read the mail your apps send, caught locally: HTML, plain text and source, with attachments. Remote content stays blocked until you ask for it. |
 | **A Databases window** | Browse and edit the PostgreSQL and MySQL services you added: their databases, tables, columns and rows, with one read-only SQL statement beside them. |
 | **A native menu-bar app** | Start and stop, open sites, switch PHP versions, manage services and tasks. No configuration forms. |
@@ -206,7 +209,10 @@ General, PHP, Sites, Services and Tasks.
   <img src="docs/images/settings-tasks-running-light.png" width="420" alt="The Tasks tab: a site's queue, scheduler and websocket tasks with their state">
 </p>
 
-- **Sites:** open a site, secure it with a checkbox, pin its PHP version.
+- **Sites:** open a site, secure it with a checkbox, pin its PHP version, and
+  tick the sites other devices on your network can open. The network switch
+  above the table shows the address, and a QR button beside a shared site
+  puts its link on a phone.
 - **PHP:** install and remove versions, choose the default, switch Xdebug on
   or off for a version, open `php.ini`.
 - **Services:** add, start, stop, restart and remove services, copy or
@@ -406,6 +412,25 @@ take a site default to the one containing the current directory.
 | `paddock unsecure [site]` | Serve a site over plain HTTP. |
 | `paddock trust` | Make macOS trust Paddock's certificate for HTTPS sites. |
 | `paddock open [site]` | Open a site in the browser. |
+
+### Sites on your network
+
+| Command | What it does |
+|---|---|
+| `paddock lan on` | Share the sites ticked for the network (Settings… → Sites → Network). |
+| `paddock lan off` | Stop sharing sites on the network. |
+| `paddock lan share [site]` | Tick one site for sharing. |
+| `paddock lan unshare [site]` | Stop sharing one site. |
+
+Shared sites are served as plain HTTP on port 8080 (or the next free one in
+8080–8099) and announced as `<site>.paddock.local` over mDNS. There is no
+login, so share only on a network you trust. Services, databases, Mail, dumps
+and the daemon's control socket stay loopback-only.
+
+A device that can't resolve `paddock.local` names can open the numeric
+address shown in the app or `paddock status`. That reaches the landing page
+listing what's shared; opening a site from there needs the names to resolve,
+either through mDNS or through your router's DNS.
 
 ### PHP
 
@@ -704,7 +729,7 @@ Paddock is four small executables sharing one library:
 | `PaddockApp` | The menu-bar app. |
 | `paddockd` | The background daemon. Runs the web stack, the DNS responder, services and site tasks, and serves IPC over a Unix socket. |
 | `paddock` | The command-line tool. Symlinked as `php` and `composer`, it becomes those programs, using the site's PHP version, without parsing arguments. |
-| `paddock-ports` | A tiny C helper that copies bytes between ports 80/443 and Caddy's private Unix sockets. |
+| `paddock-ports` | A tiny C helper that copies bytes between ports (80/443, or the LAN port) and Caddy's private Unix sockets. |
 
 A request to a `.test` site travels like this:
 
@@ -718,8 +743,9 @@ flowchart LR
     C -- "paddock.json proxy paths" --> T["Site tasks<br>e.g. Reverb"]
 ```
 
-- **Caddy** listens only on two owner-only Unix sockets (`http.sock` and
-  `https.sock`), never on a network port.
+- **Caddy** listens only on owner-only Unix sockets (`http.sock`,
+  `https.sock`, and `lan.sock` while sharing is on), never on a network port
+  by itself.
 - **`paddock-ports`**, registered with launchd during the one-password setup,
   receives the already-open loopback ports 80 and 443 from launchd and forwards
   each connection to Caddy's sockets. Nothing runs as root at runtime.
@@ -729,6 +755,10 @@ flowchart LR
 - **A supervisor** keeps PHP-FPM, Caddy, services and site tasks alive:
   restart with backoff on crashes, clean shutdown, bounded logs, and leftovers
   reclaimed after a daemon crash.
+- **LAN sharing** adds a second `paddock-ports` listener on one high port,
+  bound to all interfaces, forwarding to `lan.sock`; Caddy serves only the
+  ticked sites there, and the engine publishes their `paddock.local` names
+  with mDNS. Nothing else is routed through it.
 
 The daemon and the port helper run in the background, started at login. The
 menu-bar app is only a window onto them and can stay closed.
@@ -756,6 +786,7 @@ Everything Paddock writes lives under
 | `PADDOCK_HTTP_PORT` | Override the HTTP port (default `80`). |
 | `PADDOCK_HTTPS_PORT` | Override the HTTPS port (default `443`). |
 | `PADDOCK_DNS_PORT` | Override the DNS responder port (default `53535`). |
+| `PADDOCK_LAN_PORT` | Override the port shared sites listen on (default `8080`, then 8080–8099). |
 | `PADDOCK_RESOURCES` | Override where bundled binaries (Caddy, PHP, …) are found. |
 | `PADDOCK_OPEN_COMMAND` | Override the browser opener used by `paddock open` (used by tests). |
 
@@ -857,7 +888,7 @@ Sources/
   PaddockCore/    The engine, daemon logic, services, tasks, web stack and IPC.
   paddock/        The `paddock` command-line tool (ArgumentParser subcommands).
   paddockd/       The background daemon.
-  paddock-ports/  The C port-80/443 helper.
+  paddock-ports/  The C port helper: ports 80/443 on the real system, the LAN port in development.
 Tests/
   PaddockCoreTests/   Unit tests.
   IntegrationTests/   End-to-end tests.

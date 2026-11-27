@@ -43,11 +43,13 @@ public struct Paths: Sendable {
     public var httpSocket: URL { run.appendingPathComponent("http.sock") }
     /// Caddy serves HTTPS here; the helper forwards the HTTPS port to it.
     public var httpsSocket: URL { run.appendingPathComponent("https.sock") }
+    /// Caddy serves the sites chosen for the LAN here; the LAN helper forwards its port to it.
+    public var lanSocket: URL { run.appendingPathComponent("lan.sock") }
 
     /// The first Unix socket of the web stack whose path is too long for macOS (more than 103 bytes:
     /// `sun_path` holds 104 including the terminating NUL), or nil when they all fit.
     public var tooLongSocket: String? {
-        [httpSocket, httpsSocket, caddyAdminSocket].map(\.path).first { Wire.socketAddress($0) == nil }
+        [httpSocket, httpsSocket, lanSocket, caddyAdminSocket].map(\.path).first { Wire.socketAddress($0) == nil }
     }
 
     /// Added services: shared binaries in `bin/`, and one folder per instance.

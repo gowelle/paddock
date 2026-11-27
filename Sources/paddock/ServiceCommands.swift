@@ -108,6 +108,7 @@ struct Status: ParsableCommand {
             return
         }
         for line in Messages.statusSummary(status) { print(line) }
+        if let lan = status.lan, lan.enabled { print(Messages.lanSummary(lan)) }
         print("Default PHP: \(status.defaultPHP.map(\.description) ?? "none installed")")
         print("")
         print(status.sites.isEmpty

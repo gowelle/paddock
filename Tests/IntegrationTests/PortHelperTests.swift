@@ -10,8 +10,10 @@ final class PortHelperTests: XCTestCase {
     private var root: URL!
     private var httpPort = 0
     private var httpsPort = 0
+    private var lanPort = 0
     private var httpSocket = ""
     private var httpsSocket = ""
+    private var lanSocket = ""
     private var helper: Process?
     private let helperStderr = LockedBox(Data())
     private var servers: [UnixServer] = []
@@ -22,8 +24,10 @@ final class PortHelperTests: XCTestCase {
         try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
         httpSocket = run.appendingPathComponent("http.sock").path
         httpsSocket = run.appendingPathComponent("https.sock").path
+        lanSocket = run.appendingPathComponent("lan.sock").path
         httpPort = TestSupport.freeTCPPort()
         httpsPort = TestSupport.freeTCPPort(excluding: [httpPort])
+        lanPort = TestSupport.freeTCPPort(excluding: [httpPort, httpsPort])
     }
 
     override func tearDown() {
@@ -46,8 +50,38 @@ final class PortHelperTests: XCTestCase {
         try assertExchange(port: httpsPort, send: "hello tls", reply: "https:hello tls")
     }
 
-    func testIPv6LoopbackIsServed() throws {
-        startServer(at: httpSocket, handler: UnixServer.taggedEcho("http:"))
+    func testLanFormForwardsToItsOneSocket() throws {
+        startServer(at: lanSocket, handler: UnixServer.taggedEcho("lan:"))
+        try startLanHelper()
+
+        // Bound on every interface, so loopback reaches it too, over IPv4 and IPv6.
+        try assertExchange(port: lanPort, send: "hello", reply: "lan:hello")
+        try assertExchange(host: "::1", port: lanPort, send: "v6", reply: "lan:v6")
+    }
+
+    func testLanFormClosesPromptlyWhenItsUpstreamIsDown() throws {
+        try startLanHelper()
+
+        let fd = try Client.connect(port: lanPort)
+        defer { close(fd) }
+        Client.setReceiveTimeout(fd, seconds: 1)
+        var byte: UInt8 = 0
+        let n = read(fd, &byte, 1)
+        let failure = errno
+        XCTAssertTrue(n == 0 || (n < 0 && failure == ECONNRESET), "read returned \(n), errno \(failure)")
+        XCTAssertTrue(helper!.isRunning)
+    }
+
+    func testLanFormRefusesAPortAlreadyInUse() throws {
+        // The helper binds every interface, so an ordinary wildcard listener is what it must lose to.
+        let holder = try TestSupport.listen(port: lanPort, host: "0.0.0.0")
+        defer { close(holder) }
+        let result = try runToExit(["lan", "\(lanPort)", lanSocket])
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.stderr.contains("\(lanPort)"), result.stderr)
+    }
+
+    func testIPv6LoopbackIsServed() throws {        startServer(at: httpSocket, handler: UnixServer.taggedEcho("http:"))
         startServer(at: httpsSocket, handler: UnixServer.taggedEcho("https:"))
         try startHelper()
 
@@ -294,6 +328,14 @@ final class PortHelperTests: XCTestCase {
             ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "1", "0"],
             ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "1", "513"],
             ["listen", "\(httpPort)", "\(httpsPort)", httpSocket, httpsSocket, "1", "4", "9"],
+            ["lan"],
+            ["lan", "\(lanPort)"],
+            ["lan", "http", lanSocket],
+            ["lan", "0", lanSocket],
+            ["lan", "70000", lanSocket],
+            ["lan", "\(lanPort)", lanSocket, "1", "4", "9"],
+            ["lan", "\(lanPort)", lanSocket, "0"],
+            ["lan", "\(lanPort)", lanSocket, "1", "513"],
             ["launchd", httpSocket, httpsSocket, "1"],
             ["launchd", httpSocket],
         ]
@@ -370,13 +412,21 @@ final class PortHelperTests: XCTestCase {
         }
     }
 
+    private func startLanHelper(tuning: [String] = []) throws {
+        try startHelper(arguments: ["lan", "\(lanPort)", lanSocket] + tuning)
+    }
+
     /// Starts `paddock-ports listen …` and waits for its start line.
     /// `tuning` are the listen form's hidden trailing arguments: idle seconds, connection cap.
     private func startHelper(tuning: [String] = [], httpSocketPath: String? = nil) throws {
+        try startHelper(arguments: ["listen", "\(httpPort)", "\(httpsPort)",
+                                    httpSocketPath ?? httpSocket, httpsSocket] + tuning)
+    }
+
+    private func startHelper(arguments: [String]) throws {
         let process = Process()
         process.executableURL = try helperBinary()
-        process.arguments = ["listen", "\(httpPort)", "\(httpsPort)", httpSocketPath ?? httpSocket, httpsSocket]
-            + tuning
+        process.arguments = arguments
         process.environment = [:]
         let errors = Pipe()
         process.standardError = errors

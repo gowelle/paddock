@@ -261,6 +261,24 @@ public final class AppModel: ObservableObject {
     public var systemIntegrationEnabled: Bool { services?.isSystemIntegrationEnabled ?? false }
     public var sitesFolder: URL? { parked.first.map { URL(fileURLWithPath: $0, isDirectory: true) } }
 
+    /// The address other devices open to see every shared site; nil unless sharing is on, the listener runs,
+    /// and this Mac has an address.
+    public var lanURL: String? {
+        guard let lan = status?.lan, lan.enabled, lan.running, let address = lan.address else { return nil }
+        return "http://\(address):\(lan.port)/"
+    }
+
+    /// The address other devices use for one site; nil while sharing is off.
+    public func lanURL(for site: Site) -> String? {
+        guard let lan = status?.lan, lan.enabled else { return nil }
+        return LAN.url(for: site.name, port: lan.port)
+    }
+
+    /// Puts a LAN link on the pasteboard. Not concealed: it holds no secret.
+    public func copyLANLink(_ url: String) {
+        copyText?(url, false)
+    }
+
     /// Xdebug is switched on for the version.
     public func isXdebugOn(_ v: PHPVersion) -> Bool { status?.xdebug.contains(v) ?? false }
 
