@@ -50,15 +50,13 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var xdebugAvailable: [PHPVersion]
     /// The loopback port PHP sends its dumps to, when it does; nil otherwise and from an older daemon.
     public var dumpsTo: Int?
-    /// The LAN listener (nil from a daemon older than LAN exposure).
-    public var lan: LanStatus?
 
     public init(running: Bool, blockedBy: [PortHolder], sites: [Site],
                 installedPHP: [PHPVersion], defaultPHP: PHPVersion?, processes: [String: String],
                 resolverInstalled: Bool, trustEnabled: Bool, dnsRunning: Bool, portHelperInstalled: Bool,
                 needsTrust: Bool = false, hasReplacedRootsToClean: Bool = false, services: [ServiceStatus] = [],
                 notices: [String] = [], xdebug: [PHPVersion] = [], xdebugAvailable: [PHPVersion] = [],
-                dumpsTo: Int? = nil, lan: LanStatus? = nil,
+                dumpsTo: Int? = nil,
                 version: Int = PaddockBuild.number, executablePath: String? = PaddockBuild.runningExecutable) {
         self.running = running
         self.blockedBy = blockedBy
@@ -77,7 +75,6 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         self.xdebug = xdebug
         self.xdebugAvailable = xdebugAvailable
         self.dumpsTo = dumpsTo
-        self.lan = lan
         self.version = version
         self.executablePath = executablePath
     }
@@ -85,7 +82,7 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case running, blockedBy, sites, installedPHP, defaultPHP, processes, resolverInstalled, trustEnabled
         case dnsRunning, portHelperInstalled, needsTrust, hasReplacedRootsToClean, version, executablePath
-        case services, notices, xdebug, xdebugAvailable, dumpsTo, lan
+        case services, notices, xdebug, xdebugAvailable, dumpsTo
     }
 
     /// Tolerates a reply from another build: anything missing gets a safe default (not running, nothing
@@ -111,7 +108,6 @@ public struct EngineStatus: Codable, Equatable, Sendable {
         xdebug = (try? c.decodeIfPresent([PHPVersion].self, forKey: .xdebug)) ?? []
         xdebugAvailable = (try? c.decodeIfPresent([PHPVersion].self, forKey: .xdebugAvailable)) ?? []
         dumpsTo = (try? c.decodeIfPresent(Int.self, forKey: .dumpsTo)) ?? nil
-        lan = try? c.decodeIfPresent(LanStatus.self, forKey: .lan)
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 0
         executablePath = try c.decodeIfPresent(String.self, forKey: .executablePath)
     }
@@ -159,12 +155,6 @@ public final class Engine: @unchecked Sendable {
     private let portHelper: URL?
     /// On the real system, whether launchd's helper is installed.
     private let portHelperInstalled: @Sendable () -> Bool
-    /// Picks the LAN listener's port: the saved one when free, else the next free in the fallback range.
-    private let lanPortChooser: @Sendable (Int?) -> Int?
-    /// Makes the LAN names resolve; tests replace it so runs never touch mDNS.
-    private let lanAdvertiser: @Sendable () -> any LANAdvertising
-    /// This Mac's address on the network, as the LAN listener is reached; tests fix it.
-    private let lanAddress: @Sendable () -> String?
 
     private let supervisor: Supervisor
     private let dns: DNSResponder
@@ -253,14 +243,6 @@ public final class Engine: @unchecked Sendable {
     static let validationTimeout: TimeInterval = 15
     /// Only touched while holding `operationLock`.
     private var fpmVersions: Set<PHPVersion> = []
-    /// The port the LAN listener holds, when it does. `lanLock`, so the supervisor's exit report can read it.
-    private var runningLANPort: Int?
-    /// Announces the shared sites' names over mDNS while the LAN listener runs. `lanLock`.
-    private var lanPublisher: LANPublisher?
-    /// Guards the LAN listener's fields: the supervisor reports its exit on another thread.
-    private let lanLock = NSLock()
-    /// Set when the LAN listener exits on its own, so `start` knows to bring it back. `flagsLock`.
-    private var lanStopped = false
     /// Versions whose build update failed in this daemon: not tried (or logged) again. `operationLock`.
     private var failedBuildUpdates: Set<PHPVersion> = []
     /// Whether this engine has cleared stale install staging folders. `operationLock`.
@@ -274,7 +256,6 @@ public final class Engine: @unchecked Sendable {
 
     private static let caddyName = "caddy"
     private static let portHelperName = "ports"
-    private static let lanName = "lan"
     private static let readyTimeout: TimeInterval = 15
 
     /// `portHelperInstalled` answers, on the real system, whether launchd's port helper is installed and
@@ -294,9 +275,6 @@ public final class Engine: @unchecked Sendable {
          portHelper: URL? = PortHelperLocator.binary(),
          portHelperInstalled: @escaping @Sendable () -> Bool = { false },
          portHolders: @escaping @Sendable ([Int]) -> [PortHolder] = { PortCheck.holders(of: $0) },
-         lanPortChooser: @escaping @Sendable (Int?) -> Int? = { LANPort.choose(saved: $0) },
-         lanAdvertiser: @escaping @Sendable () -> any LANAdvertising = { MDNSAdvertiser() },
-         lanAddress: @escaping @Sendable () -> String? = { LANAddress.primaryIPv4() },
          phpEnvironment: [String: String] = ProcessInfo.processInfo.environment,
          serviceSetup: ServiceSetup = .from(environment: ProcessInfo.processInfo.environment),
          taskEnvironment: (@Sendable () -> ShellEnvironment)? = nil,
@@ -308,9 +286,6 @@ public final class Engine: @unchecked Sendable {
         self.portHelper = portHelper
         self.portHelperInstalled = portHelperInstalled
         self.portHolders = portHolders
-        self.lanPortChooser = lanPortChooser
-        self.lanAdvertiser = lanAdvertiser
-        self.lanAddress = lanAddress
         self.log = log
         self.trust = trust
         // Assumed trusted until checked: nobody is asked to trust anything on a guess.
@@ -357,9 +332,8 @@ public final class Engine: @unchecked Sendable {
         defer { operationLock.unlock() }
         startDNS()
         if flags.running {
-            // Caddy, the helper or the LAN listener crashed and was given up on: tear down what is
-            // left and start afresh.
-            guard caddyCrashed || helperCrashed || lanStoppedUnexpectedly else { return }
+            // Caddy or the helper crashed and was given up on: tear down what is left and start afresh.
+            guard caddyCrashed || helperCrashed else { return }
             stopLocked()
         }
 
@@ -375,7 +349,6 @@ public final class Engine: @unchecked Sendable {
         }
         let state = try prepareState(updatingBuilds: true)
         replaceDefaultNamedAuthority()
-        let chosenState = chooseLANPort(state)
 
         var helper: URL?
         if managesPortHelper {
@@ -389,8 +362,8 @@ public final class Engine: @unchecked Sendable {
         }
 
         do {
-            try writeConfigs(chosenState)
-            for v in versionsInUse(chosenState).sorted() { try startFPM(v) }
+            try writeConfigs(state)
+            for v in versionsInUse(state).sorted() { try startFPM(v) }
             try startCaddy()
             try waitUntilReady()
             if let helper {
@@ -398,7 +371,6 @@ public final class Engine: @unchecked Sendable {
                 // Someone took a port between the check and the helper's bind: that is the blocked case.
                 guard try waitForPortHelper() else { return }
             }
-            startLANListener(chosenState)
             setFlags(running: true)
             commitRoutes()
         } catch {
@@ -519,8 +491,7 @@ public final class Engine: @unchecked Sendable {
 
     private func reloadLocked() throws {
         try paths.ensureDirectories()
-        var state = try prepareState(updatingBuilds: false)
-        if flags.running { state = chooseLANPort(state) }
+        let state = try prepareState(updatingBuilds: false)
         try writeConfigs(state)
         guard flags.running else { return }
 
@@ -536,146 +507,7 @@ public final class Engine: @unchecked Sendable {
         try waitUntilReady()
         try reloadCaddy()
         commitRoutes()
-        startLANListener(state)
     }
-
-    /// Picks (and saves) the LAN listener's port when the master switch is on: the saved one while it
-    /// is free, otherwise the next free one in the fallback range. A listener that already holds the
-    /// saved port keeps it: the probe can't bind a port in use, and it is in use by Paddock itself.
-    private func chooseLANPort(_ state: State) -> State {
-        guard state.lanEnabled else { return state }
-        lanLock.lock()
-        let holding = runningLANPort
-        lanLock.unlock()
-        if holding == state.lanPort, case .running = supervisor.status(Self.lanName) {
-            return state
-        }
-        guard let port = lanPortChooser(state.lanPort) else {
-            log("no free port for the LAN listener (tried \(LAN.defaultPort)–\(LAN.fallbackPorts.upperBound))")
-            return state
-        }
-        guard port != state.lanPort else { return state }
-        do {
-            return try store.update { $0.lanPort = port }
-        } catch {
-            log("could not save the LAN port: \(error.localizedDescription)")
-            return state
-        }
-    }
-
-    /// Starts the LAN listener when the master switch is on, and stops it when it is off. Failure
-    /// (no free port, `paddock-ports` missing, the bind lost a race) leaves the LAN not running;
-    /// the rest of Paddock carries on.
-    private func startLANListener(_ state: State) {
-        guard state.lanEnabled else {
-            stopLANListener()
-            return
-        }
-        guard let port = state.lanPort else {
-            log("the LAN listener has no port; turn the LAN off and on again to pick one")
-            return
-        }
-        let hosts = lanHosts(state)
-        lanLock.lock()
-        if runningLANPort == port, case .running = supervisor.status(Self.lanName) {
-            let publisher = lanPublisher
-            lanLock.unlock()
-            publisher?.update(hosts: hosts)
-            return
-        }
-        lanLock.unlock()
-        guard let portHelper else {
-            log("the LAN listener needs paddock-ports next to paddockd")
-            return
-        }
-        stopLANListener()
-        var spec = ProcessSpec(
-            name: Self.lanName, executable: portHelper,
-            arguments: ["lan", "\(port)", paths.lanSocket.path], logFile: lanLog)
-        // Not restarted on its own: a taken port would only be retried on the next start or change.
-        spec.exitDecision = { _ in .stop }
-        spec.didExit = { [weak self] code, _ in self?.lanListenerExited(code: code) }
-        do {
-            try supervisor.start(spec)
-        } catch {
-            log("could not start the LAN listener on port \(port): \(error.localizedDescription)")
-            return
-        }
-        let publisher = LANPublisher(advertiser: lanAdvertiser(), address: lanAddress)
-        lanLock.lock()
-        runningLANPort = port
-        lanPublisher = publisher
-        lanLock.unlock()
-        guard waitForLANListener(port: port) else {
-            log("the LAN listener did not answer on port \(port); see \(lanLog.path)")
-            stopLANListener()
-            return
-        }
-        publisher.start(hosts: hosts)
-    }
-
-    /// The names other devices use for the sites the owner shares; empty when no site is shared.
-    private func lanHosts(_ state: State) -> [String] {
-        guard let defaultPHP = state.defaultPHP else { return [] }
-        return SiteRegistry(state: state, defaultPHP: defaultPHP, settings: settings).sites()
-            .filter(\.lan).map { LAN.host(for: $0.name) }
-    }
-
-    private func stopLANListener() {
-        lanLock.lock()
-        let publisher = lanPublisher
-        runningLANPort = nil
-        lanPublisher = nil
-        lanLock.unlock()
-        supervisor.stop(Self.lanName)
-        publisher?.stop()
-        setLANStopped(false)
-    }
-
-    /// The LAN listener exited without being asked: stop announcing names at a dead port, and let
-    /// `start` bring it back. Ignored when a newer listener already replaced it.
-    private func lanListenerExited(code: Int32) {
-        lanLock.lock()
-        if case .running = supervisor.status(Self.lanName) {
-            lanLock.unlock()
-            return
-        }
-        let publisher = lanPublisher
-        lanPublisher = nil
-        runningLANPort = nil
-        lanLock.unlock()
-        publisher?.stop()
-        flagsLock.lock()
-        let shuttingDown = self.shuttingDown
-        if !shuttingDown { lanStopped = true }
-        flagsLock.unlock()
-        if !shuttingDown {
-            log("the LAN listener stopped unexpectedly (exit \(code)); run paddock start")
-        }
-    }
-
-    private var lanStoppedUnexpectedly: Bool {
-        flagsLock.lock()
-        defer { flagsLock.unlock() }
-        return lanStopped
-    }
-
-    private func setLANStopped(_ value: Bool) {
-        flagsLock.lock()
-        lanStopped = value
-        flagsLock.unlock()
-    }
-
-    private func waitForLANListener(port: Int) -> Bool {
-        let deadline = Date().addingTimeInterval(Self.readyTimeout)
-        while !PortCheck.accepts(port: port) {
-            guard case .running = supervisor.status(Self.lanName), Date() < deadline else { return false }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        return true
-    }
-
-    private var lanLog: URL { paths.log.appendingPathComponent("lan.log") }
 
     /// Answers promptly even while `start`, `reload` or a PHP install is in progress: it takes only
     /// short-lived locks, never `operationLock`. `running` is false while Caddy (or, in a development
@@ -702,8 +534,6 @@ public final class Engine: @unchecked Sendable {
         var processes = services.processes
         for name in supervisor.names { processes[name] = supervisor.status(name).description }
         let installed = installer.installed()
-        var lanUp = false
-        if case .running = supervisor.status(Self.lanName) { lanUp = true }
         return EngineStatus(running: current.running && !caddyCrashed && !helperCrashed,
                             blockedBy: current.blockedBy,
                             sites: sites,
@@ -717,10 +547,7 @@ public final class Engine: @unchecked Sendable {
                             hasReplacedRootsToClean: hasReplacedRootsToClean,
                             services: services.statuses(), notices: currentLogNotices,
                             xdebug: installed.filter(state.xdebug.contains),
-                            xdebugAvailable: xdebug.available(among: installed), dumpsTo: state.dumpsTo,
-                            lan: LanStatus(enabled: state.lanEnabled, running: lanUp && current.running,
-                                           port: state.lanPort ?? LAN.defaultPort,
-                                           address: state.lanEnabled ? lanAddress() : nil))
+                            xdebugAvailable: xdebug.available(among: installed), dumpsTo: state.dumpsTo)
     }
 
     private var currentLogNotices: [String] {
@@ -779,18 +606,15 @@ public final class Engine: @unchecked Sendable {
         guard let defaultPHP = state.defaultPHP else { return }
         let sites = SiteRegistry(state: state, defaultPHP: defaultPHP, settings: settings).sites()
         let proxies = TaskApproval.routes(state: state, sites: sites, reservedPorts: reservedPorts)
-        let lan = state.lanEnabled ? Caddyfile.LANSharing(
-            sites: sites.filter(\.lan).map(\.name), port: state.lanPort ?? LAN.defaultPort) : nil
         var text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
-                                    namesAuthority: namesCertificateAuthority, proxies: proxies, dumpsTo: state.dumpsTo,
-                                    lan: lan)
+                                    namesAuthority: namesCertificateAuthority, proxies: proxies, dumpsTo: state.dumpsTo)
         // Sites' proxy routes are checked before they are used: a config Caddy would refuse (or that can't be
         // checked) never replaces the one it serves; the sites are served without any routes, and say why.
         var refusal: String?
         if !proxies.isEmpty, let problem = validationProblem(text) {
             refusal = problem
             text = Caddyfile.render(sites: sites, defaultPHP: defaultPHP, paths: paths, settings: settings,
-                                    namesAuthority: namesCertificateAuthority, dumpsTo: state.dumpsTo, lan: lan)
+                                    namesAuthority: namesCertificateAuthority, dumpsTo: state.dumpsTo)
         }
         flagsLock.lock()
         rendered = (refusal == nil ? proxies : [:], refusal)
@@ -853,7 +677,7 @@ public final class Engine: @unchecked Sendable {
 
     /// Every web-stack process's logs: its output and the files it writes itself.
     private func webStackLogs() -> [(process: String, log: URL)] {
-        var logs = [(Self.caddyName, caddyLog), (Self.portHelperName, portHelperLog), (Self.lanName, lanLog)]
+        var logs = [(Self.caddyName, caddyLog), (Self.portHelperName, portHelperLog)]
         for v in fpmVersions.sorted() {
             logs.append((Self.fpmName(v), paths.log.appendingPathComponent("\(Self.fpmName(v)).out.log")))
             logs += fpmOwnLogs(v).map { (Self.fpmName(v), $0) }
@@ -1039,7 +863,6 @@ public final class Engine: @unchecked Sendable {
         flagsLock.unlock()
         supervisor.stopAll()
         fpmVersions = []
-        stopLANListener()
         setFlags(running: false)
     }
 

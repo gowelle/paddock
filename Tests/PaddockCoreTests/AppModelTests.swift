@@ -138,35 +138,6 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.status, initial)
     }
 
-    func testLanLinksNeedSharingAndAnAddress() async {
-        var shared = sampleStatus()
-        shared.lan = LanStatus(enabled: true, running: true, port: 8080, address: "192.168.1.5")
-        let outside = Outside()
-        let model = AppModel(client: FakeClient { _ in .ok(shared) },
-                             copyText: { outside.copied.append($0); outside.concealed.append($1) })
-        await model.refresh()
-        XCTAssertEqual(model.lanURL, "http://192.168.1.5:8080/")
-        XCTAssertEqual(model.lanURL(for: shared.sites[0]), "http://blog.paddock.local:8080")
-
-        model.copyLANLink("http://192.168.1.5:8080/")
-        XCTAssertEqual(outside.copied, ["http://192.168.1.5:8080/"])
-        XCTAssertEqual(outside.concealed, [false], "a LAN link holds no secret")
-
-        var noAddress = shared
-        noAddress.lan?.address = nil
-        let noAddressModel = AppModel(client: FakeClient { _ in .ok(noAddress) })
-        await noAddressModel.refresh()
-        XCTAssertNil(noAddressModel.lanURL)
-        XCTAssertEqual(noAddressModel.lanURL(for: noAddress.sites[0]), "http://blog.paddock.local:8080")
-
-        var off = shared
-        off.lan?.enabled = false
-        let offModel = AppModel(client: FakeClient { _ in .ok(off) })
-        await offModel.refresh()
-        XCTAssertNil(offModel.lanURL)
-        XCTAssertNil(offModel.lanURL(for: off.sites[0]))
-    }
-
     func testPerformMarksTheActionBusyAndClearsIt() async throws {
         let client = FakeClient { _ in .ok(sampleStatus()) }
         let gate = DispatchSemaphore(value: 0)

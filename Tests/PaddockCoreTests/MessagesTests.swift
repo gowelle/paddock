@@ -279,34 +279,4 @@ final class MessagesTests: XCTestCase {
                        ["Paddock is running.", "Secured sites need your approval once: run paddock trust"],
                        "one line is enough: the same command does both")
     }
-
-    func testLanSummarySaysWhereSitesAreShared() {
-        XCTAssertEqual(Messages.lanSummary(LanStatus(enabled: false, running: false, port: 8080)),
-                       "Sites aren't shared on your network.")
-        XCTAssertEqual(Messages.lanSummary(LanStatus(enabled: true, running: true, port: 8080,
-                                                     address: "192.168.1.5")),
-                       "Sites are shared on your network: http://192.168.1.5:8080/")
-        XCTAssertEqual(Messages.lanSummary(LanStatus(enabled: true, running: true, port: 8080)),
-                       "Sites are shared on this network, but Paddock can't find this Mac's address.")
-        XCTAssertEqual(Messages.lanSummary(LanStatus(enabled: true, running: false, port: 8080,
-                                                     address: "192.168.1.5")),
-                       "Sharing is on, but the LAN listener isn't running. Run paddock restart.")
-    }
-
-    func testLanSharedSaysWhetherTheLANIsOn() {
-        let on = LanStatus(enabled: true, running: true, port: 8080, address: "192.168.1.5")
-        XCTAssertEqual(Messages.lanShared("blog.paddock.local", lan: on),
-                       "blog.paddock.local is now shared on your network: http://192.168.1.5:8080/")
-        XCTAssertEqual(Messages.lanShared("blog.paddock.local",
-                                          lan: LanStatus(enabled: true, running: false, port: 8080)),
-                       "blog.paddock.local will be shared once the LAN listener is running. Run paddock restart.")
-        XCTAssertEqual(Messages.lanShared("blog.paddock.local",
-                                          lan: LanStatus(enabled: true, running: true, port: 8080)),
-                       "blog.paddock.local will be shared once Paddock can find this Mac's address.")
-        XCTAssertEqual(Messages.lanShared("blog.paddock.local",
-                                          lan: LanStatus(enabled: false, running: false, port: 8080)),
-                       "blog.paddock.local will be shared once you turn sharing on: paddock lan on")
-        XCTAssertEqual(Messages.lanUnshared("blog.paddock.local"),
-                       "blog.paddock.local is no longer shared on your network.")
-    }
 }

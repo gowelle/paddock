@@ -201,17 +201,6 @@ public struct Doctor: Sendable {
             add(.failed("caddy", caddyTitle, "Caddy isn't running.", fix: "paddock start"))
         }
 
-        if let lan = status.lan, lan.enabled {
-            addLanChecks(lan, to: add)
-            let httpTitle = "The LAN port answers"
-            if let skip = skipped("lan-http", httpTitle,
-                                  because: ["ports", "port-helper", "caddy", "lan", "lan-address"]) {
-                add(skip)
-            } else if let address = lan.address {
-                add(await lanHTTPCheck(address: address, port: lan.port, title: httpTitle))
-            }
-        }
-
         var siteReports: [DoctorReport.SiteReport] = []
         for site in sites {
             siteReports.append(await siteReport(for: site, in: status, globalFailures: globalFailures))
@@ -341,59 +330,6 @@ public struct Doctor: Sendable {
             return .failed("http", title, detail, fix: fix)
         } catch {
             return .failed("http", title, error.localizedDescription, fix: nil)
-        }
-    }
-
-    private func lanHTTPCheck(address: String, port: Int, title: String) async -> DoctorCheck {
-        guard let url = URL(string: "http://\(address):\(port)/") else {
-            return .failed("lan-http", title, "Paddock couldn't form a LAN address to test.", fix: nil)
-        }
-        do {
-            let probe = try await probeURL(url)
-            let found = "HTTP \(probe.statusCode) in \(probe.milliseconds) ms."
-            if (500..<600).contains(probe.statusCode) {
-                return .failed("lan-http", title,
-                               found + " Some request reached the LAN port and failed; see the Web server log.",
-                               fix: nil)
-            }
-            return .passed("lan-http", title, found)
-        } catch let error as URLError {
-            let detail: String
-            let fix: String?
-            switch error.code {
-            case .cannotConnectToHost:
-                detail = "Nothing answered on port \(port)."
-                fix = "paddock restart"
-            case .timedOut:
-                detail = "No answer within 5 seconds."
-                fix = "paddock restart"
-            case .notConnectedToInternet, .networkConnectionLost:
-                detail = "This Mac has no network connection."
-                fix = nil
-            default:
-                detail = error.localizedDescription
-                fix = "paddock restart"
-            }
-            return .failed("lan-http", title, detail, fix: fix)
-        } catch {
-            return .failed("lan-http", title, error.localizedDescription, fix: "paddock restart")
-        }
-    }
-
-    private func addLanChecks(_ lan: LanStatus, to add: (DoctorCheck) -> Void) {
-        let title = "The LAN listener is running"
-        if lan.running {
-            add(.passed("lan", title, "The LAN listener is running on port \(lan.port)."))
-        } else {
-            add(.failed("lan", title, "The LAN listener isn't running.", fix: "paddock restart"))
-        }
-
-        let addressTitle = "This Mac has a LAN address"
-        if let address = lan.address {
-            add(.passed("lan-address", addressTitle, "Other devices reach Paddock at \(address)."))
-        } else {
-            add(.failed("lan-address", addressTitle,
-                        "Paddock can't find this Mac's address on the network.", fix: nil))
         }
     }
 

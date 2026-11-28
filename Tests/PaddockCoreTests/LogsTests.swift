@@ -211,7 +211,7 @@ final class LogCatalogTests: XCTestCase {
         let home = try temporaryFolder(self)
         let paths = Paths(home: home)
         try FileManager.default.createDirectory(at: paths.log, withIntermediateDirectories: true)
-        for name in ["paddockd.log", "caddy.log", "lan.log", "php-8.4.log", "php-fpm-8.4.log", "php-fpm-8.4.out.log", "php-fpm-8.5.log",
+        for name in ["paddockd.log", "caddy.log", "php-8.4.log", "php-fpm-8.4.log", "php-fpm-8.4.out.log", "php-fpm-8.5.log",
                      "service-mail.log", "service-gone.log", "notes.txt"] {
             try Data("x\n".utf8).write(to: paths.log.appendingPathComponent(name))
         }
@@ -224,7 +224,7 @@ final class LogCatalogTests: XCTestCase {
                                   services: [mail, absent])
         let sections = LogCatalog.sections(paths: paths, status: status)
         XCTAssertEqual(sections.map(\.title), ["Paddock", "PHP", "Services"])
-        XCTAssertEqual(sections[0].sources.map(\.title), ["Paddock", "Web server", "LAN listener"])
+        XCTAssertEqual(sections[0].sources.map(\.title), ["Paddock", "Web server"])
         XCTAssertEqual(sections[1].sources.map(\.title), ["PHP-FPM 8.5", "PHP 8.4 errors", "PHP-FPM 8.4"])
         XCTAssertEqual(sections[2].sources.map(\.title), ["Mail"], "only services whose log exists")
         // Without a status, only what is in Paddock's own log folder.

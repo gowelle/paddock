@@ -162,6 +162,6 @@ public final class LockedBox<T>: @unchecked Sendable {
     public init(_ value: T) { stored = value }
     public var value: T {
         get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); stored = newValue; lock.unlock() }
+        set { lock.lock(); defer { lock.unlock() }; stored = newValue }
     }
 }

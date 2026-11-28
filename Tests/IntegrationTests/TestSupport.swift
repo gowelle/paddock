@@ -1,6 +1,5 @@
 import Darwin
 import XCTest
-import PaddockTestSupport
 @testable import PaddockCore
 
 /// Shared helpers for integration tests that start real Caddy and PHP-FPM on high ports.
@@ -28,19 +27,19 @@ enum TestSupport {
 
     // MARK: Ports
 
-    static func socketAddress(port: Int, host: String = "127.0.0.1") -> sockaddr_in {
+    static func socketAddress(port: Int) -> sockaddr_in {
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = UInt16(port).bigEndian
-        addr.sin_addr = in_addr(s_addr: inet_addr(host))
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
         return addr
     }
 
-    static func bindSocket(type: Int32, port: Int, host: String = "127.0.0.1") -> Int32? {
+    static func bindSocket(type: Int32, port: Int) -> Int32? {
         let fd = socket(AF_INET, type, 0)
         guard fd >= 0 else { return nil }
-        var addr = socketAddress(port: port, host: host)
+        var addr = socketAddress(port: port)
         let ok = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
@@ -50,9 +49,9 @@ enum TestSupport {
         return fd
     }
 
-    /// A listening TCP socket on <host>:<port> (loopback unless given); the caller closes it.
-    static func listen(port: Int, host: String = "127.0.0.1") throws -> Int32 {
-        guard let fd = bindSocket(type: SOCK_STREAM, port: port, host: host), Darwin.listen(fd, 4) == 0 else {
+    /// A listening TCP socket on 127.0.0.1:<port>; the caller closes it.
+    static func listen(port: Int) throws -> Int32 {
+        guard let fd = bindSocket(type: SOCK_STREAM, port: port), Darwin.listen(fd, 4) == 0 else {
             throw POSIXError(.EADDRINUSE)
         }
         return fd
@@ -195,18 +194,11 @@ extension Engine {
                             installAction: (@Sendable (PHPVersion) async throws -> Void)? = nil,
                             backoffScale: TimeInterval = 1,
                             phpEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-                            lanPortChooser: @escaping @Sendable (Int?) -> Int? = { LANPort.choose(saved: $0) },
-                            lanAdvertiser: @escaping @Sendable () -> any LANAdvertising = {
-                                RecordingLANAdvertiser()
-                            },
-                            lanAddress: @escaping @Sendable () -> String? = { "192.168.1.50" },
                             log: @escaping @Sendable (String) -> Void = { fputs("paddockd: \($0)\n", stderr) })
         -> Engine {
         Engine(paths: paths, settings: settings, installAction: installAction, trust: trust,
                backoffScale: backoffScale, managesPortHelper: true, portHelper: TestSupport.portHelper,
-               portHolders: TestSupport.portHoldersWithoutProbes, lanPortChooser: lanPortChooser,
-               lanAdvertiser: lanAdvertiser, lanAddress: lanAddress,
-               phpEnvironment: phpEnvironment, log: log)
+               portHolders: TestSupport.portHoldersWithoutProbes, phpEnvironment: phpEnvironment, log: log)
     }
 }
 

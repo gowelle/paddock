@@ -44,8 +44,6 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
     public var php: PHPVersion
     public var pinned: Bool
     public let tld: String
-    /// The owner chose this site for the LAN; only meaningful while the master switch is on.
-    public var lan: Bool
     /// The site's tasks (`paddock.json`), as the daemon last saw them; nil without a file or from an older daemon.
     public var tasks: SiteTasksStatus?
     /// A sentence about the site itself when it has no tasks to show it under (its forwarding still active after a
@@ -57,7 +55,7 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
     public var url: String { "\(secured ? "https" : "http")://\(host)" }
 
     public init(name: String, path: String, kind: Kind, secured: Bool, php: PHPVersion,
-                pinned: Bool, tld: String = "test", lan: Bool = false, tasks: SiteTasksStatus? = nil) {
+                pinned: Bool, tld: String = "test", tasks: SiteTasksStatus? = nil) {
         self.name = name
         self.path = path
         self.kind = kind
@@ -65,11 +63,10 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
         self.php = php
         self.pinned = pinned
         self.tld = tld
-        self.lan = lan
         self.tasks = tasks
     }
 
-    private enum CodingKeys: String, CodingKey { case name, path, kind, secured, php, pinned, tld, lan, tasks, notice }
+    private enum CodingKeys: String, CodingKey { case name, path, kind, secured, php, pinned, tld, tasks, notice }
 
     /// As before tasks existed; `tasks` that can't be read are left out rather than costing the site.
     public init(from decoder: Decoder) throws {
@@ -81,7 +78,6 @@ public struct Site: Codable, Equatable, Identifiable, Sendable {
         php = try c.decode(PHPVersion.self, forKey: .php)
         pinned = try c.decode(Bool.self, forKey: .pinned)
         tld = try c.decode(String.self, forKey: .tld)
-        lan = (try? c.decodeIfPresent(Bool.self, forKey: .lan)) ?? false
         tasks = try? c.decodeIfPresent(SiteTasksStatus.self, forKey: .tasks)
         notice = try? c.decodeIfPresent(String.self, forKey: .notice)
     }
@@ -151,8 +147,7 @@ public struct SiteRegistry {
     private func make(name: String, path: String, kind: Site.Kind) -> Site {
         let pin = state.phpPins[name]
         return Site(name: name, path: path, kind: kind, secured: state.secured.contains(name),
-                    php: pin ?? defaultPHP, pinned: pin != nil, tld: settings.tld,
-                    lan: state.lanSites.contains(name))
+                    php: pin ?? defaultPHP, pinned: pin != nil, tld: settings.tld)
     }
 
     private func isDirectory(_ path: String) -> Bool {

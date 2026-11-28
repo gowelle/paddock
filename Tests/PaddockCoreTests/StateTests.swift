@@ -45,34 +45,6 @@ final class StateTests: XCTestCase {
         }
     }
 
-    func testLanChoicesAreKeptAndAnOlderFileHasThemOff() throws {
-        let paths = try makePaths()
-        try StateStore(paths: paths).update {
-            $0.lanEnabled = true
-            $0.lanSites = ["blog", "shop"]
-            $0.lanPort = 8081
-        }
-        let loaded = StateStore(paths: paths).load()
-        XCTAssertTrue(loaded.lanEnabled)
-        XCTAssertEqual(loaded.lanSites, ["blog", "shop"])
-        XCTAssertEqual(loaded.lanPort, 8081)
-
-        let older = #"{"parked":[],"links":{},"secured":[],"phpPins":{}}"#
-        let decoded = try JSONDecoder().decode(State.self, from: Data(older.utf8))
-        XCTAssertFalse(decoded.lanEnabled)
-        XCTAssertTrue(decoded.lanSites.isEmpty)
-        XCTAssertNil(decoded.lanPort)
-    }
-
-    func testAnUnusableLanPortIsDropped() throws {
-        for bad in [80, 443, 1023, 65536] {
-            let json = #"{"parked":["/p"],"links":{},"secured":[],"phpPins":{},"lanPort":\#(bad)}"#
-            let state = try JSONDecoder().decode(State.self, from: Data(json.utf8))
-            XCTAssertNil(state.lanPort, "\(bad)")
-            XCTAssertEqual(state.parked, ["/p"], "the rest of the file is kept")
-        }
-    }
-
     func testRoundTrip() throws {
         let paths = try makePaths()
         let written = try StateStore(paths: paths).update {

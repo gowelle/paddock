@@ -101,16 +101,9 @@ class Server
      */
     public function siteNameFromHttpHost(string $httpHost): string
     {
-        $host = $this->allowWildcardDnsDomains($httpHost);
-        // Paddock's LAN names (site.paddock.local) name the same site as site.test. Strip the LAN
-        // suffix like the tld, leaving www. and subdomains to the rules below.
-        $lanSuffix = '.'.strtolower($this->config['lan_domain'] ?? 'paddock.local');
-        if (substr(strtolower($host), -strlen($lanSuffix)) === $lanSuffix) {
-            $host = substr($host, 0, -strlen($lanSuffix));
-        }
         $siteName = basename(
             // Filter host to support wildcard dns feature
-            $host,
+            $this->allowWildcardDnsDomains($httpHost),
             '.'.$this->config['tld']
         );
 

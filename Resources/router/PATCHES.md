@@ -23,10 +23,6 @@ Copied unmodified except for the edits listed below:
    variable is unset at the end with the others.
 4. `cli/templates/404.html`: the page title reads `Paddock - Not Found`
    instead of `Valet - Not Found`, so visitors see Paddock's name.
-5. `cli/Valet/Server.php`: `siteNameFromHttpHost` strips the configured
-   `lan_domain` suffix (`paddock.local`) as it strips the tld, so a site
-   reached as `site.paddock.local` on the LAN names the same site as
-   `site.test`. `www.` and subdomain handling still apply after the strip.
 
 No Homebrew paths: the v4.14.0 files copied here contain no references to
 Homebrew, `/usr/local` or `/opt` (verified with grep), so nothing needed

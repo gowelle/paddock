@@ -9,7 +9,6 @@ public enum RouterConfig {
 
         let config: [String: Any] = [
             "tld": settings.tld,
-            "lan_domain": LAN.domain,
             "loopback": "127.0.0.1",
             // Sites first so links win over parked folders, as in SiteRegistry.
             "paths": [sitesDir.path] + state.parked,

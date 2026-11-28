@@ -51,7 +51,6 @@ final class IPCTests: XCTestCase {
             .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
             .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail"),
             .tasksApprove(site: "shop", hash: "v1:abc", folder: "/Users/me/Code/shop"),
-            .lan(enabled: true), .lanSite(site: "blog", enabled: true),
         ]
         for request in requests {
             let data = try JSONEncoder().encode(request)
@@ -63,7 +62,6 @@ final class IPCTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 16, "catalog entries say why they can't run here")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 17, "approvals name their folder; tasksApprove may too")
         XCTAssertGreaterThanOrEqual(PaddockBuild.number, 30, "task and service statuses say when a crash was terminal")
-        XCTAssertGreaterThanOrEqual(PaddockBuild.number, 32, "LAN exposure is new: the build number moves on")
         // An approval from a client that doesn't name the folder still reads.
         let older = try JSONDecoder().decode(Request.self, from: Data(#"{"tasksApprove":{"site":"shop","hash":"v1:x"}}"#.utf8))
         XCTAssertEqual(older, .tasksApprove(site: "shop", hash: "v1:x", folder: nil))
@@ -83,8 +81,7 @@ final class IPCTests: XCTestCase {
          .serviceUpdate(name: "mail"), .serviceCreateDatabase(name: "postgres-18", database: "shop"),
          .tasksApprove(site: "shop", hash: "v1:abc"), .tasksRevoke(site: "shop"), .taskStart(site: "shop", task: "queue"),
          .taskStop(site: "shop", task: "queue"), .taskRestart(site: "shop", task: "queue"), .tasksInit(site: "shop"),
-         .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail"),
-         .lan(enabled: true), .lanSite(site: "blog", enabled: false)]
+         .taskForceRestart(site: "shop", task: "queue"), .tasksStatus(site: "shop"), .serviceEnv(id: "mail")]
     }
 
     private func caseName(_ r: Request) -> String {
@@ -125,13 +122,11 @@ final class IPCTests: XCTestCase {
         case .taskForceRestart: return "taskForceRestart"
         case .tasksStatus: return "tasksStatus"
         case .serviceEnv: return "serviceEnv"
-        case .lan: return "lan"
-        case .lanSite: return "lanSite"
         }
     }
 
     func testOnlyReadOnlyRequestsLeaveADevelopmentBuildsClient() throws {
-        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 38, "one instance of every case")
+        XCTAssertEqual(Set(everyRequest.map(caseName)).count, 36, "one instance of every case")
         let seen = Locked<[Request]>([])
         let server = IPCServer(socket: paths.daemonSocket) { request in
             seen.withValue { $0.append(request) }
@@ -418,7 +413,6 @@ final class IPCTests: XCTestCase {
         XCTAssertNil(status.defaultPHP)
         XCTAssertFalse(status.needsTrust, "an older daemon never asks for trust")
         XCTAssertFalse(status.hasReplacedRootsToClean)
-        XCTAssertNil(status.lan, "an older daemon knows nothing of LAN exposure")
         let minimal = try JSONDecoder().decode(EngineStatus.self, from: Data("{}".utf8))
         XCTAssertFalse(minimal.running)
         XCTAssertEqual(minimal.sites, [])

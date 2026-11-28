@@ -82,35 +82,6 @@ public enum Messages {
     public static let stillNotTrusted =
         "macOS still doesn't trust Paddock's certificate. Run paddock trust again and approve the macOS prompt."
 
-    /// One line for `paddock status`: where the shared sites are, or why they aren't.
-    public static func lanSummary(_ lan: LanStatus) -> String {
-        guard lan.enabled else { return "Sites aren't shared on your network." }
-        guard lan.running else {
-            return "Sharing is on, but the LAN listener isn't running. Run paddock restart."
-        }
-        guard let address = lan.address else {
-            return "Sites are shared on this network, but Paddock can't find this Mac's address."
-        }
-        return "Sites are shared on your network: http://\(address):\(lan.port)/"
-    }
-
-    public static func lanShared(_ host: String, lan: LanStatus) -> String {
-        guard lan.enabled else {
-            return "\(host) will be shared once you turn sharing on: paddock lan on"
-        }
-        guard lan.running else {
-            return "\(host) will be shared once the LAN listener is running. Run paddock restart."
-        }
-        guard let address = lan.address else {
-            return "\(host) will be shared once Paddock can find this Mac's address."
-        }
-        return "\(host) is now shared on your network: http://\(address):\(lan.port)/"
-    }
-
-    public static func lanUnshared(_ host: String) -> String {
-        "\(host) is no longer shared on your network."
-    }
-
     public static func phpNotAvailable(_ version: PHPVersion) -> String {
         "PHP \(version) isn't available for Intel Macs yet."
     }

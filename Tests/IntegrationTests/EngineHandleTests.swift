@@ -102,53 +102,6 @@ final class EngineHandleTests: XCTestCase {
         await expectError(.unsecure(site: "nope"), "unknown_site")
     }
 
-    func testLanMasterAndSiteChoicesAreStored() async throws {
-        let on = try await st(.lan(enabled: true))
-        XCTAssertEqual(on.lan?.enabled, true)
-        XCTAssertEqual(on.lan?.port, LAN.defaultPort)
-        XCTAssertTrue(engine.store.load().lanEnabled)
-
-        let chosen = try await st(.lanSite(site: "plain-php", enabled: true))
-        XCTAssertTrue(chosen.sites.first { $0.name == "plain-php" }?.lan == true)
-        XCTAssertEqual(engine.store.load().lanSites, ["plain-php"])
-
-        _ = try await st(.lanSite(site: "plain-php", enabled: false))
-        XCTAssertTrue(engine.store.load().lanSites.isEmpty)
-        _ = try await st(.lanSite(site: "plain-php", enabled: false)) // not set: still ok
-        await expectError(.lanSite(site: "nope", enabled: true), "unknown_site")
-
-        // Turning the master switch off keeps the per-site choices for when it is turned on again.
-        _ = try await st(.lanSite(site: "plain-php", enabled: true))
-        let off = try await st(.lan(enabled: false))
-        XCTAssertEqual(off.lan?.enabled, false)
-        XCTAssertEqual(engine.store.load().lanSites, ["plain-php"])
-    }
-
-    func testLanListenerStartsAndStopsWithTheMasterSwitch() async throws {
-        let port = TestSupport.freeTCPPort(excluding: [home.settings.httpPort, home.settings.httpsPort,
-                                                       home.settings.dnsPort])
-        let lanEngine = Engine.development(paths: home.paths, settings: home.settings,
-                                           lanPortChooser: { _ in port })
-        defer { lanEngine.shutdown() }
-        _ = await lanEngine.handle(.lan(enabled: true))
-        _ = await lanEngine.handle(.lanSite(site: "plain-php", enabled: true))
-        guard case .ok(let started) = await lanEngine.handle(.start), started.running else {
-            return XCTFail("start should be ok")
-        }
-        XCTAssertEqual(started.lan?.port, port)
-        XCTAssertEqual(started.lan?.running, true)
-        XCTAssertEqual(lanEngine.store.load().lanPort, port, "the chosen port is remembered")
-        XCTAssertTrue(PortCheck.acceptsIPv4(port: port), "the LAN listener answers on its port")
-
-        guard case .ok(let off) = await lanEngine.handle(.lan(enabled: false)) else {
-            return XCTFail("turning the LAN off should be ok")
-        }
-        XCTAssertEqual(off.lan?.enabled, false)
-        XCTAssertEqual(off.lan?.running, false)
-        XCTAssertEqual(off.processes["lan"], "stopped")
-        XCTAssertFalse(PortCheck.acceptsIPv4(port: port), "the port is free again")
-    }
-
     func testIsolateUnisolateAndUse() async throws {
         let isolated = try await st(.isolate(site: "plain-php", version: v85))
         XCTAssertTrue(isolated.sites.first { $0.name == "plain-php" }?.pinned == true)

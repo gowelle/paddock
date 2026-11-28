@@ -32,10 +32,7 @@ plans to uninstall Herd once Paddock works.
 
 ## Non-goals
 
-- Serving sites to other devices on the network **on ports 80 and 443**.
-  (Amended 2026-11-27: an opt-in LAN listener on a high port serves chosen
-  PHP sites; see "Amendment: LAN sharing" below. Ports 80 and 443 stay
-  loopback-only.)
+- Serving sites to other devices on the network.
 - Sharing ports 80/443 with another tool. Once installed, Paddock holds
   them until it is uninstalled.
 
@@ -153,37 +150,3 @@ setup; only "who opened the ports" differs.
 ## Open
 
 - None blocking. The real-system proof happens at switch-over.
-
-## Amendment: LAN sharing (2026-11-27)
-
-The owner asked for phones, tablets and other computers on the same network
-to open Paddock's sites. This adds a second, opt-in way in, and leaves the
-ports above untouched.
-
-- **Separate listener, separate port.** `paddock-ports lan <port>
-  <socket>` binds all interfaces on one high port (8080 first, then
-  8080–8099, or `PADDOCK_LAN_PORT`) and forwards to a third Unix socket,
-  `run/lan.sock`. Ports 80/443 and their loopback-only helper are
-  unchanged, and nothing new runs as root.
-- **Only chosen PHP sites.** A master switch plus per-site ticks decide
-  what appears; default is off. Caddy renders those sites on `lan.sock` as
-  plain HTTP (a secured site is still HTTP there, with no redirect), and a
-  catch-all landing page lists what is shared. Proxy routes (site tasks,
-  services, Mailpit, databases, dumps, IPC) never render on the LAN
-  socket, so they remain loopback-only.
-- **Names.** The engine announces `site.paddock.local` as mDNS A records
-  (native `dnssd`), following this Mac's address as it changes. The vendored
-  router strips the `paddock.local` suffix, so the same PHP site answers.
-  A device without working mDNS can open the numeric address shown in the
-  app and `paddock status`, which reaches the landing page listing what is
-  shared; opening a site itself needs the names to resolve (mDNS, or the
-  router's DNS).
-- **No authentication, plain HTTP.** v1 carries no certificates or login:
-  it is for a trusted home or office network, and anything shared is open
-  to that network. LAN HTTPS/trust is deliberately out of scope.
-- **Diagnosis.** Doctor gains rows for the listener, the address, and the
-  LAN port answering, only while sharing is on.
-
-Tests never bind 80/443 or touch the real home. The LAN listener and the
-helper's `lan` form bind only test-chosen high ports; the mDNS advertiser is
-replaced with a recorder.

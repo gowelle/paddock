@@ -44,8 +44,7 @@ public enum LogCatalog {
         var sections: [LogSection] = []
 
         let paddock = [own("paddockd.log", "Paddock"), own("caddy.log", "Web server"),
-                       own("lan.log", "LAN listener"), own("paddock-ports.log", "Port helper")]
-            .compactMap { $0 }
+                       own("paddock-ports.log", "Port helper")].compactMap { $0 }
         if !paddock.isEmpty { sections.append(LogSection(title: "Paddock", sources: paddock)) }
 
         // php-<v>.log holds PHP's errors; php-fpm-<v>.log is PHP-FPM's own. Newest version first.
