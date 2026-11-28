@@ -232,5 +232,16 @@ final class TaskCLITests: XCTestCase {
             XCTFail("daemon did not come up")
             throw XCTSkip("daemon did not come up")
         }
+        // The daemon answers before its web stack is up, and a site task change made meanwhile skips the
+        // routes apply (the engine isn't serving yet) until something changes the routes again: approve
+        // only once it is running, as `paddock status` shows it.
+        let client = PaddockClient(paths: home.paths)
+        guard waitFor(40, {
+            if case .ok(let status)? = try? client.send(.status, timeout: 5) { return status.running }
+            return false
+        }) else {
+            XCTFail("the engine did not start")
+            throw XCTSkip("the engine did not start")
+        }
     }
 }
